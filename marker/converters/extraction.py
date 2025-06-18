@@ -51,6 +51,7 @@ class ExtractionConverter(PdfConverter):
             )
 
         document, provider = self.build_document(filepath)
+        self.page_count = len(document.pages)
         renderer = self.resolve_dependencies(MarkdownRenderer)
         output = renderer(document)
 

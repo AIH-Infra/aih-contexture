@@ -143,6 +143,8 @@ class PdfConverter(BaseConverter):
         if self.use_llm:
             self.layout_builder_class = LLMLayoutBuilder
 
+        self.page_count = None  # Track how many pages were converted
+
     @contextmanager
     def filepath_to_str(self, file_input: Union[str, io.BytesIO]):
         temp_file = None
@@ -186,6 +188,7 @@ class PdfConverter(BaseConverter):
     def __call__(self, filepath: str | io.BytesIO):
         with self.filepath_to_str(filepath) as temp_path:
             document = self.build_document(temp_path)
+            self.page_count = len(document.pages)
             renderer = self.resolve_dependencies(self.renderer)
             rendered = renderer(document)
         return rendered
