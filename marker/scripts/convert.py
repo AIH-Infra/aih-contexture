@@ -127,7 +127,7 @@ def process_single_pdf(args):
     "--max_tasks_per_worker",
     type=int,
     default=10,
-    help="Maximum number of tasks per worker process.",
+    help="Maximum number of tasks per worker process before recycling.",
 )
 @ConfigParser.common_options
 def convert_cli(in_folder: str, **kwargs):

@@ -9,10 +9,14 @@ class PageHeader(Block):
     )
     replace_output_newlines: bool = True
     ignore_for_output: bool = True
+    html: str | None = None
 
     def assemble_html(self, document, child_blocks, parent_structure, block_config):
         if block_config.get("keep_pageheader_in_output"):
             self.ignore_for_output = False
+
+        if self.html and not self.ignore_for_output:
+            return self.html
 
         return super().assemble_html(
             document, child_blocks, parent_structure, block_config
