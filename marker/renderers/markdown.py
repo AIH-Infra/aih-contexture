@@ -289,7 +289,7 @@ class MarkdownRenderer(HTMLRenderer):
         )
 
     def __call__(self, document: Document) -> MarkdownOutput:
-        document_output = document.render()
+        document_output = document.render(self.block_config)
         full_html, images = self.extract_html(document, document_output)
         markdown = self.md_cls.convert(full_html)
         markdown = cleanup_text(markdown)

@@ -7,8 +7,12 @@ class ListGroup(Group):
     has_continuation: bool = False
     block_description: str = "A group of list items that should be rendered together."
 
-    def assemble_html(self, document, child_blocks, parent_structure):
-        template = super().assemble_html(document, child_blocks, parent_structure)
+    def assemble_html(
+        self, document, child_blocks, parent_structure, block_config=None
+    ):
+        template = super().assemble_html(
+            document, child_blocks, parent_structure, block_config
+        )
 
         el_attr = f" block-type='{self.block_type}'"
         if self.has_continuation:
