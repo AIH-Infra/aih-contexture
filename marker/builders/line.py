@@ -618,7 +618,7 @@ class LineBuilder(BaseBuilder):
         LineClass: Line = get_block_class(BlockTypes.Line)
         for j in range(len(detected_line_boxes)):
             # Ensure we don't do max on an empty array
-            if provider_detected_overlaps[:, j].size() == 0:
+            if provider_detected_overlaps[:, j].size == 0:
                 continue
 
             if np.max(provider_detected_overlaps[:, j]) == 0:
