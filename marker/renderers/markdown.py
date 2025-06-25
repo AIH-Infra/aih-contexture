@@ -29,13 +29,11 @@ def cleanup_text(full_text):
     ends_with_pagination = re.search(r'\{\d+\}[^\n]*\n*$', full_text)
     
     if starts_with_pagination and ends_with_pagination:
-        return full_text  # Don't strip either end
+        return full_text  # Don't strip either end (blank last page)
     elif starts_with_pagination:
-        return full_text.rstrip()  # Only strip trailing
-    elif ends_with_pagination:
-        return full_text.lstrip()  # Only strip leading
+        return full_text.rstrip()  # Only strip trailing (normal pagination)
     else:
-        return full_text.strip()  # Strip both as before
+        return full_text.strip()  # Strip both (no pagination)
 
 
 def get_formatted_table_text(element):
