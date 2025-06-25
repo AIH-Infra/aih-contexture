@@ -7,7 +7,6 @@ from marker.renderers.chunk import ChunkRenderer
 def test_markdown_renderer_pagination(pdf_document):
     renderer = ChunkRenderer()
     blocks = renderer(pdf_document).blocks
-    breakpoint()
 
     assert len(blocks) == 15
     assert blocks[0].block_type == "SectionHeader"
