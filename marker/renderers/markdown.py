@@ -23,6 +23,9 @@ def escape_dollars(text):
 def cleanup_text(full_text):
     full_text = re.sub(r"\n{3,}", "\n\n", full_text)
     full_text = re.sub(r"(\n\s){3,}", "\n\n", full_text)
+    # Preserve leading newlines for pagination markers
+    if re.match(r'^\n+\{\d+\}', full_text):
+        return full_text.rstrip()
     return full_text.strip()
 
 

@@ -19,8 +19,8 @@ def test_markdown_renderer_pagination(pdf_document):
     renderer = MarkdownRenderer({"paginate_output": True})
     md = renderer(pdf_document).markdown
 
-    assert "{0}-" in md
-    assert "{1}-" in md
+    assert "\n\n{0}-" in md
+    assert "\n\n{1}-" in md
 
 
 @pytest.mark.config({"page_range": [0, 1]})
