@@ -6,7 +6,9 @@ from marker.builders.line import LineBuilder
 from marker.builders.ocr import OcrBuilder
 from marker.builders.structure import StructureBuilder
 from marker.converters.pdf import PdfConverter
-from marker.extractors.page import PageExtractor, json_schema_to_base_model
+from marker.extractors.document import DocumentExtractor
+from marker.extractors.page import PageExtractor
+from marker.extractors.util import json_schema_to_base_model
 from marker.providers.registry import provider_from_filepath
 
 from marker.renderers.extraction import ExtractionRenderer, ExtractionOutput
@@ -42,6 +44,7 @@ class ExtractionConverter(PdfConverter):
         self.config["output_format"] = (
             "markdown"  # Output must be markdown for extraction
         )
+
         try:
             json_schema_to_base_model(json.loads(self.config["page_schema"]))
         except Exception as e:
@@ -65,14 +68,17 @@ class ExtractionConverter(PdfConverter):
                 self.default_llm_service
             )
 
-        extractor = self.resolve_dependencies(PageExtractor)
+        page_extractor = self.resolve_dependencies(PageExtractor)
+        document_extractor = self.resolve_dependencies(DocumentExtractor)
         renderer = self.resolve_dependencies(ExtractionRenderer)
 
         pnums = provider.page_range
-        all_json = {}
+        notes = []
         for page, page_md, pnum in zip(document.pages, output_pages, pnums):
-            extracted_json = extractor(document, page, page_md.strip())
-            all_json[pnum] = extracted_json
+            page_notes = page_extractor(document, page, page_md.strip())
+            notes.append((pnum, page_notes))
 
-        merged = renderer(all_json)
+        document_output = document_extractor(document, notes)
+
+        merged = renderer(document_output)
         return merged
