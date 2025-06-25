@@ -1,7 +1,5 @@
 import os
 
-from marker.services import BaseService
-
 os.environ["TOKENIZERS_PARALLELISM"] = "false"  # disables a tokenizers warning
 
 from collections import defaultdict
@@ -11,11 +9,11 @@ from contextlib import contextmanager
 import tempfile
 
 from marker.processors import BaseProcessor
+from marker.services import BaseService
 from marker.processors.llm.llm_table_merge import LLMTableMergeProcessor
 from marker.providers.registry import provider_from_filepath
 from marker.builders.document import DocumentBuilder
 from marker.builders.layout import LayoutBuilder
-from marker.builders.llm_layout import LLMLayoutBuilder
 from marker.builders.line import LineBuilder
 from marker.builders.ocr import OcrBuilder
 from marker.builders.structure import StructureBuilder
@@ -50,6 +48,8 @@ from marker.processors.order import OrderProcessor
 from marker.services.gemini import GoogleGeminiService
 from marker.processors.line_merge import LineMergeProcessor
 from marker.processors.llm.llm_mathblock import LLMMathBlockProcessor
+from marker.processors.llm.llm_page_correction import LLMPageCorrectionProcessor
+from marker.processors.llm.llm_sectionheader import LLMSectionHeaderProcessor
 
 
 class PdfConverter(BaseConverter):
@@ -92,6 +92,8 @@ class PdfConverter(BaseConverter):
         LLMEquationProcessor,
         LLMHandwritingProcessor,
         LLMMathBlockProcessor,
+        LLMSectionHeaderProcessor,
+        LLMPageCorrectionProcessor,
         ReferenceProcessor,
         DebugProcessor,
     )
@@ -140,9 +142,6 @@ class PdfConverter(BaseConverter):
         self.processor_list = processor_list
 
         self.layout_builder_class = LayoutBuilder
-        if self.use_llm:
-            self.layout_builder_class = LLMLayoutBuilder
-
         self.page_count = None  # Track how many pages were converted
 
     @contextmanager

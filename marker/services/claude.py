@@ -2,7 +2,7 @@ import base64
 import json
 import time
 from io import BytesIO
-from typing import List, Annotated, Union, T
+from typing import List, Annotated, T
 
 import PIL
 from PIL import Image
@@ -31,12 +31,7 @@ class ClaudeService(BaseService):
         img.save(image_bytes, format="WEBP")
         return base64.b64encode(image_bytes.getvalue()).decode("utf-8")
 
-    def prepare_images(
-        self, images: Union[Image.Image, List[Image.Image]]
-    ) -> List[dict]:
-        if isinstance(images, Image.Image):
-            images = [images]
-
+    def process_images(self, images: List[Image.Image]) -> List[dict]:
         return [
             {
                 "type": "image",
@@ -78,7 +73,7 @@ class ClaudeService(BaseService):
     def __call__(
         self,
         prompt: str,
-        image: PIL.Image.Image | List[PIL.Image.Image],
+        image: PIL.Image.Image | List[PIL.Image.Image] | None,
         block: Block,
         response_schema: type[BaseModel],
         max_retries: int | None = None,
@@ -90,9 +85,6 @@ class ClaudeService(BaseService):
         if timeout is None:
             timeout = self.timeout
 
-        if not isinstance(image, list):
-            image = [image]
-
         schema_example = response_schema.model_json_schema()
         system_prompt = f"""
 Follow the instructions given by the user prompt.  You must provide your response in JSON format matching this schema:
@@ -103,7 +95,7 @@ Respond only with the JSON schema, nothing else.  Do not include ```json, ```,  
 """.strip()
 
         client = self.get_client()
-        image_data = self.prepare_images(image)
+        image_data = self.format_image_for_llm(image)
 
         messages = [
             {

@@ -1,5 +1,6 @@
 import json
 import time
+import traceback
 from io import BytesIO
 from typing import List, Annotated
 
@@ -29,10 +30,17 @@ class BaseGeminiService(BaseService):
     def get_google_client(self, timeout: int):
         raise NotImplementedError
 
+    def process_images(self, images):
+        image_parts = [
+            types.Part.from_bytes(data=self.img_to_bytes(img), mime_type="image/webp")
+            for img in images
+        ]
+        return image_parts
+
     def __call__(
         self,
         prompt: str,
-        image: PIL.Image.Image | List[PIL.Image.Image],
+        image: PIL.Image.Image | List[PIL.Image.Image] | None,
         block: Block,
         response_schema: type[BaseModel],
         max_retries: int | None = None,
@@ -44,14 +52,8 @@ class BaseGeminiService(BaseService):
         if timeout is None:
             timeout = self.timeout
 
-        if not isinstance(image, list):
-            image = [image]
-
         client = self.get_google_client(timeout=timeout)
-        image_parts = [
-            types.Part.from_bytes(data=self.img_to_bytes(img), mime_type="image/webp")
-            for img in image
-        ]
+        image_parts = self.format_image_for_llm(image)
 
         tries = 0
         while tries < max_retries:
@@ -86,6 +88,7 @@ class BaseGeminiService(BaseService):
                     break
             except Exception as e:
                 logger.error(f"Exception: {e}")
+                traceback.print_exc()
                 break
 
         return {}

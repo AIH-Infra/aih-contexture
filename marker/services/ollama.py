@@ -27,10 +27,14 @@ class OllamaService(BaseService):
         image.save(image_bytes, format="PNG")
         return base64.b64encode(image_bytes.getvalue()).decode("utf-8")
 
+    def process_images(self, images):
+        image_bytes = [self.image_to_base64(img) for img in images]
+        return image_bytes
+
     def __call__(
         self,
         prompt: str,
-        image: PIL.Image.Image | List[PIL.Image.Image],
+        image: PIL.Image.Image | List[PIL.Image.Image] | None,
         block: Block,
         response_schema: type[BaseModel],
         max_retries: int | None = None,
@@ -46,10 +50,7 @@ class OllamaService(BaseService):
             "required": schema["required"],
         }
 
-        if not isinstance(image, list):
-            image = [image]
-
-        image_bytes = [self.image_to_base64(img) for img in image]
+        image_bytes = self.format_image_for_llm(image)
 
         payload = {
             "model": self.ollama_model,
