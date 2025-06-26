@@ -49,19 +49,17 @@ def extraction_converter(config, model_dict, mock_llm_service):
 
 
 @pytest.mark.config({"page_range": [0]})
-def test_extraction_converter_invalid_schema(
-    config, model_dict, mock_llm_service, temp_doc
-):
+def test_extraction_converter(config, model_dict, mock_llm_service, temp_doc):
     config["page_schema"] = "invalid json"
 
     model_dict["llm_service"] = mock_llm_service
     converter = ExtractionConverter(
         artifact_dict=model_dict, processor_list=None, config=config
     )
-    converter.llm_service = mock_llm_service
+    converter.artifact_dict["llm_service"] = mock_llm_service()
 
-    with pytest.raises(ValueError):
-        converter(temp_doc.name)
+    results = converter(temp_doc.name)
+    assert results.document_json == '{"test_key": "test_value"}'
 
 
 @pytest.mark.config({"page_range": [0, 1]})
