@@ -7,6 +7,9 @@ from marker.schema import BlockTypes
 from marker.schema.blocks import Block
 from marker.schema.document import Document
 
+from marker.logger import get_logger
+logger = get_logger()
+
 class BlankPageProcessor(BaseProcessor):
     """
     A processor to filter out blank pages detected as a single layout block
@@ -17,8 +20,7 @@ class BlankPageProcessor(BaseProcessor):
     def is_blank(self, image: Image.Image):
         image = np.asarray(image)
         if (
-            image is None
-            or image.size == 0
+            image.size == 0
             or image.shape[0] == 0
             or image.shape[1] == 0
         ):
@@ -26,7 +28,7 @@ class BlankPageProcessor(BaseProcessor):
             return True
 
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        gray = cv2.GaussianBlur(gray, (7, 7), 0)
 
         # Adaptive threshold (inverse for text as white)
         binarized = cv2.adaptiveThreshold(
@@ -50,19 +52,19 @@ class BlankPageProcessor(BaseProcessor):
             return
 
         for page in document.pages:
-            structure_blocks = page.structure_blocks()
+            structure_blocks = page.structure_blocks(document)
             if not structure_blocks or len(structure_blocks) > 1:
                 continue
 
             full_page_block: Block = structure_blocks[0]
-            print(full_page_block.block_type)
 
             conditions = [
                 full_page_block.block_type in [BlockTypes.Picture, BlockTypes.Figure],
-                self.is_blank(full_page_block.lowres_image),
+                self.is_blank(full_page_block.get_image(document)),
                 page.polygon.intersection_area(full_page_block.polygon) > self.full_page_block_intersection_threshold
             ]
 
             if all(conditions):
+                logger.debug(f"Removing blank block {full_page_block.id}")
                 page.remove_structure_items([full_page_block.block_id])
-                full_page_block.remove = True
+                full_page_block.removed = True
