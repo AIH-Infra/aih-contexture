@@ -1,7 +1,7 @@
 import json
 
 from pydantic import BaseModel
-from typing import Annotated, Optional, List, Tuple
+from typing import Annotated, Optional, List
 
 from marker.extractors import BaseExtractor
 from marker.extractors.page import PageExtractionSchema
@@ -104,17 +104,18 @@ Schema
 ```
 """
 
-    def assemble_document_notes(self, page_notes) -> str:
+    def assemble_document_notes(self, page_notes: List[PageExtractionSchema]) -> str:
         notes = ""
-        for item in page_notes:
-            page_num, page_schema = item
-            notes += f"Page {page_num}\n{page_schema.detailed_notes}\n\n"
+        for i, page_schema in enumerate(page_notes):
+            if not page_notes:
+                continue
+            notes += f"Page {i + 1}\n{page_schema.detailed_notes}\n\n"
         return notes.strip()
 
     def __call__(
         self,
         document: Document,
-        page_notes: List[Tuple[int, PageExtractionSchema]],
+        page_notes: List[PageExtractionSchema],
         **kwargs,
     ) -> Optional[DocumentExtractionSchema]:
         if not self.page_schema:

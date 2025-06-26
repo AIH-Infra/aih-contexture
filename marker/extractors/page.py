@@ -1,7 +1,10 @@
 import json
+from concurrent.futures import ThreadPoolExecutor
 
 from pydantic import BaseModel
-from typing import Annotated, Optional
+from typing import Annotated, Optional, List
+
+from tqdm import tqdm
 
 from marker.extractors import BaseExtractor
 from marker.logger import get_logger
@@ -20,6 +23,10 @@ class PageExtractor(BaseExtractor):
     """
     An extractor that pulls data from a single page.
     """
+
+    extraction_page_chunk_size: Annotated[
+        int, "The number of pages to chunk together for extraction."
+    ] = 3
 
     page_schema: Annotated[
         str,
@@ -93,14 +100,25 @@ Schema
 ```
 """
 
-    def __call__(
-        self, document: Document, page: PageGroup, page_markdown: str, **kwargs
-    ) -> Optional[PageExtractionSchema]:
-        if not self.page_schema:
-            raise ValueError(
-                "Page schema must be defined for structured extraction to work."
-            )
+    def chunk_page_markdown(
+        self, pages: List[PageGroup], page_markdown: List[str]
+    ) -> List[tuple]:
+        """
+        Chunk the page markdown into smaller pieces for processing.
+        """
+        if len(pages) == 0:
+            return []
 
+        chunks = []
+        for i in range(0, len(pages), self.extraction_page_chunk_size):
+            chunk = page_markdown[i : i + self.extraction_page_chunk_size]
+            chunks.append((pages[i], "\n\n".join(chunk)))
+
+        return chunks
+
+    def inference_single_chunk(
+        self, page: PageGroup, page_markdown: str
+    ) -> Optional[PageExtractionSchema]:
         prompt = self.page_extraction_prompt.replace(
             "{{page_md}}", page_markdown
         ).replace("{{schema}}", json.dumps(self.page_schema))
@@ -123,3 +141,37 @@ Schema
             description=response["description"],
             detailed_notes=response["detailed_notes"],
         )
+
+    def __call__(
+        self,
+        document: Document,
+        pages: List[PageGroup],
+        page_markdown: List[str],
+        **kwargs,
+    ) -> List[PageExtractionSchema]:
+        assert len(page_markdown) == len(pages), (
+            f"Mismatch in page markdown and pages length: {len(page_markdown)} vs {len(pages)}"
+        )
+        if not self.page_schema:
+            raise ValueError(
+                "Page schema must be defined for structured extraction to work."
+            )
+
+        chunks = self.chunk_page_markdown(pages, page_markdown)
+        results = []
+        pbar = tqdm(
+            desc="Running page extraction",
+            disable=self.disable_tqdm,
+            total=len(chunks),
+        )
+
+        with ThreadPoolExecutor(max_workers=self.max_concurrency) as executor:
+            for future in [
+                executor.submit(self.inference_single_chunk, chunk[0], chunk[1])
+                for chunk in chunks
+            ]:
+                results.append(future.result())  # Raise exceptions if any occurred
+                pbar.update(1)
+
+        pbar.close()
+        return results

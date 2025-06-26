@@ -10,9 +10,10 @@ class PictureGroup(Group):
     def assemble_html(
         self, document, child_blocks, parent_structure, block_config=None
     ):
+        if self.html:
+            return self.html
+
         child_html = super().assemble_html(
             document, child_blocks, parent_structure, block_config
         )
-        if self.html:
-            return child_html + self.html
         return child_html

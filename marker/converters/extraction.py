@@ -72,12 +72,8 @@ class ExtractionConverter(PdfConverter):
         document_extractor = self.resolve_dependencies(DocumentExtractor)
         renderer = self.resolve_dependencies(ExtractionRenderer)
 
-        pnums = provider.page_range
-        notes = []
-        for page, page_md, pnum in zip(document.pages, output_pages, pnums):
-            page_notes = page_extractor(document, page, page_md.strip())
-            notes.append((pnum, page_notes))
-
+        # Inference in parallel
+        notes = page_extractor(document, document.pages, output_pages)
         document_output = document_extractor(document, notes)
 
         merged = renderer(document_output)
