@@ -66,5 +66,5 @@ class BlankPageProcessor(BaseProcessor):
 
             if all(conditions):
                 logger.debug(f"Removing blank block {full_page_block.id}")
-                page.remove_structure_items([full_page_block.block_id])
+                page.remove_structure_items([full_page_block.id])
                 full_page_block.removed = True
