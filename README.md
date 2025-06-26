@@ -1,6 +1,6 @@
 # Marker
 
-Marker converts documents to markdown, JSON, and HTML quickly and accurately.
+Marker converts documents to markdown, JSON, chunks, and HTML quickly and accurately.
 
 - Converts PDF, image, PPTX, DOCX, XLSX, HTML, EPUB files in all languages
 - Formats tables, forms, equations, inline math, links, references, and code blocks
@@ -276,6 +276,8 @@ converter = ExtractionConverter(
 rendered = converter("FILEPATH")
 ```
 
+Rendered will have an `original_markdown` field.  If you pass this back in next time you run the converter, as the `existing_markdown` config key, you can skip re-parsing the document.
+
 # Output Formats
 
 ## Markdown
@@ -348,7 +350,7 @@ Note that child blocks of pages can have their own children as well (a tree stru
 
 ## Chunks
 
-Chunks format is similar to JSON, but flattens everything into a single list instead of a tree.  Only the top level blocks from each page show up. It also has the full HTML of each block inside, so you don't need to crawl the tree to reconstruct it.
+Chunks format is similar to JSON, but flattens everything into a single list instead of a tree.  Only the top level blocks from each page show up. It also has the full HTML of each block inside, so you don't need to crawl the tree to reconstruct it.  This enable flexible and easy chunking for RAG.
 
 ## Metadata
 

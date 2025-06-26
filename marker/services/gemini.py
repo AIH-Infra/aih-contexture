@@ -41,7 +41,7 @@ class BaseGeminiService(BaseService):
         self,
         prompt: str,
         image: PIL.Image.Image | List[PIL.Image.Image] | None,
-        block: Block,
+        block: Block | None,
         response_schema: type[BaseModel],
         max_retries: int | None = None,
         timeout: int | None = None,
@@ -72,7 +72,10 @@ class BaseGeminiService(BaseService):
                 )
                 output = responses.candidates[0].content.parts[0].text
                 total_tokens = responses.usage_metadata.total_token_count
-                block.update_metadata(llm_tokens_used=total_tokens, llm_request_count=1)
+                if block:
+                    block.update_metadata(
+                        llm_tokens_used=total_tokens, llm_request_count=1
+                    )
                 return json.loads(output)
             except APIError as e:
                 if e.code in [429, 443, 503]:

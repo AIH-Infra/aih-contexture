@@ -35,7 +35,7 @@ class OllamaService(BaseService):
         self,
         prompt: str,
         image: PIL.Image.Image | List[PIL.Image.Image] | None,
-        block: Block,
+        block: Block | None,
         response_schema: type[BaseModel],
         max_retries: int | None = None,
         timeout: int | None = None,
@@ -68,7 +68,9 @@ class OllamaService(BaseService):
             total_tokens = (
                 response_data["prompt_eval_count"] + response_data["eval_count"]
             )
-            block.update_metadata(llm_request_count=1, llm_tokens_used=total_tokens)
+
+            if block:
+                block.update_metadata(llm_request_count=1, llm_tokens_used=total_tokens)
 
             data = response_data["response"]
             return json.loads(data)

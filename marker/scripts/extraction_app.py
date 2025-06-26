@@ -26,9 +26,12 @@ import streamlit as st
 from marker.config.parser import ConfigParser
 
 
-def extract_data(fname: str, config: dict, schema: str) -> (str, Dict[str, Any], dict):
+def extract_data(
+    fname: str, config: dict, schema: str, markdown: str | None = None
+) -> (str, Dict[str, Any], dict):
     config["pdftext_workers"] = 1
     config["page_schema"] = schema
+    config["existing_markdown"] = markdown
     config_parser = ConfigParser(config)
     config_dict = config_parser.generate_config_dict()
 
@@ -62,11 +65,34 @@ in_file: UploadedFile = st.sidebar.file_uploader(
     type=["pdf", "png", "jpg", "jpeg", "gif", "pptx", "docx", "xlsx", "html", "epub"],
 )
 
-if in_file is None:
-    st.stop()
-
+# Initialize session state variables
 if "rendered_pydantic_schema" not in st.session_state:
     st.session_state.rendered_pydantic_schema = ""
+
+if "markdown" not in st.session_state:
+    st.session_state.markdown = ""
+
+if "current_file_id" not in st.session_state:
+    st.session_state.current_file_id = None
+
+# Detect file changes and clear markdown when new file is uploaded
+if in_file is not None:
+    # Create a unique identifier for the current file
+    current_file_id = f"{in_file.name}_{in_file.size}_{hash(in_file.getvalue())}"
+
+    # Check if this is a new file
+    if st.session_state.current_file_id != current_file_id:
+        st.session_state.current_file_id = current_file_id
+        st.session_state.markdown = ""  # Clear markdown for new file
+else:
+    # No file uploaded, clear the current file ID
+    if st.session_state.current_file_id is not None:
+        st.session_state.current_file_id = None
+        st.session_state.markdown = ""  # Clear markdown when no file
+        st.session_state.rendered_pydantic_schema = ""
+
+if in_file is None:
+    st.stop()
 
 filetype = in_file.type
 
@@ -196,11 +222,14 @@ if run_marker:
         )
 
         try:
-            rendered = extract_data(temp_pdf, cli_options, schema)
+            rendered = extract_data(
+                temp_pdf, cli_options, schema, st.session_state.markdown
+            )
 
             with col2:
                 st.write("## Output JSON")
-                st.json(rendered.model_dump())
+                st.json(rendered.model_dump(exclude=["original_markdown"]))
+                st.session_state.markdown = rendered.original_markdown
 
         except Exception as e:
             st.error(f"❌ Extraction failed: {e}")

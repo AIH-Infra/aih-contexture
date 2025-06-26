@@ -37,7 +37,7 @@ class BaseService:
         self,
         prompt: str,
         image: PIL.Image.Image | List[PIL.Image.Image] | None,
-        block: Block,
+        block: Block | None,
         response_schema: type[BaseModel],
         max_retries: int | None = None,
         timeout: int | None = None,

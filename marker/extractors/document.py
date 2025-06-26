@@ -6,7 +6,6 @@ from typing import Annotated, Optional, List
 from marker.extractors import BaseExtractor
 from marker.extractors.page import PageExtractionSchema
 from marker.logger import get_logger
-from marker.schema.document import Document
 
 logger = get_logger()
 
@@ -114,7 +113,6 @@ Schema
 
     def __call__(
         self,
-        document: Document,
         page_notes: List[PageExtractionSchema],
         **kwargs,
     ) -> Optional[DocumentExtractionSchema]:
@@ -123,11 +121,10 @@ Schema
                 "Page schema must be defined for structured extraction to work."
             )
 
-        page = document.pages[0]
         prompt = self.page_extraction_prompt.replace(
             "{{document_notes}}", self.assemble_document_notes(page_notes)
         ).replace("{{schema}}", json.dumps(self.page_schema))
-        response = self.llm_service(prompt, None, page, DocumentExtractionSchema)
+        response = self.llm_service(prompt, None, None, DocumentExtractionSchema)
 
         logger.debug(f"Document extraction response: {response}")
 
@@ -140,7 +137,6 @@ Schema
                 ]
             ]
         ):
-            page.update_metadata(llm_error_count=1)
             return None
 
         json_data = response["document_json"].strip().lstrip("```json").rstrip("```")
