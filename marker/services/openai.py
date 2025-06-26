@@ -2,7 +2,7 @@ import base64
 import json
 import time
 from io import BytesIO
-from typing import Annotated, List, Union
+from typing import Annotated, List
 
 import openai
 import PIL
@@ -28,8 +28,9 @@ class OpenAIService(BaseService):
         str, "The API key to use for the OpenAI-like service."
     ] = None
     openai_image_format: Annotated[
-        str, "The image format to use for the OpenAI-like service. Use 'png' for better compatability"
-    ] = 'webp'
+        str,
+        "The image format to use for the OpenAI-like service. Use 'png' for better compatability",
+    ] = "webp"
 
     def image_to_base64(self, image: PIL.Image.Image) -> str:
         """
@@ -46,9 +47,7 @@ class OpenAIService(BaseService):
         image.save(image_bytes, format=self.openai_image_format)
         return base64.b64encode(image_bytes.getvalue()).decode("utf-8")
 
-    def prepare_images(
-        self, images: Union[Image.Image, List[Image.Image]]
-    ) -> List[dict]:
+    def process_images(self, images: List[Image.Image]) -> List[dict]:
         """
         Generate the base-64 encoded message to send to an
         openAI-compatabile multimodal model.
@@ -68,8 +67,7 @@ class OpenAIService(BaseService):
                 "type": "image_url",
                 "image_url": {
                     "url": "data:image/{};base64,{}".format(
-                        self.openai_image_format,
-                        self.image_to_base64(img)
+                        self.openai_image_format, self.image_to_base64(img)
                     ),
                 },
             }
@@ -79,8 +77,8 @@ class OpenAIService(BaseService):
     def __call__(
         self,
         prompt: str,
-        image: PIL.Image.Image | List[PIL.Image.Image],
-        block: Block,
+        image: PIL.Image.Image | List[PIL.Image.Image] | None,
+        block: Block | None,
         response_schema: type[BaseModel],
         max_retries: int | None = None,
         timeout: int | None = None,
@@ -91,11 +89,8 @@ class OpenAIService(BaseService):
         if timeout is None:
             timeout = self.timeout
 
-        if not isinstance(image, list):
-            image = [image]
-
         client = self.get_client()
-        image_data = self.prepare_images(image)
+        image_data = self.format_image_for_llm(image)
 
         messages = [
             {
@@ -113,7 +108,7 @@ class OpenAIService(BaseService):
                 response = client.beta.chat.completions.parse(
                     extra_headers={
                         "X-Title": "Marker",
-                        "HTTP-Referer": "https://github.com/VikParuchuri/marker",
+                        "HTTP-Referer": "https://github.com/datalab-to/marker",
                     },
                     model=self.openai_model,
                     messages=messages,
@@ -122,7 +117,10 @@ class OpenAIService(BaseService):
                 )
                 response_text = response.choices[0].message.content
                 total_tokens = response.usage.total_tokens
-                block.update_metadata(llm_tokens_used=total_tokens, llm_request_count=1)
+                if block:
+                    block.update_metadata(
+                        llm_tokens_used=total_tokens, llm_request_count=1
+                    )
                 return json.loads(response_text)
             except (APITimeoutError, RateLimitError) as e:
                 # Rate limit exceeded
