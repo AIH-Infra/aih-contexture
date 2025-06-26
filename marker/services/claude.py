@@ -130,11 +130,18 @@ Respond only with the JSON schema, nothing else.  Do not include ```json, ```,  
                 return self.validate_response(response_text, response_schema)
             except (RateLimitError, APITimeoutError) as e:
                 # Rate limit exceeded
-                wait_time = tries * self.retry_wait_time
-                logger.warning(
-                    f"Rate limit error: {e}. Retrying in {wait_time} seconds... (Attempt {tries}/{total_tries})"
-                )
-                time.sleep(wait_time)
+                if tries == total_tries:
+                    # Last attempt failed. Give up
+                    logger.error(
+                        f"Rate limit error: {e}. Max retries reached. Giving up. (Attempt {tries}/{total_tries})",
+                    )
+                    break
+                else:
+                    wait_time = tries * self.retry_wait_time
+                    logger.warning(
+                        f"Rate limit error: {e}. Retrying in {wait_time} seconds... (Attempt {tries}/{total_tries})",
+                    )
+                    time.sleep(wait_time)
             except Exception as e:
                 logger.error(f"Error during Claude API call: {e}")
                 break

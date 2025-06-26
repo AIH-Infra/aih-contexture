@@ -75,11 +75,18 @@ class BaseGeminiService(BaseService):
             except APIError as e:
                 if e.code in [429, 443, 503]:
                     # Rate limit exceeded
-                    wait_time = tries * self.retry_wait_time
-                    logger.warning(
-                        f"APIError: {e}. Retrying in {wait_time} seconds... (Attempt {tries}/{total_tries})"
-                    )
-                    time.sleep(wait_time)
+                    if tries == total_tries:
+                        # Last attempt failed. Give up
+                        logger.error(
+                            f"APIError: {e}. Max retries reached. Giving up. (Attempt {tries}/{total_tries})",
+                        )
+                        break
+                    else:
+                        wait_time = tries * self.retry_wait_time
+                        logger.warning(
+                            f"APIError: {e}. Retrying in {wait_time} seconds... (Attempt {tries}/{total_tries})",
+                        )
+                        time.sleep(wait_time)
                 else:
                     logger.error(f"APIError: {e}")
                     break
