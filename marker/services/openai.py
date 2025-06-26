@@ -82,8 +82,8 @@ class OpenAIService(BaseService):
             }
         ]
 
-        tries = 0
-        while tries < max_retries:
+        total_tries = max_retries + 1
+        for tries in range(1, total_tries + 1):
             try:
                 response = client.beta.chat.completions.parse(
                     extra_headers={
@@ -101,10 +101,9 @@ class OpenAIService(BaseService):
                 return json.loads(response_text)
             except (APITimeoutError, RateLimitError) as e:
                 # Rate limit exceeded
-                tries += 1
                 wait_time = tries * self.retry_wait_time
                 logger.warning(
-                    f"Rate limit error: {e}. Retrying in {wait_time} seconds... (Attempt {tries}/{max_retries})"
+                    f"Rate limit error: {e}. Retrying in {wait_time} seconds... (Attempt {tries}/{total_tries})"
                 )
                 time.sleep(wait_time)
             except Exception as e:

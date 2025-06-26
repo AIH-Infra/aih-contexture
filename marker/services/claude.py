@@ -115,8 +115,8 @@ Respond only with the JSON schema, nothing else.  Do not include ```json, ```,  
             }
         ]
 
-        tries = 0
-        while tries < max_retries:
+        total_tries = max_retries + 1
+        for tries in range(1, total_tries + 1):
             try:
                 response = client.messages.create(
                     system=system_prompt,
@@ -130,10 +130,9 @@ Respond only with the JSON schema, nothing else.  Do not include ```json, ```,  
                 return self.validate_response(response_text, response_schema)
             except (RateLimitError, APITimeoutError) as e:
                 # Rate limit exceeded
-                tries += 1
                 wait_time = tries * self.retry_wait_time
                 logger.warning(
-                    f"Rate limit error: {e}. Retrying in {wait_time} seconds... (Attempt {tries}/{max_retries})"
+                    f"Rate limit error: {e}. Retrying in {wait_time} seconds... (Attempt {tries}/{total_tries})"
                 )
                 time.sleep(wait_time)
             except Exception as e:
