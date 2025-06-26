@@ -23,17 +23,7 @@ def escape_dollars(text):
 def cleanup_text(full_text):
     full_text = re.sub(r"\n{3,}", "\n\n", full_text)
     full_text = re.sub(r"(\n\s){3,}", "\n\n", full_text)
-    
-    # Preserve leading/trailing newlines around pagination markers
-    starts_with_pagination = re.match(r'^\n+\{\d+\}', full_text)
-    ends_with_pagination = re.search(r'\{\d+\}[^\n]*\n*$', full_text)
-    
-    if starts_with_pagination and ends_with_pagination:
-        return full_text  # Don't strip either end (blank last page)
-    elif starts_with_pagination:
-        return full_text.rstrip()  # Only strip trailing (normal pagination)
-    else:
-        return full_text.strip()  # Strip both (no pagination)
+    return full_text.strip()
 
 
 def get_formatted_table_text(element):
@@ -303,6 +293,14 @@ class MarkdownRenderer(HTMLRenderer):
         full_html, images = self.extract_html(document, document_output)
         markdown = self.md_cls.convert(full_html)
         markdown = cleanup_text(markdown)
+
+        # Ensure we set the correct blanks for pagination markers
+        if self.paginate_output:
+            if not markdown.startswith("\n\n"):
+                markdown = "\n\n" + markdown
+            if markdown.endswith(self.page_separator):
+                markdown += "\n\n"
+
         return MarkdownOutput(
             markdown=markdown,
             images=images,
