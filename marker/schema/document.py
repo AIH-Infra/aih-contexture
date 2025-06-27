@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List, Sequence
+from typing import List, Sequence, Optional
 
 from pydantic import BaseModel
 
@@ -27,7 +27,7 @@ class Document(BaseModel):
     pages: List[PageGroup]
     block_type: BlockTypes = BlockTypes.Document
     table_of_contents: List[TocItem] | None = None
-    debug_data_path: str | None = None # Path that debug data was saved to
+    debug_data_path: str | None = None  # Path that debug data was saved to
 
     def get_block(self, block_id: BlockId):
         page = self.get_page(block_id.page_id)
@@ -42,7 +42,9 @@ class Document(BaseModel):
                 return page
         return None
 
-    def get_next_block(self, block: Block, ignored_block_types: List[BlockTypes] = None):
+    def get_next_block(
+        self, block: Block, ignored_block_types: List[BlockTypes] = None
+    ):
         if ignored_block_types is None:
             ignored_block_types = []
         next_block = None
@@ -54,7 +56,7 @@ class Document(BaseModel):
             return next_block
 
         # If no block found, search subsequent pages
-        for page in self.pages[self.pages.index(page) + 1:]:
+        for page in self.pages[self.pages.index(page) + 1 :]:
             next_block = page.get_next_block(None, ignored_block_types)
             if next_block:
                 return next_block
@@ -75,30 +77,32 @@ class Document(BaseModel):
         if not prev_page:
             return None
         return prev_page.get_block(prev_page.structure[-1])
-    
+
     def get_prev_page(self, page: PageGroup):
         page_idx = self.pages.index(page)
         if page_idx > 0:
             return self.pages[page_idx - 1]
         return None
 
-    def assemble_html(self, child_blocks: List[Block]):
+    def assemble_html(
+        self, child_blocks: List[Block], block_config: Optional[dict] = None
+    ):
         template = ""
         for c in child_blocks:
             template += f"<content-ref src='{c.id}'></content-ref>"
         return template
 
-    def render(self):
+    def render(self, block_config: Optional[dict] = None):
         child_content = []
         section_hierarchy = None
         for page in self.pages:
-            rendered = page.render(self, None, section_hierarchy)
+            rendered = page.render(self, None, section_hierarchy, block_config)
             section_hierarchy = rendered.section_hierarchy.copy()
             child_content.append(rendered)
 
         return DocumentOutput(
             children=child_content,
-            html=self.assemble_html(child_content)
+            html=self.assemble_html(child_content, block_config),
         )
 
     def contained_blocks(self, block_types: Sequence[BlockTypes] = None) -> List[Block]:
