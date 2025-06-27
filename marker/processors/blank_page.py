@@ -1,3 +1,5 @@
+from typing import Annotated
+
 from PIL import Image
 import numpy as np
 import cv2
@@ -8,22 +10,25 @@ from marker.schema.blocks import Block
 from marker.schema.document import Document
 
 from marker.logger import get_logger
+
 logger = get_logger()
+
 
 class BlankPageProcessor(BaseProcessor):
     """
     A processor to filter out blank pages detected as a single layout block
     """
-    full_page_block_intersection_threshold: float = 0.8
-    filter_blank_pages: bool = False
-    
+
+    full_page_block_intersection_threshold: Annotated[
+        float, "Threshold to detect blank pages at"
+    ] = 0.8
+    filter_blank_pages: Annotated[bool, "Remove blank pages detected as images."] = (
+        False
+    )
+
     def is_blank(self, image: Image.Image):
         image = np.asarray(image)
-        if (
-            image.size == 0
-            or image.shape[0] == 0
-            or image.shape[1] == 0
-        ):
+        if image.size == 0 or image.shape[0] == 0 or image.shape[1] == 0:
             # Handle empty image case
             return True
 
@@ -61,7 +66,8 @@ class BlankPageProcessor(BaseProcessor):
             conditions = [
                 full_page_block.block_type in [BlockTypes.Picture, BlockTypes.Figure],
                 self.is_blank(full_page_block.get_image(document)),
-                page.polygon.intersection_area(full_page_block.polygon) > self.full_page_block_intersection_threshold
+                page.polygon.intersection_area(full_page_block.polygon)
+                > self.full_page_block_intersection_threshold,
             ]
 
             if all(conditions):

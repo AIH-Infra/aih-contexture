@@ -1,6 +1,4 @@
-import base64
 import json
-from io import BytesIO
 from typing import Annotated, List
 
 import PIL
@@ -22,13 +20,8 @@ class OllamaService(BaseService):
         "llama3.2-vision"
     )
 
-    def image_to_base64(self, image: PIL.Image.Image):
-        image_bytes = BytesIO()
-        image.save(image_bytes, format="PNG")
-        return base64.b64encode(image_bytes.getvalue()).decode("utf-8")
-
     def process_images(self, images):
-        image_bytes = [self.image_to_base64(img) for img in images]
+        image_bytes = [self.img_to_base64(img) for img in images]
         return image_bytes
 
     def __call__(

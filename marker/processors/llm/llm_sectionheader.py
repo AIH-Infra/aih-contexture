@@ -38,6 +38,7 @@ Guidelines:
 - Edit the blocks to ensure that the section headers have the correct levels.
 - Only edit the h1, h2, h3, h4, h5, and h6 tags.  Do not change any other tags or content in the headers.
 - Only output the headers that changed (if nothing changed, output nothing).
+- Every header you output needs to have one and only one level tag (h1, h2, h3, h4, h5, or h6).
 
 **Instructions:**
 1. Carefully examine the provided section headers and JSON.
@@ -134,8 +135,12 @@ Section Headers
         if correction_type == "no_corrections":
             return
 
-        response_blocks = self.load_blocks(response)
-        self.handle_rewrites(response_blocks, document)
+        self.load_blocks(response)
+        self.handle_rewrites(response["blocks"], document)
+
+    def load_blocks(self, response):
+        if isinstance(response["blocks"], str):
+            response["blocks"] = json.loads(response["blocks"])
 
     def rewrite_blocks(self, document: Document):
         # Don't show progress if there are no blocks to process
@@ -159,7 +164,12 @@ Section Headers
         pbar.close()
 
 
+class BlockSchema(BaseModel):
+    id: str
+    html: str
+
+
 class SectionHeaderSchema(BaseModel):
     analysis: str
     correction_type: str
-    blocks: list[str]
+    blocks: List[BlockSchema]

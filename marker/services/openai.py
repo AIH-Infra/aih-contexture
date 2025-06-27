@@ -1,7 +1,5 @@
-import base64
 import json
 import time
-from io import BytesIO
 from typing import Annotated, List
 
 import openai
@@ -32,21 +30,6 @@ class OpenAIService(BaseService):
         "The image format to use for the OpenAI-like service. Use 'png' for better compatability",
     ] = "webp"
 
-    def image_to_base64(self, image: PIL.Image.Image) -> str:
-        """
-        Convert PIL image to base64 string
-
-        Args:
-            image: Input PIL Image
-            format: Format to use for the image; use "png" for better compatability.
-
-        Returns:
-            Base-64 encoded image (in PNG format) to pass to LLM.
-        """
-        image_bytes = BytesIO()
-        image.save(image_bytes, format=self.openai_image_format)
-        return base64.b64encode(image_bytes.getvalue()).decode("utf-8")
-
     def process_images(self, images: List[Image.Image]) -> List[dict]:
         """
         Generate the base-64 encoded message to send to an
@@ -67,7 +50,7 @@ class OpenAIService(BaseService):
                 "type": "image_url",
                 "image_url": {
                     "url": "data:image/{};base64,{}".format(
-                        self.openai_image_format, self.image_to_base64(img)
+                        self.openai_image_format, self.img_to_base64(img)
                     ),
                 },
             }

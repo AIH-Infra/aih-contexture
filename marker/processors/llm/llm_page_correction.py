@@ -70,11 +70,13 @@ Guidelines:
 3. Identify any issues you'll need to fix, and write a short analysis.
 4. If everything is fine, output "no_corrections"  Otherwise, output the type of correction needed: ["reorder", "rewrite", "reorder_first"].  Rewrite includes rewriting html and changing the block type.  If you need to do both, then perform only the reordering, and output "reorder_first", so we can do the rewriting later.
 5. If corrections are needed, output any blocks that need updates:
-    a. If reading order needs to be changed, output the IDs of the blocks in the correct order, like this:
+    a. If reading order needs to be changed, output the IDs of the blocks in the correct order, and keep block_type and html blank, like this:
     ```json
     [
         {
             "id": "/page/0/Text/1",
+            "block_type": "",
+            "html": ""
         },
         ...
     ]
@@ -165,21 +167,22 @@ User Prompt
         if correction_type == "no_corrections":
             return
         elif correction_type in ["reorder", "reorder_first"]:
-            blocks = self.load_blocks(response)
-            self.handle_reorder(blocks, page1)
+            self.load_blocks(response)
+            self.handle_reorder(response["blocks"], page1)
 
             # If we needed to reorder first, we will handle the rewriting next
             if correction_type == "reorder_first":
                 self.process_rewriting(document, page1)
         elif correction_type == "rewrite":
-            blocks = self.load_blocks(response)
-            self.handle_rewrites(blocks, document)
+            self.load_blocks(response)
+            self.handle_rewrites(response["blocks"], document)
         else:
             logger.warning(f"Unknown correction type: {correction_type}")
             return
 
-    def load_blocks(self, response: dict):
-        return [json.loads(block) for block in response["blocks"]]
+    def load_blocks(self, response):
+        if isinstance(response["blocks"], str):
+            response["blocks"] = json.loads(response["blocks"])
 
     def handle_reorder(self, blocks: list, page1: PageGroup):
         unique_page_ids = set()
@@ -290,7 +293,13 @@ User Prompt
         pbar.close()
 
 
+class BlockSchema(BaseModel):
+    id: str
+    html: str
+    block_type: str
+
+
 class PageSchema(BaseModel):
     analysis: str
     correction_type: str
-    blocks: list[str]
+    blocks: List[BlockSchema]
