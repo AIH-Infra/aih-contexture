@@ -1,7 +1,5 @@
-import base64
 import json
 import time
-from io import BytesIO
 from typing import List, Annotated, T
 
 import PIL
@@ -25,11 +23,6 @@ class ClaudeService(BaseService):
     max_claude_tokens: Annotated[
         int, "The maximum number of tokens to use for a single Claude request."
     ] = 8192
-
-    def img_to_base64(self, img: PIL.Image.Image):
-        image_bytes = BytesIO()
-        img.save(image_bytes, format="WEBP")
-        return base64.b64encode(image_bytes.getvalue()).decode("utf-8")
 
     def process_images(self, images: List[Image.Image]) -> List[dict]:
         return [

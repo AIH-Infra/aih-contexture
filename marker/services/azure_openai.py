@@ -1,8 +1,6 @@
-import base64
 import json
 import time
-from io import BytesIO
-from typing import Annotated, List, Union
+from typing import Annotated, List
 
 import PIL
 from marker.logger import get_logger
@@ -18,30 +16,17 @@ logger = get_logger()
 
 class AzureOpenAIService(BaseService):
     azure_endpoint: Annotated[
-        str,
-        "The Azure OpenAI endpoint URL. No trailing slash."
+        str, "The Azure OpenAI endpoint URL. No trailing slash."
     ] = None
     azure_api_key: Annotated[
-        str,
-        "The API key to use for the Azure OpenAI service."
+        str, "The API key to use for the Azure OpenAI service."
     ] = None
-    azure_api_version: Annotated[
-        str,
-        "The Azure OpenAI API version to use."
-    ] = None
+    azure_api_version: Annotated[str, "The Azure OpenAI API version to use."] = None
     deployment_name: Annotated[
-        str,
-        "The deployment name for the Azure OpenAI model."
+        str, "The deployment name for the Azure OpenAI model."
     ] = None
 
-    def image_to_base64(self, image: PIL.Image.Image):
-        image_bytes = BytesIO()
-        image.save(image_bytes, format="WEBP")
-        return base64.b64encode(image_bytes.getvalue()).decode("utf-8")
-
-    def prepare_images(
-        self, images: Union[Image.Image, List[Image.Image]]
-    ) -> List[dict]:
+    def process_images(self, images: List[PIL.Image.Image]) -> list:
         if isinstance(images, Image.Image):
             images = [images]
 
@@ -49,10 +34,8 @@ class AzureOpenAIService(BaseService):
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": "data:image/webp;base64,{}".format(
-                        self.image_to_base64(img)
-                    ),
-                }
+                    "url": "data:image/webp;base64,{}".format(self.img_to_base64(img)),
+                },
             }
             for img in images
         ]
@@ -60,8 +43,8 @@ class AzureOpenAIService(BaseService):
     def __call__(
         self,
         prompt: str,
-        image: PIL.Image.Image | List[PIL.Image.Image],
-        block: Block,
+        image: PIL.Image.Image | List[PIL.Image.Image] | None,
+        block: Block | None,
         response_schema: type[BaseModel],
         max_retries: int | None = None,
         timeout: int | None = None,
@@ -72,11 +55,8 @@ class AzureOpenAIService(BaseService):
         if timeout is None:
             timeout = self.timeout
 
-        if not isinstance(image, list):
-            image = [image]
-
         client = self.get_client()
-        image_data = self.prepare_images(image)
+        image_data = self.format_image_for_llm(image)
 
         messages = [
             {
@@ -94,7 +74,7 @@ class AzureOpenAIService(BaseService):
                 response = client.beta.chat.completions.parse(
                     extra_headers={
                         "X-Title": "Marker",
-                        "HTTP-Referer": "https://github.com/VikParuchuri/marker",
+                        "HTTP-Referer": "https://github.com/datalab-to/marker",
                     },
                     model=self.deployment_name,
                     messages=messages,
@@ -124,4 +104,4 @@ class AzureOpenAIService(BaseService):
             api_version=self.azure_api_version,
             azure_endpoint=self.azure_endpoint,
             api_key=self.azure_api_key,
-        ) 
+        )
