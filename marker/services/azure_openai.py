@@ -83,7 +83,10 @@ class AzureOpenAIService(BaseService):
                 )
                 response_text = response.choices[0].message.content
                 total_tokens = response.usage.total_tokens
-                block.update_metadata(llm_tokens_used=total_tokens, llm_request_count=1)
+                if block:
+                    block.update_metadata(
+                        llm_tokens_used=total_tokens, llm_request_count=1
+                    )
                 return json.loads(response_text)
             except (APITimeoutError, RateLimitError) as e:
                 # Rate limit exceeded
