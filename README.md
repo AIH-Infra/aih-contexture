@@ -108,6 +108,7 @@ Options:
 - `--use_llm`: Uses an LLM to improve accuracy.  You will need to configure the LLM backend - see [below](#llm-services).
 - `--format_lines`: Reformat all lines using a local OCR model (inline math, underlines, bold, etc.).  This will give very good quality math output.
 - `--force_ocr`: Force OCR processing on the entire document, even for pages that might contain extractable text.
+- `--block_correction_prompt`: if LLM mode is active, an optional prompt that will be used to correct the output of marker.  This is useful for custom formatting or logic that you want to apply to the output.
 - `--strip_existing_ocr`: Remove all existing OCR text in the document and re-OCR with surya.
 - `--redo_inline_math`: If you want the absolute highest quality inline math conversion, use this along with `--use_llm`.
 - `--disable_image_extraction`: Don't extract images from the PDF.  If you also specify `--use_llm`, then images will be replaced with a description.
@@ -124,11 +125,11 @@ The list of supported languages for surya OCR is [here](https://github.com/VikPa
 ## Convert multiple files
 
 ```shell
-marker /path/to/input/folder --workers 4
+marker /path/to/input/folder
 ```
 
 - `marker` supports all the same options from `marker_single` above.
-- `--workers` is the number of conversion workers to run simultaneously.  This is set to 5 by default, but you can increase it to increase throughput, at the cost of more CPU/GPU usage.  Marker will use 5GB of VRAM per worker at the peak, and 3.5GB average.
+- `--workers` is the number of conversion workers to run simultaneously.  This is automatically set by default, but you can increase it to increase throughput, at the cost of more CPU/GPU usage.  Marker will use 5GB of VRAM per worker at the peak, and 3.5GB average.
 
 ## Convert multiple files on multiple GPUs
 

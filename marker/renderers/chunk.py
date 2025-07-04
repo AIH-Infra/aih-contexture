@@ -20,6 +20,7 @@ class FlatBlockOutput(BaseModel):
 
 class ChunkOutput(BaseModel):
     blocks: List[FlatBlockOutput]
+    page_info: Dict[int, dict]
     metadata: dict
 
 
@@ -55,7 +56,13 @@ class ChunkRenderer(JSONRenderer):
         for item in json_output:
             chunk_output.extend(json_to_chunks(item))
 
+        page_info = {
+            page.page_id: {"bbox": page.polygon.bbox, "polygon": page.polygon.polygon}
+            for page in document.pages
+        }
+
         return ChunkOutput(
             blocks=chunk_output,
+            page_info=page_info,
             metadata=self.generate_document_metadata(document, document_output),
         )
