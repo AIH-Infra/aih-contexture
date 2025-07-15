@@ -83,7 +83,7 @@ class OcrBuilder(BaseBuilder):
         elif settings.TORCH_DEVICE_MODEL == "cuda":
             return 64
         elif settings.TORCH_DEVICE_MODEL == "mps":
-            return 32
+            return 16
         return 32
 
     def get_ocr_images_polygons_ids(
