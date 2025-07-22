@@ -61,6 +61,12 @@ class ConfigParser:
             default=False,
             help="Disable image extraction.",
         )(fn)
+        fn = click.option(
+            "--no_merge_tables_across_pages",
+            is_flag=True,
+            default=False,
+            help="Disable merging tables across pages and keep page delimiters.",
+        )(fn)
 
         # these are options that need a list transformation, i.e splitting/parsing a string
         fn = click.option(
@@ -107,6 +113,8 @@ class ConfigParser:
                     config["pdftext_workers"] = 1
                 case "disable_image_extraction":
                     config["extract_images"] = False
+                case "no_merge_tables_across_pages":
+                    config["no_merge_tables_across_pages"] = True
                 case _:
                     if k in crawler.attr_set:
                         config[k] = v

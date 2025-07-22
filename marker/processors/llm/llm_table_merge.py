@@ -148,6 +148,10 @@ Table 2
         return max_cols
 
     def rewrite_blocks(self, document: Document):
+        # Skip table merging if disabled via config
+        if document.config.get("no_merge_tables_across_pages", False):
+            return
+            
         pbar = tqdm(desc=f"{self.__class__.__name__} running", disable=self.disable_tqdm)
         table_runs = []
         table_run = []
