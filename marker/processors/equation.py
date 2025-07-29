@@ -114,6 +114,7 @@ class EquationProcessor(BaseProcessor):
             fixed_math_html,
         )
         fixed_math_html = re.sub(r"\\n</math>$", "</math>", fixed_math_html)
+        fixed_math_html = re.sub(r"<br>", "", fixed_math_html)
         fixed_math_html = fix_text(
             fixed_math_html, config=TextFixerConfig(unescape_html=True)
         )
