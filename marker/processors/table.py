@@ -112,26 +112,24 @@ class TableProcessor(BaseProcessor):
                     }
                 )
 
-        extract_blocks = [t for t in table_data if not t["ocr_block"]]
-        self.assign_pdftext_lines(
-            extract_blocks, filepath
-        )  # Handle tables where good text exists in the PDF
-
-        ocr_blocks = [t for t in table_data if t["ocr_block"]]
-        self.assign_ocr_lines(ocr_blocks)  # Handle tables where OCR is needed
-        for table_item in table_data:
-            if "table_text_lines" not in table_item:
-                logger.warning(
-                    f"No text lines found for table {table_item['block_id']}"
-                )
-                table_item["table_text_lines"] = []
-
+        # Detect tables and cells
         self.table_rec_model.disable_tqdm = self.disable_tqdm
         tables: List[TableResult] = self.table_rec_model(
             [t["table_image"] for t in table_data],
             batch_size=self.get_table_rec_batch_size(),
         )
+
+        # Assign cell text if we don't need OCR
+        # We do this at a line level
+        extract_blocks = [t for t in table_data if not t["ocr_block"]]
+        self.assign_pdftext_lines(
+            extract_blocks, filepath
+        )  # Handle tables where good text exists in the PDF
         self.assign_text_to_cells(tables, table_data)
+
+        # Assign OCR lines if needed - we do this at a cell level
+        self.assign_ocr_lines(tables, table_data)
+
         self.split_combined_rows(tables)  # Split up rows that were combined
         self.combine_dollar_column(tables)  # Combine columns that are just dollar signs
 
@@ -404,6 +402,9 @@ class TableProcessor(BaseProcessor):
 
     def assign_text_to_cells(self, tables: List[TableResult], table_data: list):
         for table_result, table_page_data in zip(tables, table_data):
+            if table_page_data["ocr_block"]:
+                continue
+
             table_text_lines = table_page_data["table_text_lines"]
             table_cells: List[SuryaTableCell] = table_result.cells
             text_line_bboxes = [t["bbox"] for t in table_text_lines]
@@ -470,26 +471,53 @@ class TableProcessor(BaseProcessor):
                 "Number of tables and table inputs must match"
             )
 
-    def assign_ocr_lines(self, ocr_blocks: list):
-        det_images = [t["table_image"] for t in ocr_blocks]
+    def needs_ocr(self, tables: List[TableResult]):
+        ocr_tables = []
+        ocr_polys = []
+        ocr_idxs = []
+        for j, result in enumerate(tables):
+            table_cells: List[SuryaTableCell] = result.cells
+            if any([tc.text_lines is None for tc in table_cells]):
+                ocr_tables.append(result)
+                polys = [tc.polygon for tc in table_cells if tc.text_lines is None]
+                for poly in polys:
+                    for corner in poly:
+                        for i in range(2):
+                            corner[i] = int(corner[i])
+                ocr_polys.append(polys)
+                ocr_idxs.append(j)
+        return ocr_tables, ocr_polys, ocr_idxs
+
+    def assign_ocr_lines(self, tables: List[TableResult], table_blocks: list):
+        ocr_tables, ocr_polys, ocr_idxs = self.needs_ocr(tables)
+        det_images = [
+            t["table_image"] for i, t in enumerate(table_blocks) if i in ocr_idxs
+        ]
+        assert len(det_images) == len(ocr_polys), (
+            f"Number of detection images and OCR polygons must match: {len(det_images)} != {len(ocr_polys)}"
+        )
         self.recognition_model.disable_tqdm = self.disable_tqdm
-        self.detection_model.disable_tqdm = self.disable_tqdm
         ocr_results: List[OCRResult] = self.recognition_model(
             images=det_images,
             task_names=["ocr_with_boxes"] * len(det_images),
-            det_predictor=self.detection_model,
             recognition_batch_size=self.get_recognition_batch_size(),
-            detection_batch_size=self.get_detection_batch_size(),
             drop_repeated_text=self.drop_repeated_text,
+            polygons=ocr_polys,
         )
 
-        for block, ocr_res in zip(ocr_blocks, ocr_results):
-            table_cells = []
-            for line in ocr_res.text_lines:
+        for result, ocr_res in zip(ocr_tables, ocr_results):
+            table_cells: List[SuryaTableCell] = result.cells
+            cells_need_text = [tc for tc in table_cells if tc.text_lines is None]
+
+            assert len(cells_need_text) == len(ocr_res.text_lines), (
+                "Number of cells needing text and OCR results must match"
+            )
+
+            for cell_text, cell_needs_text in zip(ocr_res.text_lines, cells_need_text):
                 # Don't need to correct back to image size
                 # Table rec boxes are relative to the table
-                table_cells.append({"bbox": line.bbox, "text": line.text})
-            block["table_text_lines"] = table_cells
+                cell_text = [{"text": cell_text.text}]
+                cell_needs_text.text_lines = cell_text
 
     def get_detection_batch_size(self):
         if self.detection_batch_size is not None:
