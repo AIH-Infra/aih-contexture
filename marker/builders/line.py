@@ -36,10 +36,6 @@ class LineBuilder(BaseBuilder):
         "The batch size to use for the ocr error detection model.",
         "Default is None, which will use the default batch size for the model.",
     ] = None
-    enable_table_ocr: Annotated[
-        bool,
-        "Whether to skip OCR on tables.  The TableProcessor will re-OCR them.  Only enable if the TableProcessor is not running.",
-    ] = False
     layout_coverage_min_lines: Annotated[
         int,
         "The minimum number of PdfProvider lines that must be covered by the layout model",
@@ -54,17 +50,10 @@ class LineBuilder(BaseBuilder):
         float,
         "If less pages than this threshold are good, OCR will happen in the document.  Otherwise it will not.",
     ] = 0.85
-    provider_line_detected_line_min_overlap_pct: Annotated[
-        float,
-        "The percentage of a provider line that has to be covered by a detected line",
-    ] = 0.1
     provider_line_provider_line_min_overlap_pct: Annotated[
         float,
         "The percentage of a provider line that has to be covered by a detected line",
-    ] = 0.1
-    line_vertical_merge_threshold: Annotated[
-        int, "The maximum pixel distance between y1s for two lines to be merged"
-    ] = 8
+    ] = 0.15
     excluded_for_coverage: Annotated[
         Tuple[BlockTypes],
         "A list of block types to exclude from the layout coverage check.",
@@ -85,6 +74,10 @@ class LineBuilder(BaseBuilder):
     disable_tqdm: Annotated[
         bool,
         "Disable tqdm progress bars.",
+    ] = False
+    disable_ocr: Annotated[
+        bool,
+        "Disable OCR for the document. This will only use the lines from the provider.",
     ] = False
     keep_chars: Annotated[bool, "Keep individual characters."] = False
 
@@ -169,6 +162,9 @@ class LineBuilder(BaseBuilder):
                     ),  # Ensure provider lines don't overflow the page or intersect
                 ]
             )
+            if self.disable_ocr:
+                provider_lines_good = True
+
             layout_good.append(provider_lines_good)
 
         run_detection = [not good for good in layout_good]
@@ -191,12 +187,12 @@ class LineBuilder(BaseBuilder):
             )
 
             # Setup detection results
+            detection_boxes = []
             if detection_result:
                 detection_boxes = [
                     PolygonBox(polygon=box.polygon) for box in detection_result.bboxes
                 ]
-            else:
-                detection_boxes = []
+
             detection_boxes = sort_text_lines(detection_boxes)
 
             if provider_lines_good:
@@ -257,6 +253,7 @@ class LineBuilder(BaseBuilder):
         provider_bboxes = [line.line.polygon.bbox for line in provider_lines]
         # Add a small margin to account for minor overflows
         page_bbox = document_page.polygon.expand(5, 5).bbox
+
         for bbox in provider_bboxes:
             if bbox[0] < page_bbox[0]:
                 return False
@@ -275,7 +272,7 @@ class LineBuilder(BaseBuilder):
             )
 
             # There should be one intersection with itself
-            if intersect_counts > 1:
+            if intersect_counts > 2:
                 return False
 
         return True
