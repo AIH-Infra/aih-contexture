@@ -60,6 +60,10 @@ class LineBuilder(BaseBuilder):
         float,
         "The percentage of a provider line that has to be covered by a detected line",
     ] = 0.1
+    provider_line_provider_line_min_overlap_pct: Annotated[
+        float,
+        "The percentage of a provider line that has to be covered by a detected line",
+    ] = 0.1
     line_vertical_merge_threshold: Annotated[
         int, "The maximum pixel distance between y1s for two lines to be merged"
     ] = 8
@@ -162,19 +166,18 @@ class LineBuilder(BaseBuilder):
                     bool(provider_lines),
                     not document_page.ocr_errors_detected,
                     self.check_layout_coverage(document_page, provider_lines),
+                    self.check_line_overlaps(
+                        document_page, provider_lines
+                    ),  # Ensure provider lines don't overflow the page or intersect
                 ]
             )
             layout_good.append(provider_lines_good)
 
-        # Don't OCR if only a few pages are bad
-        if sum(layout_good) > len(document.pages) * self.min_document_ocr_threshold:
-            layout_good = [True] * len(document.pages)
-
         run_detection = [not good for good in layout_good]
         page_images = [
             page.get_image(highres=False, remove_blocks=self.ocr_remove_blocks)
-            for page, good in zip(document.pages, run_detection)
-            if good
+            for page, bad in zip(document.pages, run_detection)
+            if bad
         ]
 
         # Note: run_detection is longer than page_images, since it has a value for each page, not just good ones
@@ -272,6 +275,35 @@ class LineBuilder(BaseBuilder):
             page_texts, batch_size=int(self.get_ocr_error_batch_size())
         )
         return ocr_error_detection_results
+
+    def check_line_overlaps(
+        self, document_page: PageGroup, provider_lines: List[ProviderOutput]
+    ) -> bool:
+        provider_bboxes = [line.line.polygon.bbox for line in provider_lines]
+        # Add a small margin to account for minor overflows
+        page_bbox = document_page.polygon.expand(5, 5).bbox
+        for bbox in provider_bboxes:
+            if bbox[0] < page_bbox[0]:
+                return False
+            if bbox[1] < page_bbox[1]:
+                return False
+            if bbox[2] > page_bbox[2]:
+                return False
+            if bbox[3] > page_bbox[3]:
+                return False
+
+        intersection_matrix = matrix_intersection_area(provider_bboxes, provider_bboxes)
+        for i, line in enumerate(provider_lines):
+            intersect_counts = np.sum(
+                intersection_matrix[i]
+                > self.provider_line_provider_line_min_overlap_pct
+            )
+
+            # There should be one intersection with itself
+            if intersect_counts > 1:
+                return False
+
+        return True
 
     def check_layout_coverage(
         self,
