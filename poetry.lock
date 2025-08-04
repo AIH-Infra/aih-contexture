@@ -5390,14 +5390,14 @@ snowflake = ["snowflake-connector-python (>=3.3.0) ; python_version < \"3.12\"",
 
 [[package]]
 name = "surya-ocr"
-version = "0.15.0"
+version = "0.15.1"
 description = "OCR, layout, reading order, and table recognition in 90+ languages"
 optional = false
 python-versions = "<4.0,>=3.10"
 groups = ["main"]
 files = [
-    {file = "surya_ocr-0.15.0-py3-none-any.whl", hash = "sha256:d29630d90a9b8d62c53a2852b1825948ee3eb60500f747159dcff285d1e8a50c"},
-    {file = "surya_ocr-0.15.0.tar.gz", hash = "sha256:d9bef35f0607181a5d1f6cd08c2e4c6431d86698305dc50db6ffef4a196fbb34"},
+    {file = "surya_ocr-0.15.1-py3-none-any.whl", hash = "sha256:1551831ec43550e2f5cc6cb7f7c8ef8c4ea3654551e904ee3e1f8d47023b05da"},
+    {file = "surya_ocr-0.15.1.tar.gz", hash = "sha256:ec8b1a5c99bb8b265289ad75c6037af09e2f6894b4104a66faec63733ecdcf6d"},
 ]
 
 [package.dependencies]
@@ -6505,4 +6505,4 @@ full = ["ebooklib", "mammoth", "openpyxl", "python-pptx", "weasyprint"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "33961d3942c2009c7e08dc10610e71997b8709ee8d34a9e6b4ad607b0db59009"
+content-hash = "ad384e1af2795ac728e705765d1368aa6556a34d8e3d928abcc0a8098cc3a5dd"

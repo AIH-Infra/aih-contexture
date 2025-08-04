@@ -42,9 +42,6 @@ class LineBuilder(BaseBuilder):
         bool,
         "Whether to skip OCR on tables.  The TableProcessor will re-OCR them.  Only enable if the TableProcessor is not running.",
     ] = False
-    format_lines: Annotated[
-        bool, "Enable good provider lines to be checked and fixed by the OCR model"
-    ] = False
     layout_coverage_min_lines: Annotated[
         int,
         "The minimum number of PdfProvider lines that must be covered by the layout model",
@@ -173,7 +170,7 @@ class LineBuilder(BaseBuilder):
         if sum(layout_good) > len(document.pages) * self.min_document_ocr_threshold:
             layout_good = [True] * len(document.pages)
 
-        run_detection = [(not good or self.format_lines) for good in layout_good]
+        run_detection = [not good for good in layout_good]
         page_images = [
             page.get_image(highres=False, remove_blocks=self.ocr_remove_blocks)
             for page, good in zip(document.pages, run_detection)
@@ -222,14 +219,16 @@ class LineBuilder(BaseBuilder):
                     )
                 )
 
-                # If fixing lines, mark every line to be passed to the OCR model
-                for provider_line in merged_provider_lines:
-                    provider_line.line.text_extraction_method = (
-                        "hybrid" if self.format_lines else "pdftext"
-                    )
-                page_lines[document_page.page_id] = (
-                    merged_provider_lines + detected_only_lines
-                )
+                if detected_only_lines:
+                    # If not all the lines are captured, then make sure we OCR the page
+                    document_page.text_extraction_method = "surya"
+                    boxes_to_ocr[document_page.page_id].extend(detection_boxes)
+                else:
+                    # Mark extraction method as pdftext, since all lines are good
+                    for provider_line in merged_provider_lines:
+                        provider_line.line.text_extraction_method = "pdftext"
+
+                    page_lines[document_page.page_id] = merged_provider_lines
             else:
                 document_page.text_extraction_method = "surya"
                 boxes_to_ocr[document_page.page_id].extend(detection_boxes)
@@ -403,31 +402,13 @@ class LineBuilder(BaseBuilder):
         page_size,
         page_id,
     ):
-        # If no lines detected, skip the merging
+        # If no lines detected, skip page OCR
         if not detected_lines:
-            return provider_lines, []
+            return provider_lines, False
 
-        # If no provider lines, return all detected text lines
+        # If no provider lines, ensure we OCR the page
         if not provider_lines:
-            detected_only_lines = []
-            LineClass: Line = get_block_class(BlockTypes.Line)
-            for detected_line in detected_lines:
-                detected_line_polygon = PolygonBox(
-                    polygon=detected_line.polygon
-                ).rescale(image_size, page_size)
-                detected_only_lines.append(
-                    ProviderOutput(
-                        line=LineClass(
-                            polygon=detected_line_polygon,
-                            page_id=page_id,
-                            text_extraction_method="surya",
-                        ),
-                        spans=[],
-                        chars=[],
-                    )
-                )
-
-            return [], detected_only_lines
+            return [], True
 
         out_provider_lines = []
         horizontal_provider_lines = []
@@ -614,25 +595,13 @@ class LineBuilder(BaseBuilder):
         out_provider_lines = [p for _, p in out_provider_lines]
 
         # Detected lines that do not overlap with any provider lines shoudl be outputted as-is
-        detected_only_lines = []
-        LineClass: Line = get_block_class(BlockTypes.Line)
+        detected_only_lines = False
         for j in range(len(detected_line_boxes)):
             # Ensure we don't do max on an empty array
             if provider_detected_overlaps[:, j].size == 0:
                 continue
 
             if np.max(provider_detected_overlaps[:, j]) == 0:
-                detected_line_polygon = PolygonBox.from_bbox(detected_line_boxes[j])
-                detected_only_lines.append(
-                    ProviderOutput(
-                        line=LineClass(
-                            polygon=detected_line_polygon,
-                            page_id=page_id,
-                            text_extraction_method="surya",
-                        ),
-                        spans=[],
-                        chars=[],
-                    )
-                )
+                detected_only_lines = True
 
         return out_provider_lines, detected_only_lines
