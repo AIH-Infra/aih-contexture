@@ -53,7 +53,7 @@ class LineBuilder(BaseBuilder):
     provider_line_provider_line_min_overlap_pct: Annotated[
         float,
         "The percentage of a provider line that has to be covered by a detected line",
-    ] = 0.15
+    ] = 0.1
     excluded_for_coverage: Annotated[
         Tuple[BlockTypes],
         "A list of block types to exclude from the layout coverage check.",

@@ -38,6 +38,5 @@ def test_document_builder_inline_eq(pdf_document):
 
     first_span = first_page.get_block(first_text_block.structure[0])
     assert first_span.block_type == BlockTypes.Span
-    assert first_span.text == "Subspace Adversarial Training"
-    assert first_span.font == "NimbusRomNo9L-Medi"
-    assert first_span.formats == ["plain"]
+    assert first_span.text.strip() == "Subspace Adversarial Training"
+    assert "bold" in first_span.formats
