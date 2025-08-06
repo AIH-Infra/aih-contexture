@@ -64,10 +64,6 @@ class TableProcessor(BaseProcessor):
         bool,
         "Whether to disable the tqdm progress bar.",
     ] = False
-    format_lines: Annotated[
-        bool,
-        "Whether to format the lines.",
-    ] = False
     disable_ocr_math: Annotated[bool, "Disable inline math recognition in OCR"] = False
     drop_repeated_text: Annotated[bool, "Drop repeated text in OCR results."] = False
 
@@ -105,9 +101,8 @@ class TableProcessor(BaseProcessor):
                         "img_size": page.get_image(highres=True).size,
                         "ocr_block": any(
                             [
-                                page.text_extraction_method in ["surya", "hybrid"],
+                                page.text_extraction_method in ["surya"],
                                 page.ocr_errors_detected,
-                                self.format_lines,
                             ]
                         ),
                     }
