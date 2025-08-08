@@ -133,6 +133,8 @@ class EquationProcessor(BaseProcessor):
             recognition_batch_size=self.get_batch_size(),
             sort_lines=False,
             drop_repeated_text=self.drop_repeated_text,
+            max_tokens=1024,
+            max_sliding_window=1200,
         )
 
         equation_predictions = [
