@@ -173,8 +173,10 @@ class TableProcessor(BaseProcessor):
             text = line["text"].strip()
             if not text or text == ".":
                 continue
-            text = re.sub(r"(\s\.){2,}", "", text)  # Replace . . .
-            text = re.sub(r"\.{2,}", "", text)  # Replace ..., like in table of contents
+            # Spaced sequences: ". . .", "- - -", "_ _ _"
+            text = re.sub(r"(\s?[.\-_]){2,}", "", text)
+            # Unspaced sequences: "...", "---", "___"
+            text = re.sub(r"[.\-_]{2,}", "", text)
             text = self.normalize_spaces(fix_text(text))
             fixed_text.append(text)
         return fixed_text
@@ -470,44 +472,42 @@ class TableProcessor(BaseProcessor):
         return ocr_tables, ocr_polys, ocr_idxs
 
     def get_ocr_results(self, table_images: List[Image.Image], ocr_polys: List[List[SuryaTableCell]]):
-        filtered_polys = []
-        filtered_images = []
-        index_map = []  # (page_idx, poly_idx)
+        ocr_polys_blank = []
 
-        for page_idx, (image, polys) in enumerate(zip(table_images, ocr_polys)):
-            for poly_idx, poly in enumerate(polys):
-                cell_image = image.crop(poly.bbox)
-                if not is_blank_image(cell_image):
-                    poly = poly.polygon
-                    for corner in poly:
-                        for i in range(2):
-                            corner[i] = int(corner[i])
-                    filtered_images.append(image)
-                    filtered_polys.append(poly)
-                    index_map.append((page_idx, poly_idx))
+        for table_image, polys in zip(table_images, ocr_polys):
+            table_polys_blank = [is_blank_image(table_image.crop(poly.bbox)) for poly in polys]
+            ocr_polys_blank.append(table_polys_blank)
+                
+        filtered_polys = []
+        for table_polys, table_polys_blank in zip(ocr_polys, ocr_polys_blank):
+            filtered_table_polys = []
+            for p, is_blank in zip(table_polys, table_polys_blank):
+                if is_blank:
+                    continue
+                polygon = p.polygon
+                # Round the polygon
+                for corner in polygon:
+                    for i in range(2):
+                        corner[i] = int(corner[i])
+
+                filtered_table_polys.append(polygon)
+            filtered_polys.append(filtered_table_polys)
 
         ocr_results = self.recognition_model(
-            images=filtered_images,
-            task_names=["ocr_with_boxes"] * len(filtered_images),
+            images=table_images,
+            task_names=["ocr_with_boxes"] * len(table_images),
             recognition_batch_size=self.get_recognition_batch_size(),
             drop_repeated_text=self.drop_repeated_text,
-            polygons=[[p] for p in filtered_polys],
+            polygons=filtered_polys
         )
 
-        results_by_page = [OCRResult(text_lines=[], image_bbox=[]) for _ in table_images]
-        next_result_idx = 0
-
-        for page_idx, polys in enumerate(ocr_polys):
-            text_lines = []
-            for poly_idx in range(len(polys)):
-                if (page_idx, poly_idx) in index_map:
-                    text_line = ocr_results[next_result_idx].text_lines[0]
-                    text_lines.append(text_line)
-                    if not results_by_page[page_idx].image_bbox:
-                        results_by_page[page_idx].image_bbox = ocr_results[next_result_idx].image_bbox
-                    next_result_idx += 1
-                else:
-                    text_lines.append(TextLine(
+        # Re-align the predictions to the original length, since we skipped some predictions
+        for table_ocr_result, table_polys_blank in zip(ocr_results, ocr_polys_blank):
+            updated_lines = []
+            idx = 0
+            for is_blank in table_polys_blank:
+                if is_blank:
+                    updated_lines.append(TextLine(
                         text = "",
                         polygon=[[0, 0], [0, 0], [0, 0], [0, 0]],
                         confidence=1,
@@ -515,9 +515,12 @@ class TableProcessor(BaseProcessor):
                         original_text_good=False,
                         words=None
                     ))
-            results_by_page[page_idx].text_lines = text_lines
+                else:
+                    updated_lines.append(table_ocr_result.text_lines[idx])
+                    idx += 1
+            table_ocr_result.text_lines = updated_lines
 
-        return results_by_page
+        return ocr_results
 
     def assign_ocr_lines(self, tables: List[TableResult], table_blocks: list):
         ocr_tables, ocr_polys, ocr_idxs = self.needs_ocr(tables)

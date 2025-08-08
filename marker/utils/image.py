@@ -31,4 +31,4 @@ def is_blank_image(image: Image.Image) -> bool:
     kernel = np.ones((1, 5), np.uint8)
     dilated = cv2.dilate(cleaned, kernel, iterations=3)
     b = dilated / 255
-    return b.sum() == 0
+    return bool(b.sum() == 0)
