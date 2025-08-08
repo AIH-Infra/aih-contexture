@@ -3,10 +3,10 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Annotated, List
 from collections import Counter
+from PIL import Image
 
 from ftfy import fix_text
-from surya.detection import DetectionPredictor
-from surya.recognition import RecognitionPredictor, OCRResult
+from surya.recognition import RecognitionPredictor, OCRResult, TextLine
 from surya.table_rec import TableRecPredictor
 from surya.table_rec.schema import TableResult, TableCell as SuryaTableCell
 from pdftext.extraction import table_output
@@ -18,6 +18,7 @@ from marker.schema.document import Document
 from marker.schema.polygon import PolygonBox
 from marker.settings import settings
 from marker.util import matrix_intersection_area
+from marker.utils.image import is_blank_image
 from marker.logger import get_logger
 
 logger = get_logger()
@@ -29,15 +30,6 @@ class TableProcessor(BaseProcessor):
     """
 
     block_types = (BlockTypes.Table, BlockTypes.TableOfContents, BlockTypes.Form)
-    detect_boxes: Annotated[
-        bool,
-        "Whether to detect boxes for the table recognition model.",
-    ] = False
-    detection_batch_size: Annotated[
-        int,
-        "The batch size to use for the table detection model.",
-        "Default is None, which will use the default batch size for the model.",
-    ] = None
     table_rec_batch_size: Annotated[
         int,
         "The batch size to use for the table recognition model.",
@@ -68,14 +60,12 @@ class TableProcessor(BaseProcessor):
 
     def __init__(
         self,
-        detection_model: DetectionPredictor,
         recognition_model: RecognitionPredictor,
         table_rec_model: TableRecPredictor,
         config=None,
     ):
         super().__init__(config)
 
-        self.detection_model = detection_model
         self.recognition_model = recognition_model
         self.table_rec_model = table_rec_model
 
@@ -474,14 +464,60 @@ class TableProcessor(BaseProcessor):
             table_cells: List[SuryaTableCell] = result.cells
             if any([tc.text_lines is None for tc in table_cells]):
                 ocr_tables.append(result)
-                polys = [tc.polygon for tc in table_cells if tc.text_lines is None]
-                for poly in polys:
-                    for corner in poly:
-                        for i in range(2):
-                            corner[i] = int(corner[i])
+                polys = [tc for tc in table_cells if tc.text_lines is None]
                 ocr_polys.append(polys)
                 ocr_idxs.append(j)
         return ocr_tables, ocr_polys, ocr_idxs
+
+    def get_ocr_results(self, table_images: List[Image.Image], ocr_polys: List[List[SuryaTableCell]]):
+        filtered_polys = []
+        filtered_images = []
+        index_map = []  # (page_idx, poly_idx)
+
+        for page_idx, (image, polys) in enumerate(zip(table_images, ocr_polys)):
+            for poly_idx, poly in enumerate(polys):
+                cell_image = image.crop(poly.bbox)
+                if not is_blank_image(cell_image):
+                    poly = poly.polygon
+                    for corner in poly:
+                        for i in range(2):
+                            corner[i] = int(corner[i])
+                    filtered_images.append(image)
+                    filtered_polys.append(poly)
+                    index_map.append((page_idx, poly_idx))
+
+        ocr_results = self.recognition_model(
+            images=filtered_images,
+            task_names=["ocr_with_boxes"] * len(filtered_images),
+            recognition_batch_size=self.get_recognition_batch_size(),
+            drop_repeated_text=self.drop_repeated_text,
+            polygons=[[p] for p in filtered_polys],
+        )
+
+        results_by_page = [OCRResult(text_lines=[], image_bbox=[]) for _ in table_images]
+        next_result_idx = 0
+
+        for page_idx, polys in enumerate(ocr_polys):
+            text_lines = []
+            for poly_idx in range(len(polys)):
+                if (page_idx, poly_idx) in index_map:
+                    text_line = ocr_results[next_result_idx].text_lines[0]
+                    text_lines.append(text_line)
+                    if not results_by_page[page_idx].image_bbox:
+                        results_by_page[page_idx].image_bbox = ocr_results[next_result_idx].image_bbox
+                    next_result_idx += 1
+                else:
+                    text_lines.append(TextLine(
+                        text = "",
+                        polygon=[[0, 0], [0, 0], [0, 0], [0, 0]],
+                        confidence=1,
+                        chars=[],
+                        original_text_good=False,
+                        words=None
+                    ))
+            results_by_page[page_idx].text_lines = text_lines
+
+        return results_by_page
 
     def assign_ocr_lines(self, tables: List[TableResult], table_blocks: list):
         ocr_tables, ocr_polys, ocr_idxs = self.needs_ocr(tables)
@@ -492,13 +528,7 @@ class TableProcessor(BaseProcessor):
             f"Number of detection images and OCR polygons must match: {len(det_images)} != {len(ocr_polys)}"
         )
         self.recognition_model.disable_tqdm = self.disable_tqdm
-        ocr_results: List[OCRResult] = self.recognition_model(
-            images=det_images,
-            task_names=["ocr_with_boxes"] * len(det_images),
-            recognition_batch_size=self.get_recognition_batch_size(),
-            drop_repeated_text=self.drop_repeated_text,
-            polygons=ocr_polys,
-        )
+        ocr_results = self.get_ocr_results(table_images=det_images, ocr_polys=ocr_polys)
 
         for result, ocr_res in zip(ocr_tables, ocr_results):
             table_cells: List[SuryaTableCell] = result.cells
@@ -513,13 +543,6 @@ class TableProcessor(BaseProcessor):
                 # Table rec boxes are relative to the table
                 cell_text = [{"text": cell_text.text}]
                 cell_needs_text.text_lines = cell_text
-
-    def get_detection_batch_size(self):
-        if self.detection_batch_size is not None:
-            return self.detection_batch_size
-        elif settings.TORCH_DEVICE_MODEL == "cuda":
-            return 10
-        return 4
 
     def get_table_rec_batch_size(self):
         if self.table_rec_batch_size is not None:
