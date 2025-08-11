@@ -38,15 +38,22 @@ class OcrBuilder(BaseBuilder):
     # We can skip tables here, since the TableProcessor will re-OCR
     skip_ocr_blocks: Annotated[
         List[BlockTypes],
-        "Blocktypes for which contained lines are not processed by the OCR model"
-        "By default, this avoids recognizing lines inside equations, figures, and pictures",
+        "Blocktypes to skip OCRing by the model in this stage."
+        "By default, this avoids recognizing lines inside equations/tables (handled later), figures, and pictures",
+        "Note that we **do not** have to skip group types, since they are not built by this point"
     ] = [
         BlockTypes.Equation,
         BlockTypes.Figure,
-        BlockTypes.FigureGroup,
         BlockTypes.Picture,
-        BlockTypes.PictureGroup,
         BlockTypes.Table,
+    ]
+    full_ocr_blocks: Annotated[
+        List[BlockTypes],
+        "Blocktypes for which OCR is done at the **block level** instead of line-level."
+        "This feature is still in beta, and should be used sparingly."
+    ] = [
+        BlockTypes.SectionHeader,
+        BlockTypes.ListItem,
     ]
     ocr_task_name: Annotated[
         str,
@@ -62,19 +69,17 @@ class OcrBuilder(BaseBuilder):
         self.recognition_model = recognition_model
 
     def __call__(self, document: Document, provider: PdfProvider):
-        # pages_to_ocr = [page for page in document.pages if page.text_extraction_method == 'surya']
-        pages_to_ocr = [page for page in document.pages]
-        images, line_polygons, line_ids, line_original_texts = (
+        pages_to_ocr = [page for page in document.pages if page.text_extraction_method == 'surya']
+        ocr_page_images, block_polygons, block_ids, block_original_texts = (
             self.get_ocr_images_polygons_ids(document, pages_to_ocr, provider)
         )
         self.ocr_extraction(
             document,
             pages_to_ocr,
-            provider,
-            images,
-            line_polygons,
-            line_ids,
-            line_original_texts,
+            ocr_page_images,
+            block_polygons,
+            block_ids,
+            block_original_texts,
         )
 
     def get_recognition_batch_size(self):
@@ -89,100 +94,102 @@ class OcrBuilder(BaseBuilder):
     def get_ocr_images_polygons_ids(
         self, document: Document, pages: List[PageGroup], provider: PdfProvider
     ):
-        highres_images, highres_polys, line_ids, line_original_texts = [], [], [], []
+        highres_images, highres_polys, block_ids, block_original_texts = [], [], [], []
         for document_page in pages:
             page_highres_image = document_page.get_image(highres=True)
             page_highres_polys = []
-            page_line_ids = []
-            page_line_original_texts = []
+            page_block_ids = []
+            page_block_original_texts = []
 
             page_size = provider.get_page_bbox(document_page.page_id).size
             image_size = page_highres_image.size
-            # Search by block, and the lines, so that we can filter based on containing block type
-            for block in document_page.contained_blocks(document):
+            for block in document_page.structure_blocks(document):
                 if block.block_type in self.skip_ocr_blocks:
+                    # Skip OCR
                     continue
-                block_lines: List[Line] = block.contained_blocks(
-                    document, [BlockTypes.Line]
-                )
-                block_lines_to_ocr = [
-                    block_line
-                    for block_line in block_lines
-                    if block_line.text_extraction_method == "surya"
-                ]
+                elif block.block_type in self.full_ocr_blocks:
+                    # Full block mode
+                    blocks_to_ocr = [block]
+                else:
+                    # Line mode
+                    blocks_to_ocr = block.contained_blocks(document, [BlockTypes.Line])
 
-                # Set extraction method of OCR-only pages
-                if document_page.text_extraction_method == "surya":
-                    block.text_extraction_method = "surya"
-
-                for line in block_lines_to_ocr:
+                block.text_extraction_method = "surya"
+                for block in blocks_to_ocr:
                     # Fit the polygon to image bounds since PIL image crop expands by default which might create bad images for the OCR model.
-                    line_polygon_rescaled = (
-                        copy.deepcopy(line.polygon)
+                    block_polygon_rescaled = (
+                        copy.deepcopy(block.polygon)
                         .rescale(page_size, image_size)
                         .fit_to_bounds((0, 0, *image_size))
                     )
-                    line_bbox_rescaled = line_polygon_rescaled.polygon
-                    line_bbox_rescaled = [
-                        [int(x) for x in point] for point in line_bbox_rescaled
+                    block_bbox_rescaled = block_polygon_rescaled.polygon
+                    block_bbox_rescaled = [
+                        [int(x) for x in point] for point in block_bbox_rescaled
                     ]
 
-                    page_highres_polys.append(line_bbox_rescaled)
-                    page_line_ids.append(line.id)
-                    # For OCRed pages, this text will be blank
-                    page_line_original_texts.append(line.ocr_input_text(document))
+                    page_highres_polys.append(block_bbox_rescaled)
+                    page_block_ids.append(block.id)
+                    page_block_original_texts.append("")
 
             highres_images.append(page_highres_image)
             highres_polys.append(page_highres_polys)
-            line_ids.append(page_line_ids)
-            line_original_texts.append(page_line_original_texts)
+            block_ids.append(page_block_ids)
+            block_original_texts.append(page_block_original_texts)
 
-        return highres_images, highres_polys, line_ids, line_original_texts
+        return highres_images, highres_polys, block_ids, block_original_texts
 
     def ocr_extraction(
         self,
         document: Document,
         pages: List[PageGroup],
-        provider: PdfProvider,
         images: List[any],
-        line_polygons: List[List[List[List[int]]]],  # polygons
-        line_ids: List[List[BlockId]],
-        line_original_texts: List[List[str]],
+        block_polygons: List[List[List[List[int]]]],  # polygons
+        block_ids: List[List[BlockId]],
+        block_original_texts: List[List[str]],
     ):
-        if sum(len(b) for b in line_polygons) == 0:
+        if sum(len(b) for b in block_polygons) == 0:
             return
 
         self.recognition_model.disable_tqdm = self.disable_tqdm
         recognition_results: List[OCRResult] = self.recognition_model(
             images=images,
             task_names=[self.ocr_task_name] * len(images),
-            polygons=line_polygons,
-            input_text=line_original_texts,
+            polygons=block_polygons,
+            input_text=block_original_texts,
             recognition_batch_size=int(self.get_recognition_batch_size()),
             sort_lines=False,
             math_mode=not self.disable_ocr_math,
             drop_repeated_text=self.drop_repeated_text,
         )
 
-        assert len(recognition_results) == len(images) == len(pages) == len(line_ids), (
-            f"Mismatch in OCR lengths: {len(recognition_results)}, {len(images)}, {len(pages)}, {len(line_ids)}"
+        assert len(recognition_results) == len(images) == len(pages) == len(block_ids), (
+            f"Mismatch in OCR lengths: {len(recognition_results)}, {len(images)}, {len(pages)}, {len(block_ids)}"
         )
-        for document_page, page_recognition_result, page_line_ids, image in zip(
-            pages, recognition_results, line_ids, images
+        for document_page, page_recognition_result, page_block_ids, image in zip(
+            pages, recognition_results, block_ids, images
         ):
-            for line_id, ocr_line in zip(
-                page_line_ids, page_recognition_result.text_lines
+            for block_id, block_ocr_result in zip(
+                page_block_ids, page_recognition_result.text_lines
             ):
-                if ocr_line.original_text_good:
+                if block_ocr_result.original_text_good:
                     continue
-                if not fix_text(ocr_line.text):
+                if not fix_text(block_ocr_result.text):
                     continue
+                
+                block = document_page.get_block(block_id)
                 new_spans = self.spans_from_html_chars(
-                    ocr_line.chars, document_page, image
+                    block_ocr_result.chars, document_page, image
                 )
-
-                line = document_page.get_block(line_id)
-                self.replace_line_spans(document, document_page, line, new_spans)
+                if block.block_type == BlockTypes.Line:
+                    self.replace_line_spans(document, document_page, block, new_spans)
+                else:
+                    # For blocks which are OCRed as a whole, just set the html
+                    # TODO Try to reconstruct lines and spans. This will only work if block ocr has good bboxes though
+                    block.structure = []
+                    new_line = Line(polygon=block.polygon, page_id=block.page_id, text_extraction_method="surya")
+                    document_page.add_full_block(new_line)
+                    block.add_structure(new_line)
+                    self.replace_line_spans(document, document_page, new_line, new_spans)
 
     # TODO Fix polygons when we cut the span into multiple spans
     def link_and_break_span(self, span: Span, text: str, match_text, url: str):

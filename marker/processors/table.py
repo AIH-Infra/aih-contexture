@@ -177,6 +177,8 @@ class TableProcessor(BaseProcessor):
             text = re.sub(r"(\s?[.\-_]){2,}", "", text)
             # Unspaced sequences: "...", "---", "___"
             text = re.sub(r"[.\-_]{2,}", "", text)
+            # Remove mathbf formatting if there is only digits with decimals/commas/currency symbols inside
+            text = re.sub(r'\\mathbf\{([0-9.,$€£]+)\}', r'<b>\1</b>', text)
             text = self.normalize_spaces(fix_text(text))
             fixed_text.append(text)
         return fixed_text
