@@ -196,3 +196,23 @@ def get_closing_tag_type(tag):
             return True, TAG_MAPPING[tag_type]
     
     return False, None
+
+# Modification of unwrap_math from surya.recognition
+MATH_SYMBOLS = ["+", "-", "*", "=", "^", "_", "\\", "{", "}"]
+MATH_TAG_PATTERN = re.compile(r'^\s*<math\b[^>]*>.*?</math>\s*$', re.DOTALL)
+def unwrap_math(text: str) -> str:
+    if len(text) > 50:
+        return text
+
+    if MATH_TAG_PATTERN.match(text) and text.count("<math") == 1:
+        # Remove the opening and closing <math> tags
+        inner = re.sub(r'^\s*<math\b[^>]*>|</math>\s*$', '', text, flags=re.DOTALL)
+
+        # Strip a single leading/trailing \\ plus surrounding whitespace
+        inner_stripped = re.sub(r'^\s*\\\\\s*|\s*\\\\\s*$', '', inner)
+
+        # Only unwrap if there are no math symbols after stripping
+        if not any(symb in inner_stripped for symb in MATH_SYMBOLS):
+            return inner_stripped.strip()
+
+    return text

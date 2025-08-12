@@ -54,6 +54,7 @@ class OcrBuilder(BaseBuilder):
     ] = [
         BlockTypes.SectionHeader,
         BlockTypes.ListItem,
+        BlockTypes.Footnote,
     ]
     ocr_task_name: Annotated[
         str,

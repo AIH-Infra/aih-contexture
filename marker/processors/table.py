@@ -17,7 +17,7 @@ from marker.schema.blocks.tablecell import TableCell
 from marker.schema.document import Document
 from marker.schema.polygon import PolygonBox
 from marker.settings import settings
-from marker.util import matrix_intersection_area
+from marker.util import matrix_intersection_area, unwrap_math
 from marker.utils.image import is_blank_image
 from marker.logger import get_logger
 
@@ -179,6 +179,8 @@ class TableProcessor(BaseProcessor):
             text = re.sub(r"[.\-_]{2,}", "", text)
             # Remove mathbf formatting if there is only digits with decimals/commas/currency symbols inside
             text = re.sub(r'\\mathbf\{([0-9.,$€£]+)\}', r'<b>\1</b>', text)
+            # In case the above steps left no more latex math - We can unwrap
+            text = unwrap_math(text)
             text = self.normalize_spaces(fix_text(text))
             fixed_text.append(text)
         return fixed_text
