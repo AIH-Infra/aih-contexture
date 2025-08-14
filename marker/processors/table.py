@@ -502,7 +502,8 @@ class TableProcessor(BaseProcessor):
             task_names=["ocr_with_boxes"] * len(table_images),
             recognition_batch_size=self.get_recognition_batch_size(),
             drop_repeated_text=self.drop_repeated_text,
-            polygons=filtered_polys
+            polygons=filtered_polys,
+            max_tokens=1024
         )
 
         # Re-align the predictions to the original length, since we skipped some predictions
