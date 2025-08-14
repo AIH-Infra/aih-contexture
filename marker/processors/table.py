@@ -56,7 +56,7 @@ class TableProcessor(BaseProcessor):
         bool,
         "Whether to disable the tqdm progress bar.",
     ] = False
-    drop_repeated_text_in_tables: Annotated[bool, "Drop repeated text in OCR results."] = True
+    drop_repeated_text: Annotated[bool, "Drop repeated text in OCR results."] = True
 
     def __init__(
         self,
@@ -501,7 +501,7 @@ class TableProcessor(BaseProcessor):
             images=table_images,
             task_names=["ocr_with_boxes"] * len(table_images),
             recognition_batch_size=self.get_recognition_batch_size(),
-            drop_repeated_text=self.drop_repeated_text_in_tables,
+            drop_repeated_text=self.drop_repeated,
             polygons=filtered_polys,
             max_tokens=1024
         )
