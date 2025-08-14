@@ -501,7 +501,7 @@ class TableProcessor(BaseProcessor):
             images=table_images,
             task_names=["ocr_with_boxes"] * len(table_images),
             recognition_batch_size=self.get_recognition_batch_size(),
-            drop_repeated_text=self.drop_repeated,
+            drop_repeated_text=self.drop_repeated_text,
             polygons=filtered_polys,
             max_tokens=1024
         )
