@@ -75,7 +75,7 @@ class TableProcessor(BaseProcessor):
         table_data = []
         for page in document.pages:
             for block in page.contained_blocks(document, self.block_types):
-                image = block.get_image(document, highres=True)
+                image = block.get_image(document, highres=True, expansion=(.01, .01))
                 image_poly = block.polygon.rescale(
                     (page.polygon.width, page.polygon.height),
                     page.get_image(highres=True).size,
