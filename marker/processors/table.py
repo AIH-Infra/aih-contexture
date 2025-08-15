@@ -56,7 +56,7 @@ class TableProcessor(BaseProcessor):
         bool,
         "Whether to disable the tqdm progress bar.",
     ] = False
-    drop_repeated_text: Annotated[bool, "Drop repeated text in OCR results."] = True
+    drop_repeated_table_text: Annotated[bool, "Drop repeated text in OCR results."] = False
 
     def __init__(
         self,
@@ -173,10 +173,10 @@ class TableProcessor(BaseProcessor):
             text = line["text"].strip()
             if not text or text == ".":
                 continue
-            # Spaced sequences: ". . .", "- - -", "_ _ _"
-            text = re.sub(r"(\s?[.\-_]){2,}", "", text)
-            # Unspaced sequences: "...", "---", "___"
-            text = re.sub(r"[.\-_]{2,}", "", text)
+            # Spaced sequences: ". . .", "- - -", "_ _ _", "… … …"
+            text = re.sub(r"(\s?[.\-_…]){2,}", "", text)
+            # Unspaced sequences: "...", "---", "___", "……"
+            text = re.sub(r"[.\-_…]{2,}", "", text)
             # Remove mathbf formatting if there is only digits with decimals/commas/currency symbols inside
             text = re.sub(r'\\mathbf\{([0-9.,$€£]+)\}', r'<b>\1</b>', text)
             # In case the above steps left no more latex math - We can unwrap
@@ -501,9 +501,8 @@ class TableProcessor(BaseProcessor):
             images=table_images,
             task_names=["ocr_with_boxes"] * len(table_images),
             recognition_batch_size=self.get_recognition_batch_size(),
-            drop_repeated_text=self.drop_repeated_text,
+            drop_repeated_text=self.drop_repeated_table_text,
             polygons=filtered_polys,
-            max_tokens=1024
         )
 
         # Re-align the predictions to the original length, since we skipped some predictions
