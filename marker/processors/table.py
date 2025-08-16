@@ -75,7 +75,7 @@ class TableProcessor(BaseProcessor):
         table_data = []
         for page in document.pages:
             for block in page.contained_blocks(document, self.block_types):
-                image = block.get_image(document, highres=True, expansion=(.01, .01))
+                image = block.get_image(document, highres=True)
                 image_poly = block.polygon.rescale(
                     (page.polygon.width, page.polygon.height),
                     page.get_image(highres=True).size,
@@ -179,6 +179,17 @@ class TableProcessor(BaseProcessor):
             text = re.sub(r"[.\-_…]{2,}", "", text)
             # Remove mathbf formatting if there is only digits with decimals/commas/currency symbols inside
             text = re.sub(r'\\mathbf\{([0-9.,$€£]+)\}', r'<b>\1</b>', text)
+            # Drop empty tags like \overline{}
+            text = re.sub(r'\\[a-zA-Z]+\{\s*\}', '', text)
+            # Drop \phantom{...} (remove contents too)
+            text = re.sub(r'\\phantom\{.*?\}', '', text)
+            # If the whole string is \text{...} → unwrap
+            text = re.sub(r'^\\text\{([^}]*)\}$', r'\1', text)
+            # Unwrap \mathsf{...}
+            text = re.sub(r'\\mathsf\{([^}]*)\}', r'\1', text)
+            # Handle unclosed tags: keep contents, drop the command
+            text = re.sub(r'\\[a-zA-Z]+\{([^}]*)$', r'\1', text)
+
             # In case the above steps left no more latex math - We can unwrap
             text = unwrap_math(text)
             text = self.normalize_spaces(fix_text(text))
