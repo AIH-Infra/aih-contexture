@@ -57,6 +57,7 @@ class TableProcessor(BaseProcessor):
         "Whether to disable the tqdm progress bar.",
     ] = False
     drop_repeated_table_text: Annotated[bool, "Drop repeated text in OCR results."] = False
+    filter_tag_list = ["p", "table", "td", "tr", "th", "tbody"]
 
     def __init__(
         self,
@@ -514,6 +515,7 @@ class TableProcessor(BaseProcessor):
             recognition_batch_size=self.get_recognition_batch_size(),
             drop_repeated_text=self.drop_repeated_table_text,
             polygons=filtered_polys,
+            filter_tag_list=self.filter_tag_list
         )
 
         # Re-align the predictions to the original length, since we skipped some predictions
