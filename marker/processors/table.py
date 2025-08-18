@@ -184,12 +184,16 @@ class TableProcessor(BaseProcessor):
             text = re.sub(r'\\[a-zA-Z]+\{\s*\}', '', text)
             # Drop \phantom{...} (remove contents too)
             text = re.sub(r'\\phantom\{.*?\}', '', text)
-            # If the whole string is \text{...} → unwrap
-            text = re.sub(r'^\\text\{([^}]*)\}$', r'\1', text)
+            # Drop \quad
+            text = re.sub(r'\\quad', '', text)
+            # Drop \,
+            text = re.sub(r'\\,', '', text)
             # Unwrap \mathsf{...}
             text = re.sub(r'\\mathsf\{([^}]*)\}', r'\1', text)
             # Handle unclosed tags: keep contents, drop the command
             text = re.sub(r'\\[a-zA-Z]+\{([^}]*)$', r'\1', text)
+            # If the whole string is \text{...} → unwrap
+            text = re.sub(r'^\s*\\text\{([^}]*)\}\s*$', r'\1', text)
 
             # In case the above steps left no more latex math - We can unwrap
             text = unwrap_math(text)
