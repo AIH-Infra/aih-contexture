@@ -29,6 +29,9 @@ class BaseRenderer:
     keep_pagefooter_in_output: Annotated[
         bool, "Keep the page footer in the output HTML."
     ] = False
+    add_block_ids: Annotated[bool, "Whether to add block IDs to the output HTML."] = (
+        False
+    )
 
     def __init__(self, config: Optional[BaseModel | dict] = None):
         assign_config(self, config)
@@ -36,6 +39,7 @@ class BaseRenderer:
         self.block_config = {
             "keep_pageheader_in_output": self.keep_pageheader_in_output,
             "keep_pagefooter_in_output": self.keep_pagefooter_in_output,
+            "add_block_ids": self.add_block_ids,
         }
 
     def __call__(self, document):
