@@ -47,6 +47,37 @@ class HTMLRenderer(BaseRenderer):
         )
         return cropped
 
+    def insert_block_id(self, soup, block_id: BlockId):
+        """
+        Insert a block ID into the soup as a data attribute.
+        """
+        if block_id.block_type in [BlockTypes.Line, BlockTypes.Span]:
+            return soup
+
+        if self.add_block_ids:
+            # Find the outermost tag (first tag that isn't a NavigableString)
+            outermost_tag = None
+            for element in soup.contents:
+                if hasattr(element, "name") and element.name:
+                    outermost_tag = element
+                    break
+
+            # If we found an outermost tag, add the data-block-id attribute
+            if outermost_tag:
+                outermost_tag["data-block-id"] = str(block_id)
+
+            # If soup only contains text or no tags, wrap in a span
+            elif soup.contents:
+                wrapper = soup.new_tag("span")
+                wrapper["data-block-id"] = str(block_id)
+
+                contents = list(soup.contents)
+                for content in contents:
+                    content.extract()
+                    wrapper.append(content)
+                soup.append(wrapper)
+        return soup
+
     def extract_html(self, document, document_output, level=0):
         soup = BeautifulSoup(document_output.html, "html.parser")
 
@@ -69,22 +100,24 @@ class HTMLRenderer(BaseRenderer):
                     image = self.extract_image(document, ref_block_id)
                     image_name = f"{ref_block_id.to_path()}.{settings.OUTPUT_IMAGE_FORMAT.lower()}"
                     images[image_name] = image
-                    ref.replace_with(
-                        BeautifulSoup(
-                            f"<p>{content}<img src='{image_name}'></p>", "html.parser"
-                        )
+                    element = BeautifulSoup(
+                        f"<p>{content}<img src='{image_name}'></p>", "html.parser"
                     )
+                    ref.replace_with(self.insert_block_id(element, ref_block_id))
                 else:
                     # This will be the image description if using llm mode, or empty if not
-                    ref.replace_with(BeautifulSoup(f"{content}", "html.parser"))
+                    element = BeautifulSoup(f"{content}", "html.parser")
+                    ref.replace_with(self.insert_block_id(element, ref_block_id))
             elif ref_block_id.block_type in self.page_blocks:
                 images.update(sub_images)
                 if self.paginate_output:
                     content = f"<div class='page' data-page-id='{ref_block_id.page_id}'>{content}</div>"
-                ref.replace_with(BeautifulSoup(f"{content}", "html.parser"))
+                element = BeautifulSoup(f"{content}", "html.parser")
+                ref.replace_with(self.insert_block_id(element, ref_block_id))
             else:
                 images.update(sub_images)
-                ref.replace_with(BeautifulSoup(f"{content}", "html.parser"))
+                element = BeautifulSoup(f"{content}", "html.parser")
+                ref.replace_with(self.insert_block_id(element, ref_block_id))
 
         output = str(soup)
         if level == 0:

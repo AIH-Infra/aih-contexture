@@ -161,7 +161,7 @@ No corrections needed.
                 batch_bbox[3] = block_image.size[1]
 
             batch_image = block_image.crop(batch_bbox)
-            block_html = block.format_cells(document, [], batch_cells)
+            block_html = block.format_cells(document, [], None, batch_cells)
             batch_image = self.handle_image_rotation(batch_cells, batch_image)
             batch_parsed_cells = self.rewrite_single_chunk(
                 page, block, block_html, batch_cells, batch_image
