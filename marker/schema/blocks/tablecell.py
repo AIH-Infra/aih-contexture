@@ -21,12 +21,16 @@ class TableCell(Block):
     def assemble_html(
         self, document, child_blocks, parent_structure=None, block_config=None
     ):
+        add_cell_id = block_config and block_config.get("add_block_ids", False)
+
         tag_cls = "th" if self.is_header else "td"
         tag = f"<{tag_cls}"
         if self.rowspan > 1:
             tag += f" rowspan={self.rowspan}"
         if self.colspan > 1:
             tag += f" colspan={self.colspan}"
+        if add_cell_id:
+            tag += f' data-block-id="{self.id}"'
         if self.text_lines is None:
             self.text_lines = []
         text = "<br>".join(self.text_lines)
