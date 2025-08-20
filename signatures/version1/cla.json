@@ -327,6 +327,14 @@
       "created_at": "2025-07-04T17:42:05Z",
       "repoId": 712111618,
       "pullRequestNo": 789
+    },
+    {
+      "name": "sandy0kwon",
+      "id": 78377296,
+      "comment_id": 3207667429,
+      "created_at": "2025-08-20T18:59:07Z",
+      "repoId": 712111618,
+      "pullRequestNo": 843
     }
   ]
 }
