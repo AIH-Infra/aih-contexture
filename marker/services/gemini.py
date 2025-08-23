@@ -56,9 +56,10 @@ class BaseGeminiService(BaseService):
         image_parts = self.format_image_for_llm(image)
 
         total_tries = max_retries + 1
+        temperature = 0
         for tries in range(1, total_tries + 1):
             config = {
-                "temperature": 0,
+                "temperature": temperature,
                 "response_schema": response_schema,
                 "response_mime_type": "application/json",
             }
@@ -99,6 +100,20 @@ class BaseGeminiService(BaseService):
                 else:
                     logger.error(f"APIError: {e}")
                     break
+            except json.JSONDecodeError as e:
+                temperature = 0.2  # Increase temperature slightly to try and get a different respons
+
+                # The response was not valid JSON
+                if tries == total_tries:
+                    # Last attempt failed. Give up
+                    logger.error(
+                        f"JSONDecodeError: {e}. Max retries reached. Giving up. (Attempt {tries}/{total_tries})",
+                    )
+                    break
+                else:
+                    logger.warning(
+                        f"JSONDecodeError: {e}. Retrying... (Attempt {tries}/{total_tries})",
+                    )
             except Exception as e:
                 logger.error(f"Exception: {e}")
                 traceback.print_exc()
