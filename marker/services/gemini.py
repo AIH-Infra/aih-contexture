@@ -56,7 +56,16 @@ class BaseGeminiService(BaseService):
         image_parts = self.format_image_for_llm(image)
 
         total_tries = max_retries + 1
+        temperature = 0
         for tries in range(1, total_tries + 1):
+            config = {
+                "temperature": temperature,
+                "response_schema": response_schema,
+                "response_mime_type": "application/json",
+            }
+            if self.max_output_tokens:
+                config["max_output_tokens"] = self.max_output_tokens
+
             try:
                 responses = client.models.generate_content(
                     model=self.gemini_model_name,
@@ -64,11 +73,7 @@ class BaseGeminiService(BaseService):
                     + [
                         prompt
                     ],  # According to gemini docs, it performs better if the image is the first element
-                    config={
-                        "temperature": 0,
-                        "response_schema": response_schema,
-                        "response_mime_type": "application/json",
-                    },
+                    config=config,
                 )
                 output = responses.candidates[0].content.parts[0].text
                 total_tokens = responses.usage_metadata.total_token_count
@@ -96,6 +101,8 @@ class BaseGeminiService(BaseService):
                     logger.error(f"APIError: {e}")
                     break
             except json.JSONDecodeError as e:
+                temperature = 0.2  # Increase temperature slightly to try and get a different respons
+
                 # The response was not valid JSON
                 if tries == total_tries:
                     # Last attempt failed. Give up
@@ -104,11 +111,9 @@ class BaseGeminiService(BaseService):
                     )
                     break
                 else:
-                    wait_time = tries * self.retry_wait_time
                     logger.warning(
-                        f"JSONDecodeError: {e}. Retrying in {wait_time} seconds... (Attempt {tries}/{total_tries})",
+                        f"JSONDecodeError: {e}. Retrying... (Attempt {tries}/{total_tries})",
                     )
-                    time.sleep(wait_time)
             except Exception as e:
                 logger.error(f"Exception: {e}")
                 traceback.print_exc()
