@@ -41,9 +41,7 @@ As you can see, the use_llm mode offers higher accuracy than marker or gemini al
 
 # Commercial usage
 
-I want marker to be as widely accessible as possible, while still funding my development/training costs.  Research and personal usage is always okay, but there are some restrictions on commercial usage.
-
-The weights for the models are licensed `cc-by-nc-sa-4.0`, but I will waive that for any organization under \$2M USD in gross revenue in the most recent 12-month period AND under \$2M in lifetime VC/angel funding raised. You also must not be competitive with the [Datalab API](https://www.datalab.to/).  If you want to remove the GPL license requirements (dual-license) and/or use the weights commercially over the revenue limit, check out the options [here](https://www.datalab.to).
+Our model weights use a modified AI Pubs Open Rail-M license (free for research, personal use, and startups under $2M funding/revenue) and our code is GPL. For broader commercial licensing or to remove GPL requirements, visit our pricing page [here](https://www.datalab.to).
 
 # Hosted API
 
