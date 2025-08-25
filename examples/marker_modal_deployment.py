@@ -14,7 +14,7 @@ MODEL_PATH_PREFIX = "/root/.cache/datalab/models"
 image = (
     modal.Image.debian_slim(python_version="3.10")
     .apt_install(["git", "wget"])
-    .env({"TORCH_DEVICE": "cuda", "MARKER_CACHE_DIR": "/models"})
+    .env({"TORCH_DEVICE": "cuda"})
     .pip_install([
         "marker-pdf[full]",
         "fastapi==0.104.1",
