@@ -99,11 +99,11 @@ class OcrBuilder(BaseBuilder):
     def select_ocr_blocks_by_mode(
         self, page: PageGroup, block: Block, block_lines: List[Block]
     ):
-        if any(
+        if any([
             block.block_type not in self.full_ocr_block_types,
             len(block_lines) > 15,
             block.polygon.height >= 0.5 * page.polygon.height
-        ):
+        ]):
             # Line mode
             return block_lines
 
