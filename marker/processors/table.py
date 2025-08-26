@@ -519,7 +519,9 @@ class TableProcessor(BaseProcessor):
             recognition_batch_size=self.get_recognition_batch_size(),
             drop_repeated_text=self.drop_repeated_table_text,
             polygons=filtered_polys,
-            filter_tag_list=self.filter_tag_list
+            filter_tag_list=self.filter_tag_list,
+            max_tokens=2048,
+            max_sliding_window=2148
         )
 
         # Re-align the predictions to the original length, since we skipped some predictions

@@ -10,6 +10,7 @@ from marker.builders import BaseBuilder
 from marker.providers.pdf import PdfProvider
 from marker.schema import BlockTypes
 from marker.schema.blocks import BlockId
+from marker.schema.blocks.base import Block
 from marker.schema.document import Document
 from marker.schema.groups import PageGroup
 from marker.schema.registry import get_block_class
@@ -47,7 +48,7 @@ class OcrBuilder(BaseBuilder):
         BlockTypes.Picture,
         BlockTypes.Table,
     ]
-    full_ocr_blocks: Annotated[
+    full_ocr_block_types: Annotated[
         List[BlockTypes],
         "Blocktypes for which OCR is done at the **block level** instead of line-level."
         "This feature is still in beta, and should be used sparingly."
@@ -55,6 +56,9 @@ class OcrBuilder(BaseBuilder):
         BlockTypes.SectionHeader,
         BlockTypes.ListItem,
         BlockTypes.Footnote,
+        BlockTypes.Text,
+        BlockTypes.TextInlineMath,
+        BlockTypes.Code,
     ]
     ocr_task_name: Annotated[
         str,
@@ -92,6 +96,20 @@ class OcrBuilder(BaseBuilder):
             return 16
         return 32
 
+    def select_ocr_blocks_by_mode(
+        self, page: PageGroup, block: Block, block_lines: List[Block]
+    ):
+        if any(
+            block.block_type not in self.full_ocr_block_types,
+            len(block_lines) > 15,
+            block.polygon.height >= 0.5 * page.polygon.height
+        ):
+            # Line mode
+            return block_lines
+
+        # Block mode
+        return [block]
+
     def get_ocr_images_polygons_ids(
         self, document: Document, pages: List[PageGroup], provider: PdfProvider
     ):
@@ -108,12 +126,9 @@ class OcrBuilder(BaseBuilder):
                 if block.block_type in self.skip_ocr_blocks:
                     # Skip OCR
                     continue
-                elif block.block_type in self.full_ocr_blocks:
-                    # Full block mode
-                    blocks_to_ocr = [block]
-                else:
-                    # Line mode
-                    blocks_to_ocr = block.contained_blocks(document, [BlockTypes.Line])
+
+                block_lines = block.contained_blocks(document, [BlockTypes.Line])
+                blocks_to_ocr = self.select_ocr_blocks_by_mode(document, block, block_lines)
 
                 block.text_extraction_method = "surya"
                 for block in blocks_to_ocr:
@@ -161,6 +176,8 @@ class OcrBuilder(BaseBuilder):
             sort_lines=False,
             math_mode=not self.disable_ocr_math,
             drop_repeated_text=self.drop_repeated_text,
+            max_sliding_window=2148,
+            max_tokens=2048
         )
 
         assert len(recognition_results) == len(images) == len(pages) == len(block_ids), (
