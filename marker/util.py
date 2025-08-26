@@ -200,7 +200,19 @@ def get_closing_tag_type(tag):
 # Modification of unwrap_math from surya.recognition
 MATH_SYMBOLS = ["+", "-", "*", "=", "^", "_", "\\", "{", "}"]
 MATH_TAG_PATTERN = re.compile(r'^\s*<math\b[^>]*>.*?</math>\s*$', re.DOTALL)
-def unwrap_math(text: str) -> str:
+LATEX_ESCAPES = {
+    r'\%': '%',
+    r'\$': '$',
+    r'\_': '_',
+    r'\&': '&',
+    r'\#': '#',
+    r'\‰': '‰',
+}
+def normalize_latex_escapes(s: str) -> str:
+    for k, v in LATEX_ESCAPES.items():
+        s = s.replace(k, v)
+    return s
+def unwrap_math(text: str, math_symbols: List[str] = MATH_SYMBOLS) -> str:
     if len(text) > 50:
         return text
 
@@ -211,8 +223,11 @@ def unwrap_math(text: str) -> str:
         # Strip a single leading/trailing \\ plus surrounding whitespace
         inner_stripped = re.sub(r'^\s*\\\\\s*|\s*\\\\\s*$', '', inner)
 
+        # Normalize certain symbols so we can unwrap a little more agressively
+        normalized = normalize_latex_escapes(inner)
+
         # Only unwrap if there are no math symbols after stripping
-        if not any(symb in inner_stripped for symb in MATH_SYMBOLS):
-            return inner_stripped.strip()
+        if not any(symb in normalized for symb in math_symbols):
+            return normalized.strip()
 
     return text

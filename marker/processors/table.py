@@ -196,7 +196,7 @@ class TableProcessor(BaseProcessor):
             text = re.sub(r'^\s*\\text\{([^}]*)\}\s*$', r'\1', text)
 
             # In case the above steps left no more latex math - We can unwrap
-            text = unwrap_math(text)
+            text = unwrap_math(text, math_symbols=["\\", "_", "{", "}"])
             text = self.normalize_spaces(fix_text(text))
             fixed_text.append(text)
         return fixed_text
