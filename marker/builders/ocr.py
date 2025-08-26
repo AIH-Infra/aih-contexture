@@ -207,6 +207,8 @@ class OcrBuilder(BaseBuilder):
                     new_line = Line(polygon=block.polygon, page_id=block.page_id, text_extraction_method="surya")
                     document_page.add_full_block(new_line)
                     block.add_structure(new_line)
+                    for s in new_spans:
+                        s.text = s.text.replace("<br>", " ")
                     self.replace_line_spans(document, document_page, new_line, new_spans)
 
     # TODO Fix polygons when we cut the span into multiple spans
