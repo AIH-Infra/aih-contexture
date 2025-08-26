@@ -128,7 +128,7 @@ class OcrBuilder(BaseBuilder):
                     continue
 
                 block_lines = block.contained_blocks(document, [BlockTypes.Line])
-                blocks_to_ocr = self.select_ocr_blocks_by_mode(document, block, block_lines)
+                blocks_to_ocr = self.select_ocr_blocks_by_mode(document_page, block, block_lines)
 
                 block.text_extraction_method = "surya"
                 for block in blocks_to_ocr:
