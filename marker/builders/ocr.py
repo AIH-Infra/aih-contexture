@@ -59,6 +59,7 @@ class OcrBuilder(BaseBuilder):
         BlockTypes.Text,
         BlockTypes.TextInlineMath,
         BlockTypes.Code,
+        BlockTypes.Caption,
     ]
     ocr_task_name: Annotated[
         str,
@@ -195,21 +196,27 @@ class OcrBuilder(BaseBuilder):
                     continue
                 
                 block = document_page.get_block(block_id)
-                new_spans = self.spans_from_html_chars(
+                # This is a nested list of spans, so multiple lines are supported
+                all_line_spans = self.spans_from_html_chars(
                     block_ocr_result.chars, document_page, image
                 )
                 if block.block_type == BlockTypes.Line:
-                    self.replace_line_spans(document, document_page, block, new_spans)
+                    # flatten all spans across lines
+                    flat_spans = [s for line_spans in all_line_spans for s in line_spans]
+                    self.replace_line_spans(document, document_page, block, flat_spans)
                 else:
-                    # For blocks which are OCRed as a whole, just set the html
-                    # TODO Try to reconstruct lines and spans. This will only work if block ocr has good bboxes though
                     block.structure = []
-                    new_line = Line(polygon=block.polygon, page_id=block.page_id, text_extraction_method="surya")
-                    document_page.add_full_block(new_line)
-                    block.add_structure(new_line)
-                    for s in new_spans:
-                        s.text = s.text.replace("<br>", " ")
-                    self.replace_line_spans(document, document_page, new_line, new_spans)
+                    for line_spans in all_line_spans:
+                        # TODO Replace this polygon with the polygon for each line, constructed from the spans
+                        # This needs the OCR model bbox predictions to improve first
+                        new_line = Line(
+                            polygon=block.polygon,
+                            page_id=block.page_id,
+                            text_extraction_method="surya"
+                        )
+                        document_page.add_full_block(new_line)
+                        block.add_structure(new_line)
+                        self.replace_line_spans(document, document_page, new_line, line_spans)
 
     # TODO Fix polygons when we cut the span into multiple spans
     def link_and_break_span(self, span: Span, text: str, match_text, url: str):
@@ -286,13 +293,14 @@ class OcrBuilder(BaseBuilder):
 
     def spans_from_html_chars(
         self, chars: List[TextChar], page: PageGroup, image: Image.Image
-    ):
+    ) -> List[List[Span]]:
         # Turn input characters from surya into spans - also store the raw characters
         SpanClass: Span = get_block_class(BlockTypes.Span)
         CharClass: Char = get_block_class(BlockTypes.Char)
-        spans = []
-        formats = {"plain"}
 
+        all_line_spans = []
+        current_line_spans = []
+        formats = {"plain"}
         current_span = None
         current_chars = []
         image_size = image.size
@@ -308,12 +316,23 @@ class OcrBuilder(BaseBuilder):
                 polygon=char_box,
             )
 
+            if char.text == "<br>":
+                if current_span:
+                    current_chars = self.assign_chars(current_span, current_chars)
+                    current_line_spans.append(current_span)
+                    current_span = None
+                if current_line_spans:
+                    current_line_spans[-1].text += "\n"
+                    all_line_spans.append(current_line_spans)
+                    current_line_spans = []
+                continue
+
             is_opening_tag, format = get_opening_tag_type(char.text)
             if is_opening_tag and format not in formats:
                 formats.add(format)
                 if current_span:
                     current_chars = self.assign_chars(current_span, current_chars)
-                    spans.append(current_span)
+                    current_line_spans.append(current_span)
                     current_span = None
 
                 if format == "math":
@@ -345,7 +364,7 @@ class OcrBuilder(BaseBuilder):
                         )
 
                     current_chars = self.assign_chars(current_span, current_chars)
-                    spans.append(current_span)
+                    current_line_spans.append(current_span)
                     current_span = None
                 continue
 
@@ -374,10 +393,11 @@ class OcrBuilder(BaseBuilder):
         # Add the last span to the list
         if current_span:
             self.assign_chars(current_span, current_chars)
-            spans.append(current_span)
+            current_line_spans.append(current_span)
 
-        # Add newline after all spans finish
-        if len(spans) > 0 and not spans[-1].html:
-            spans[-1].text += "\n"
+        # flush last line
+        if current_line_spans:
+            current_line_spans[-1].text += "\n"
+            all_line_spans.append(current_line_spans)
 
-        return spans
+        return all_line_spans
