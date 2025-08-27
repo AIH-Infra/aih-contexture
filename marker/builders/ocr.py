@@ -363,11 +363,6 @@ class OcrBuilder(BaseBuilder):
                 except Exception:
                     continue
                 if current_span:
-                    if format == "math":
-                        current_span.html = (
-                            f'<math display="inline">{current_span.text}</math>'
-                        )
-
                     current_chars = self.assign_chars(current_span, current_chars)
                     current_line_spans.append(current_span)
                     current_span = None

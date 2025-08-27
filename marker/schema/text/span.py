@@ -4,6 +4,7 @@ from typing import List, Literal, Optional
 
 from marker.schema import BlockTypes
 from marker.schema.blocks import Block
+from marker.util import unwrap_math
 
 
 def cleanup_text(full_text):
@@ -136,4 +137,5 @@ class Span(Block):
         elif self.code:
             text = f"<code>{text}</code>"
 
+        text = unwrap_math(text)
         return text
