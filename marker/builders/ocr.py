@@ -68,6 +68,9 @@ class OcrBuilder(BaseBuilder):
     keep_chars: Annotated[bool, "Keep individual characters."] = False
     disable_ocr_math: Annotated[bool, "Disable inline math recognition in OCR"] = False
     drop_repeated_text: Annotated[bool, "Drop repeated text in OCR results."] = False
+    block_mode_intersection_thresh: Annotated[float, "Max intersection before falling back to line mode"] = 0.5
+    block_mode_max_lines: Annotated[int, "Max lines within a block before falling back to line mode"] = 15
+    block_mode_max_height_frac: Annotated[float, "Max height of a block as a percentage of the page before falling back to line mode"] = 0.5
 
     def __init__(self, recognition_model: RecognitionPredictor, config=None):
         super().__init__(config)
@@ -98,12 +101,13 @@ class OcrBuilder(BaseBuilder):
         return 32
 
     def select_ocr_blocks_by_mode(
-        self, page: PageGroup, block: Block, block_lines: List[Block]
+        self, page: PageGroup, block: Block, block_lines: List[Block], page_max_intersection_pct: float
     ):
         if any([
+            page_max_intersection_pct > self.block_mode_intersection_thresh,
             block.block_type not in self.full_ocr_block_types,
-            len(block_lines) > 15,
-            block.polygon.height >= 0.5 * page.polygon.height
+            len(block_lines) > self.block_mode_max_lines,
+            block.polygon.height >= self.block_mode_max_height_frac * page.polygon.height
         ]):
             # Line mode
             return block_lines
@@ -123,13 +127,14 @@ class OcrBuilder(BaseBuilder):
 
             page_size = provider.get_page_bbox(document_page.page_id).size
             image_size = page_highres_image.size
+            max_intersection_pct = document_page.compute_max_structure_block_intersection_pct()
             for block in document_page.structure_blocks(document):
                 if block.block_type in self.skip_ocr_blocks:
                     # Skip OCR
                     continue
 
                 block_lines = block.contained_blocks(document, [BlockTypes.Line])
-                blocks_to_ocr = self.select_ocr_blocks_by_mode(document_page, block, block_lines)
+                blocks_to_ocr = self.select_ocr_blocks_by_mode(document_page, block, block_lines, max_intersection_pct)
 
                 block.text_extraction_method = "surya"
                 for block in blocks_to_ocr:
