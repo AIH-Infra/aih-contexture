@@ -223,15 +223,13 @@ def unwrap_math(text: str, math_symbols: List[str] = MATH_SYMBOLS) -> str:
         inner_stripped = re.sub(r'^\s*\\\\\s*|\s*\\\\\s*$', '', inner)
 
         # Unwrap \text{...}
-        unwrapped = re.sub(r'\\text\s*\{(.*?)\}', r'\1', inner_stripped)
+        unwrapped = re.sub(r'\\text[a-zA-Z]*\s*\{(.*?)\}', r'\1', inner_stripped)
 
         # Normalize escapes
         normalized = normalize_latex_escapes(unwrapped)
 
         # If no math symbols remain → unwrap fully
         if not any(symb in normalized for symb in math_symbols):
-            print(normalized.strip())
-            print('-' * 100)
             return normalized.strip()
 
     # Otherwise, return as-is
