@@ -570,7 +570,6 @@ class TableProcessor(BaseProcessor):
                 # Don't need to correct back to image size
                 # Table rec boxes are relative to the table
                 cell_text_lines = [{"text": t} for t in cell_text.text.split("<br>")]
-                print(cell_text_lines)
                 cell_needs_text.text_lines = cell_text_lines
 
     def get_table_rec_batch_size(self):
