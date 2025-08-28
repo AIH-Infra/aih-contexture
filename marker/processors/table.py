@@ -58,6 +58,7 @@ class TableProcessor(BaseProcessor):
     ] = False
     drop_repeated_table_text: Annotated[bool, "Drop repeated text in OCR results."] = False
     filter_tag_list = ["p", "table", "td", "tr", "th", "tbody"]
+    disable_ocr_math: Annotated[bool, "Disable inline math recognition in OCR"] = False
 
     def __init__(
         self,
@@ -521,7 +522,8 @@ class TableProcessor(BaseProcessor):
             polygons=filtered_polys,
             filter_tag_list=self.filter_tag_list,
             max_tokens=2048,
-            max_sliding_window=2148
+            max_sliding_window=2148,
+            math_mode=not self.disable_ocr_math,
         )
 
         # Re-align the predictions to the original length, since we skipped some predictions
