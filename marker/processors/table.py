@@ -569,8 +569,9 @@ class TableProcessor(BaseProcessor):
             for cell_text, cell_needs_text in zip(ocr_res.text_lines, cells_need_text):
                 # Don't need to correct back to image size
                 # Table rec boxes are relative to the table
-                cell_text = [{"text": cell_text.text}]
-                cell_needs_text.text_lines = cell_text
+                cell_text_lines = [{"text": t} for t in cell_text.text.split("<br>")]
+                print(cell_text_lines)
+                cell_needs_text.text_lines = cell_text_lines
 
     def get_table_rec_batch_size(self):
         if self.table_rec_batch_size is not None:
