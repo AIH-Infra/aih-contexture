@@ -587,5 +587,5 @@ class TableProcessor(BaseProcessor):
         elif settings.TORCH_DEVICE_MODEL == "mps":
             return 32
         elif settings.TORCH_DEVICE_MODEL == "cuda":
-            return 32
+            return 48
         return 32
