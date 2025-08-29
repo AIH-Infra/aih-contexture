@@ -10,9 +10,9 @@ from marker.schema.blocks import TableCell
 
 @pytest.mark.config({"page_range": [5]})
 def test_table_processor(
-    pdf_document, detection_model, recognition_model, table_rec_model
+    pdf_document, recognition_model, table_rec_model
 ):
-    processor = TableProcessor(detection_model, recognition_model, table_rec_model)
+    processor = TableProcessor(recognition_model, table_rec_model)
     processor(pdf_document)
 
     for block in pdf_document.pages[0].children:
@@ -32,14 +32,14 @@ def test_table_processor(
 @pytest.mark.filename("table_ex.pdf")
 @pytest.mark.config({"page_range": [0], "force_ocr": True})
 def test_avoid_double_ocr(
-    pdf_document, detection_model, recognition_model, table_rec_model
+    pdf_document, recognition_model, table_rec_model
 ):
     tables = pdf_document.contained_blocks((BlockTypes.Table,))
     lines = tables[0].contained_blocks(pdf_document, (BlockTypes.Line,))
     assert len(lines) == 0
 
     processor = TableProcessor(
-        detection_model, recognition_model, table_rec_model, config={"force_ocr": True}
+        recognition_model, table_rec_model, config={"force_ocr": True}
     )
     processor(pdf_document)
 
@@ -58,7 +58,7 @@ def test_overlap_blocks(
         pdf_document
     )
 
-    processor = TableProcessor(detection_model, recognition_model, table_rec_model)
+    processor = TableProcessor(recognition_model, table_rec_model)
     processor(pdf_document)
 
     assert "Cascading, and the Auxiliary Problem Principle" in page.raw_text(
@@ -68,8 +68,8 @@ def test_overlap_blocks(
 
 @pytest.mark.filename("pres.pdf")
 @pytest.mark.config({"page_range": [4]})
-def test_ocr_table(pdf_document, detection_model, recognition_model, table_rec_model):
-    processor = TableProcessor(detection_model, recognition_model, table_rec_model)
+def test_ocr_table(pdf_document, recognition_model, table_rec_model):
+    processor = TableProcessor(recognition_model, table_rec_model)
     processor(pdf_document)
 
     renderer = MarkdownRenderer()
@@ -78,8 +78,8 @@ def test_ocr_table(pdf_document, detection_model, recognition_model, table_rec_m
 
 
 @pytest.mark.config({"page_range": [11]})
-def test_split_rows(pdf_document, detection_model, recognition_model, table_rec_model):
-    processor = TableProcessor(detection_model, recognition_model, table_rec_model)
+def test_split_rows(pdf_document, recognition_model, table_rec_model):
+    processor = TableProcessor(recognition_model, table_rec_model)
     processor(pdf_document)
 
     table = pdf_document.contained_blocks((BlockTypes.Table,))[-1]
