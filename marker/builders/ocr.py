@@ -210,7 +210,11 @@ class OcrBuilder(BaseBuilder):
                     flat_spans = [s for line_spans in all_line_spans for s in line_spans]
                     self.replace_line_spans(document, document_page, block, flat_spans)
                 else:
+                    # Clear out any old lines. Mark as removed for the json ocr renderer
+                    for line in block.contained_blocks(document_page, block_types=[BlockTypes.Line]):
+                        line.removed = True
                     block.structure = []
+
                     for line_spans in all_line_spans:
                         # TODO Replace this polygon with the polygon for each line, constructed from the spans
                         # This needs the OCR model bbox predictions to improve first
