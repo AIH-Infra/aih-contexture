@@ -1,5 +1,6 @@
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+import numpy as np
 
 from PIL import Image, ImageDraw
 
@@ -158,6 +159,19 @@ class PageGroup(Group):
                 blocks[max_intersection].id,
             )
         return max_intersections
+
+    def compute_max_structure_block_intersection_pct(self):
+        structure_blocks = [self.get_block(block_id) for block_id in self.structure]
+        strucure_block_bboxes = [b.polygon.bbox for b in structure_blocks]
+
+        intersection_matrix = matrix_intersection_area(strucure_block_bboxes, strucure_block_bboxes)
+        np.fill_diagonal(intersection_matrix, 0)    # Ignore self-intersections
+
+        max_intersection_pct = 0
+        for block_idx, block in enumerate(structure_blocks):
+            max_intersection_pct = max(max_intersection_pct, np.max(intersection_matrix[block_idx]) / block.polygon.area)
+
+        return max_intersection_pct
 
     def replace_block(self, block: Block, new_block: Block):
         # Handles incrementing the id
