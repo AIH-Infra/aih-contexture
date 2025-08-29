@@ -56,14 +56,9 @@ class TableProcessor(BaseProcessor):
         bool,
         "Whether to disable the tqdm progress bar.",
     ] = False
-<<<<<<< HEAD
     drop_repeated_table_text: Annotated[bool, "Drop repeated text in OCR results."] = False
     filter_tag_list = ["p", "table", "td", "tr", "th", "tbody"]
     disable_ocr_math: Annotated[bool, "Disable inline math recognition in OCR"] = False
-=======
-    disable_ocr_math: Annotated[bool, "Disable inline math recognition in OCR"] = False
-    drop_repeated_text: Annotated[bool, "Drop repeated text in OCR results."] = False
->>>>>>> dev
 
     def __init__(
         self,
