@@ -11,7 +11,7 @@ class BaseTable(Block):
 
     @staticmethod
     def format_cells(
-        document, child_blocks, child_cells: List[TableCell] | None = None
+        document, child_blocks, block_config, child_cells: List[TableCell] | None = None
     ):
         if child_cells is None:
             child_cells: List[TableCell] = [
@@ -28,7 +28,9 @@ class BaseTable(Block):
             )
             html_repr += "<tr>"
             for cell in row_cells:
-                html_repr += cell.assemble_html(document, child_blocks, None, None)
+                html_repr += cell.assemble_html(
+                    document, child_blocks, None, block_config
+                )
             html_repr += "</tr>"
         html_repr += "</tbody></table>"
         return html_repr
@@ -56,7 +58,7 @@ class BaseTable(Block):
             return template + self.html
         elif len(child_blocks) > 0 and BlockTypes.TableCell in child_block_types:
             # Table processor
-            return template + self.format_cells(document, child_blocks)
+            return template + self.format_cells(document, child_blocks, block_config)
         else:
             # Default text lines and spans
             return f"<p>{template}</p>"

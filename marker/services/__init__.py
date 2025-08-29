@@ -15,6 +15,9 @@ class BaseService:
         int, "The maximum number of retries to use for the service."
     ] = 2
     retry_wait_time: Annotated[int, "The wait time between retries."] = 3
+    max_output_tokens: Annotated[
+        int, "The maximum number of output tokens to generate."
+    ] = None
 
     def img_to_base64(self, img: PIL.Image.Image):
         image_bytes = BytesIO()
