@@ -123,7 +123,12 @@ class Span(Block):
         elif self.bold:
             text = f"<b>{text}</b>"
         elif self.math:
-            text = f"<math display='inline'>{text}</math>"
+            block_envs = ["split", "align", "gather", "multline"]
+            if any(f"\\begin{{{env}}}" in text for env in block_envs):
+                display_mode = "block"
+            else:
+                display_mode = "inline"
+            text = f"<math display='{display_mode}'>{text}</math>"
         elif self.highlight:
             text = f"<mark>{text}</mark>"
         elif self.subscript:
