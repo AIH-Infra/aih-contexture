@@ -1,8 +1,9 @@
 from PIL import Image
 import numpy as np
 import cv2
+from typing import List
 
-def is_blank_image(image: Image.Image) -> bool:
+def is_blank_image(image: Image.Image, polygon: List[List[int]]) -> bool:
     image = np.asarray(image)
     if (
         image is None
@@ -11,6 +12,10 @@ def is_blank_image(image: Image.Image) -> bool:
         or image.shape[1] == 0
     ):
         # Handle empty image case
+        return True
+
+    rounded_polys = [[int(corner[0]), int(corner[1])] for corner in polygon]
+    if rounded_polys[0] == rounded_polys[1] and rounded_polys[2] == rounded_polys[3]:
         return True
 
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
