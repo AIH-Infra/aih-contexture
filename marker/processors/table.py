@@ -496,7 +496,7 @@ class TableProcessor(BaseProcessor):
         ocr_polys_blank = []
 
         for table_image, polys in zip(table_images, ocr_polys):
-            table_polys_blank = [is_blank_image(table_image.crop(poly.bbox)) for poly in polys]
+            table_polys_blank = [is_blank_image(table_image.crop(poly.bbox), poly.polygon) for poly in polys]
             ocr_polys_blank.append(table_polys_blank)
                 
         filtered_polys = []
