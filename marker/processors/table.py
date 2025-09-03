@@ -568,7 +568,7 @@ class TableProcessor(BaseProcessor):
         assert len(detection_results) == len(ocr_idxs), "Every OCRed table requires a text detection result"
 
         for idx, table_detection_result in zip(ocr_idxs, detection_results):
-            self.align_table_cells(table_blocks[idx]["table_image"], tables[idx], table_detection_result)
+            self.align_table_cells(tables[idx], table_detection_result)
 
         ocr_polys = []
         for ocr_idx in ocr_idxs:
