@@ -85,6 +85,7 @@ class TableProcessor(BaseProcessor):
         table_data = []
         for page in document.pages:
             for block in page.contained_blocks(document, self.block_types):
+                block.polygon = block.polygon.expand(0.01, 0.01)
                 image = block.get_image(document, highres=True)
                 image_poly = block.polygon.rescale(
                     (page.polygon.width, page.polygon.height),
@@ -578,17 +579,23 @@ class TableProcessor(BaseProcessor):
         return ocr_tables, ocr_polys, ocr_idxs
 
     def get_ocr_results(self, table_images: List[Image.Image], ocr_polys: List[List[SuryaTableCell]]):
-        ocr_polys_blank = []
+        ocr_polys_bad = []
 
         for table_image, polys in zip(table_images, ocr_polys):
-            table_polys_blank = [(poly.height < 6 or is_blank_image(table_image.crop(poly.bbox), poly.polygon)) for poly in polys]
-            ocr_polys_blank.append(table_polys_blank)
+            table_polys_bad = [
+                any([
+                    poly.height < 6,
+                    is_blank_image(table_image.crop(poly.bbox), poly.polygon),
+                ])
+                for poly in polys
+            ]
+            ocr_polys_bad.append(table_polys_bad)
                 
         filtered_polys = []
-        for table_polys, table_polys_blank in zip(ocr_polys, ocr_polys_blank):
+        for table_polys, table_polys_bad in zip(ocr_polys, ocr_polys_bad):
             filtered_table_polys = []
-            for p, is_blank in zip(table_polys, table_polys_blank):
-                if is_blank:
+            for p, is_bad in zip(table_polys, table_polys_bad):
+                if is_bad:
                     continue
                 polygon = p.polygon
                 # Round the polygon
@@ -612,11 +619,11 @@ class TableProcessor(BaseProcessor):
         )
 
         # Re-align the predictions to the original length, since we skipped some predictions
-        for table_ocr_result, table_polys_blank in zip(ocr_results, ocr_polys_blank):
+        for table_ocr_result, table_polys_bad in zip(ocr_results, ocr_polys_bad):
             updated_lines = []
             idx = 0
-            for is_blank in table_polys_blank:
-                if is_blank:
+            for is_bad in table_polys_bad:
+                if is_bad:
                     updated_lines.append(TextLine(
                         text = "",
                         polygon=[[0, 0], [0, 0], [0, 0], [0, 0]],
