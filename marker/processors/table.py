@@ -6,7 +6,7 @@ from collections import Counter
 from PIL import Image
 
 from ftfy import fix_text
-from surya.recognition import RecognitionPredictor, OCRResult, TextLine
+from surya.recognition import RecognitionPredictor, TextLine
 from surya.table_rec import TableRecPredictor
 from surya.table_rec.schema import TableResult, TableCell as SuryaTableCell
 from pdftext.extraction import table_output
@@ -56,9 +56,12 @@ class TableProcessor(BaseProcessor):
         bool,
         "Whether to disable the tqdm progress bar.",
     ] = False
-    drop_repeated_table_text: Annotated[bool, "Drop repeated text in OCR results."] = False
+    drop_repeated_table_text: Annotated[bool, "Drop repeated text in OCR results."] = (
+        False
+    )
     filter_tag_list = ["p", "table", "td", "tr", "th", "tbody"]
     disable_ocr_math: Annotated[bool, "Disable inline math recognition in OCR"] = False
+    disable_ocr: Annotated[bool, "Disable OCR entirely."] = False
 
     def __init__(
         self,
@@ -180,21 +183,21 @@ class TableProcessor(BaseProcessor):
             # Unspaced sequences: "...", "---", "___", "……"
             text = re.sub(r"[.\-_…]{2,}", "", text)
             # Remove mathbf formatting if there is only digits with decimals/commas/currency symbols inside
-            text = re.sub(r'\\mathbf\{([0-9.,$€£]+)\}', r'<b>\1</b>', text)
+            text = re.sub(r"\\mathbf\{([0-9.,$€£]+)\}", r"<b>\1</b>", text)
             # Drop empty tags like \overline{}
-            text = re.sub(r'\\[a-zA-Z]+\{\s*\}', '', text)
+            text = re.sub(r"\\[a-zA-Z]+\{\s*\}", "", text)
             # Drop \phantom{...} (remove contents too)
-            text = re.sub(r'\\phantom\{.*?\}', '', text)
+            text = re.sub(r"\\phantom\{.*?\}", "", text)
             # Drop \quad
-            text = re.sub(r'\\quad', '', text)
+            text = re.sub(r"\\quad", "", text)
             # Drop \,
-            text = re.sub(r'\\,', '', text)
+            text = re.sub(r"\\,", "", text)
             # Unwrap \mathsf{...}
-            text = re.sub(r'\\mathsf\{([^}]*)\}', r'\1', text)
+            text = re.sub(r"\\mathsf\{([^}]*)\}", r"\1", text)
             # Handle unclosed tags: keep contents, drop the command
-            text = re.sub(r'\\[a-zA-Z]+\{([^}]*)$', r'\1', text)
+            text = re.sub(r"\\[a-zA-Z]+\{([^}]*)$", r"\1", text)
             # If the whole string is \text{...} → unwrap
-            text = re.sub(r'^\s*\\text\{([^}]*)\}\s*$', r'\1', text)
+            text = re.sub(r"^\s*\\text\{([^}]*)\}\s*$", r"\1", text)
 
             # In case the above steps left no more latex math - We can unwrap
             text = unwrap_math(text)
@@ -485,20 +488,28 @@ class TableProcessor(BaseProcessor):
         ocr_idxs = []
         for j, result in enumerate(tables):
             table_cells: List[SuryaTableCell] = result.cells
-            if any([tc.text_lines is None for tc in table_cells]):
+            if (
+                any([tc.text_lines is None for tc in table_cells])
+                and not self.disable_ocr
+            ):
                 ocr_tables.append(result)
                 polys = [tc for tc in table_cells if tc.text_lines is None]
                 ocr_polys.append(polys)
                 ocr_idxs.append(j)
         return ocr_tables, ocr_polys, ocr_idxs
 
-    def get_ocr_results(self, table_images: List[Image.Image], ocr_polys: List[List[SuryaTableCell]]):
+    def get_ocr_results(
+        self, table_images: List[Image.Image], ocr_polys: List[List[SuryaTableCell]]
+    ):
         ocr_polys_blank = []
 
         for table_image, polys in zip(table_images, ocr_polys):
-            table_polys_blank = [is_blank_image(table_image.crop(poly.bbox), poly.polygon) for poly in polys]
+            table_polys_blank = [
+                is_blank_image(table_image.crop(poly.bbox), poly.polygon)
+                for poly in polys
+            ]
             ocr_polys_blank.append(table_polys_blank)
-                
+
         filtered_polys = []
         for table_polys, table_polys_blank in zip(ocr_polys, ocr_polys_blank):
             filtered_table_polys = []
@@ -532,14 +543,16 @@ class TableProcessor(BaseProcessor):
             idx = 0
             for is_blank in table_polys_blank:
                 if is_blank:
-                    updated_lines.append(TextLine(
-                        text = "",
-                        polygon=[[0, 0], [0, 0], [0, 0], [0, 0]],
-                        confidence=1,
-                        chars=[],
-                        original_text_good=False,
-                        words=None
-                    ))
+                    updated_lines.append(
+                        TextLine(
+                            text="",
+                            polygon=[[0, 0], [0, 0], [0, 0], [0, 0]],
+                            confidence=1,
+                            chars=[],
+                            original_text_good=False,
+                            words=None,
+                        )
+                    )
                 else:
                     updated_lines.append(table_ocr_result.text_lines[idx])
                     idx += 1
