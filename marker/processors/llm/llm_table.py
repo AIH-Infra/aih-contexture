@@ -36,6 +36,10 @@ class LLMTableProcessor(BaseLLMComplexBlockProcessor):
         float,
         "The maximum width/height ratio for table cells for a table to be considered rotated.",
     ] = 0.6
+    max_table_iterations: Annotated[
+        int,
+        "The maximum number of iterations to attempt rewriting a table.",
+    ] = 2
     table_rewriting_prompt: Annotated[
         str,
         "The prompt to use for rewriting text.",
@@ -58,6 +62,7 @@ Some guidelines:
 2. Analyze the html representation of the table.
 3. Write a comparison of the image and the html representation, paying special attention to the column headers matching the correct column values.
 4. If the html representation is completely correct, or you cannot read the image properly, then write "No corrections needed."  If the html representation has errors, generate the corrected html representation.  Output only either the corrected html representation or "No corrections needed."
+5. If you made corrections, analyze your corrections against the original image, and provide a score from 1-5, indicating how well the corrected html matches the image, with 5 being perfect.
 **Example:**
 Input:
 ```html
@@ -70,7 +75,6 @@ Input:
     <tr>
         <td>John</td>
         <td>Doe</td>
-        <td>25</td>
     </tr>
 </table>
 ```
@@ -79,6 +83,8 @@ comparison: The image shows a table with 2 rows and 3 columns.  The text and for
 ```html
 No corrections needed.
 ```
+analysis: I did not make any corrections, as the html representation was already accurate.
+score: 5
 **Input:**
 ```html
 {block_html}
@@ -186,6 +192,7 @@ No corrections needed.
         block_html: str,
         children: List[TableCell],
         image: Image.Image,
+        total_iterations: int = 0,
     ):
         prompt = self.table_rewriting_prompt.replace("{block_html}", block_html)
 
@@ -202,6 +209,17 @@ No corrections needed.
             return
 
         corrected_html = corrected_html.strip().lstrip("```html").rstrip("```").strip()
+
+        # Re-iterate if low score
+        total_iterations += 1
+        score = response.get("score", 5)
+        if total_iterations < self.max_table_iterations and score < 4:
+            logger.info(f"Table rewriting low score {score}, re-iterating")
+            block_html = corrected_html
+            return self.rewrite_single_chunk(
+                page, block, block_html, children, image, total_iterations
+            )
+
         parsed_cells = self.parse_html_table(corrected_html, block, page)
         if len(parsed_cells) <= 1:
             block.update_metadata(llm_error_count=1)
@@ -304,3 +322,5 @@ No corrections needed.
 class TableSchema(BaseModel):
     comparison: str
     corrected_html: str
+    analysis: str
+    score: int

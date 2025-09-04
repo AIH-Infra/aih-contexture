@@ -3,11 +3,11 @@ from collections import defaultdict
 from copy import deepcopy
 from typing import Annotated, List
 from collections import Counter
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from ftfy import fix_text
 from surya.detection import DetectionPredictor, TextDetectionResult
-from surya.recognition import RecognitionPredictor, OCRResult, TextLine
+from surya.recognition import RecognitionPredictor, TextLine
 from surya.table_rec import TableRecPredictor
 from surya.table_rec.schema import TableResult, TableCell as SuryaTableCell
 from pdftext.extraction import table_output
@@ -62,9 +62,12 @@ class TableProcessor(BaseProcessor):
         bool,
         "Whether to disable the tqdm progress bar.",
     ] = False
-    drop_repeated_table_text: Annotated[bool, "Drop repeated text in OCR results."] = False
+    drop_repeated_table_text: Annotated[bool, "Drop repeated text in OCR results."] = (
+        False
+    )
     filter_tag_list = ["p", "table", "td", "tr", "th", "tbody"]
     disable_ocr_math: Annotated[bool, "Disable inline math recognition in OCR"] = False
+    disable_ocr: Annotated[bool, "Disable OCR entirely."] = False
 
     def __init__(
         self,
@@ -114,7 +117,9 @@ class TableProcessor(BaseProcessor):
             [t["table_image"] for t in table_data],
             batch_size=self.get_table_rec_batch_size(),
         )
-        assert len(tables) == len(table_data), "Number of table results should match the number of tables"
+        assert len(tables) == len(table_data), (
+            "Number of table results should match the number of tables"
+        )
 
         # Assign cell text if we don't need OCR
         # We do this at a line level
@@ -190,21 +195,21 @@ class TableProcessor(BaseProcessor):
             # Unspaced sequences: "...", "---", "___", "……"
             text = re.sub(r"[.\-_…]{2,}", "", text)
             # Remove mathbf formatting if there is only digits with decimals/commas/currency symbols inside
-            text = re.sub(r'\\mathbf\{([0-9.,$€£]+)\}', r'<b>\1</b>', text)
+            text = re.sub(r"\\mathbf\{([0-9.,$€£]+)\}", r"<b>\1</b>", text)
             # Drop empty tags like \overline{}
-            text = re.sub(r'\\[a-zA-Z]+\{\s*\}', '', text)
+            text = re.sub(r"\\[a-zA-Z]+\{\s*\}", "", text)
             # Drop \phantom{...} (remove contents too)
-            text = re.sub(r'\\phantom\{.*?\}', '', text)
+            text = re.sub(r"\\phantom\{.*?\}", "", text)
             # Drop \quad
-            text = re.sub(r'\\quad', '', text)
+            text = re.sub(r"\\quad", "", text)
             # Drop \,
-            text = re.sub(r'\\,', '', text)
+            text = re.sub(r"\\,", "", text)
             # Unwrap \mathsf{...}
-            text = re.sub(r'\\mathsf\{([^}]*)\}', r'\1', text)
+            text = re.sub(r"\\mathsf\{([^}]*)\}", r"\1", text)
             # Handle unclosed tags: keep contents, drop the command
-            text = re.sub(r'\\[a-zA-Z]+\{([^}]*)$', r'\1', text)
+            text = re.sub(r"\\[a-zA-Z]+\{([^}]*)$", r"\1", text)
             # If the whole string is \text{...} → unwrap
-            text = re.sub(r'^\s*\\text\{([^}]*)\}\s*$', r'\1', text)
+            text = re.sub(r"^\s*\\text\{([^}]*)\}\s*$", r"\1", text)
 
             # In case the above steps left no more latex math - We can unwrap
             text = unwrap_math(text)
@@ -489,7 +494,9 @@ class TableProcessor(BaseProcessor):
                 "Number of tables and table inputs must match"
             )
 
-    def align_table_cells(self, table: TableResult, table_detection_result: TextDetectionResult):
+    def align_table_cells(
+        self, table: TableResult, table_detection_result: TextDetectionResult
+    ):
         table_cells = table.cells
         table_text_lines = table_detection_result.bboxes
 
@@ -511,7 +518,6 @@ class TableProcessor(BaseProcessor):
 
         # Adjust cell polygons in place
         for cell_idx, cell in enumerate(table_cells):
-
             # all intersecting lines
             intersecting_line_indices = [
                 i for i, area in enumerate(intersection_matrix[:, cell_idx]) if area > 0
@@ -530,19 +536,25 @@ class TableProcessor(BaseProcessor):
 
             # Clear out non-assigned lines
             non_assigned_lines = [
-                table_text_lines[i] for i in intersecting_line_indices if table_text_lines[i] not in cell_text.get(cell_idx, [])
+                table_text_lines[i]
+                for i in intersecting_line_indices
+                if table_text_lines[i] not in cell_text.get(cell_idx, [])
             ]
             if non_assigned_lines:
                 # Find top-most and bottom-most non-assigned boxes
-                top_box = min(non_assigned_lines, key=lambda l: l.bbox[1])    # smallest y0
-                bottom_box = max(non_assigned_lines, key=lambda l: l.bbox[3]) # largest y1
+                top_box = min(
+                    non_assigned_lines, key=lambda line: line.bbox[1]
+                )  # smallest y0
+                bottom_box = max(
+                    non_assigned_lines, key=lambda line: line.bbox[3]
+                )  # largest y1
 
                 # Current cell bbox (from polygon)
                 x0, y0, x1, y1 = cell.bbox
 
                 # Adjust y-limits based on non-assigned boxes
-                new_y0 = max(y0, top_box.bbox[3])    # top moves down
-                new_y1 = min(y1, bottom_box.bbox[1]) # bottom moves up
+                new_y0 = max(y0, top_box.bbox[3])  # top moves down
+                new_y1 = min(y1, bottom_box.bbox[1])  # bottom moves up
 
                 if new_y0 < new_y1:
                     # Replace polygon with a new shrunken rectangle
@@ -558,15 +570,21 @@ class TableProcessor(BaseProcessor):
         ocr_idxs = []
         for j, (table_result, table_block) in enumerate(zip(tables, table_blocks)):
             table_cells: List[SuryaTableCell] = table_result.cells
-            if table_block["ocr_block"] and any([tc.text_lines is None for tc in table_cells]):
+            if (
+                table_block["ocr_block"]
+                and any([tc.text_lines is None for tc in table_cells])
+                and not self.disable_ocr
+            ):
                 ocr_tables.append(table_result)
                 ocr_idxs.append(j)
 
         detection_results: List[TextDetectionResult] = self.detection_model(
             images=[table_blocks[i]["table_image"] for i in ocr_idxs],
-            batch_size=self.get_detection_batch_size()
+            batch_size=self.get_detection_batch_size(),
         )
-        assert len(detection_results) == len(ocr_idxs), "Every OCRed table requires a text detection result"
+        assert len(detection_results) == len(ocr_idxs), (
+            "Every OCRed table requires a text detection result"
+        )
 
         for idx, table_detection_result in zip(ocr_idxs, detection_results):
             self.align_table_cells(tables[idx], table_detection_result)
@@ -578,19 +596,23 @@ class TableProcessor(BaseProcessor):
             ocr_polys.append(polys)
         return ocr_tables, ocr_polys, ocr_idxs
 
-    def get_ocr_results(self, table_images: List[Image.Image], ocr_polys: List[List[SuryaTableCell]]):
+    def get_ocr_results(
+        self, table_images: List[Image.Image], ocr_polys: List[List[SuryaTableCell]]
+    ):
         ocr_polys_bad = []
 
         for table_image, polys in zip(table_images, ocr_polys):
             table_polys_bad = [
-                any([
-                    poly.height < 6,
-                    is_blank_image(table_image.crop(poly.bbox), poly.polygon),
-                ])
+                any(
+                    [
+                        poly.height < 6,
+                        is_blank_image(table_image.crop(poly.bbox), poly.polygon),
+                    ]
+                )
                 for poly in polys
             ]
             ocr_polys_bad.append(table_polys_bad)
-                
+
         filtered_polys = []
         for table_polys, table_polys_bad in zip(ocr_polys, ocr_polys_bad):
             filtered_table_polys = []
@@ -624,14 +646,16 @@ class TableProcessor(BaseProcessor):
             idx = 0
             for is_bad in table_polys_bad:
                 if is_bad:
-                    updated_lines.append(TextLine(
-                        text = "",
-                        polygon=[[0, 0], [0, 0], [0, 0], [0, 0]],
-                        confidence=1,
-                        chars=[],
-                        original_text_good=False,
-                        words=None
-                    ))
+                    updated_lines.append(
+                        TextLine(
+                            text="",
+                            polygon=[[0, 0], [0, 0], [0, 0], [0, 0]],
+                            confidence=1,
+                            chars=[],
+                            original_text_good=False,
+                            words=None,
+                        )
+                    )
                 else:
                     updated_lines.append(table_ocr_result.text_lines[idx])
                     idx += 1
