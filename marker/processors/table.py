@@ -570,11 +570,15 @@ class TableProcessor(BaseProcessor):
         ocr_idxs = []
         for j, (table_result, table_block) in enumerate(zip(tables, table_blocks)):
             table_cells: List[SuryaTableCell] = table_result.cells
+            text_lines_need_ocr = any([tc.text_lines is None for tc in table_cells])
             if (
                 table_block["ocr_block"]
-                and any([tc.text_lines is None for tc in table_cells])
+                and text_lines_need_ocr
                 and not self.disable_ocr
             ):
+                logger.debug(
+                    f"Table {j} needs OCR, info table block needs ocr: {table_block['ocr_block']}, text_lines {text_lines_need_ocr}"
+                )
                 ocr_tables.append(table_result)
                 ocr_idxs.append(j)
 

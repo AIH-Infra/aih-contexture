@@ -213,8 +213,12 @@ score: 5
         # Re-iterate if low score
         total_iterations += 1
         score = response.get("score", 5)
+        analysis = response.get("analysis", "")
+        logger.debug(f"Got table rewriting score {score} with analysis: {analysis}")
         if total_iterations < self.max_table_iterations and score < 4:
-            logger.info(f"Table rewriting low score {score}, re-iterating")
+            logger.info(
+                f"Table rewriting low score {score}, on iteration {total_iterations}"
+            )
             block_html = corrected_html
             return self.rewrite_single_chunk(
                 page, block, block_html, children, image, total_iterations
@@ -223,16 +227,13 @@ score: 5
         parsed_cells = self.parse_html_table(corrected_html, block, page)
         if len(parsed_cells) <= 1:
             block.update_metadata(llm_error_count=1)
+            logger.debug(f"Table parsing issue, only {len(parsed_cells)} cells found")
             return
 
         if not corrected_html.endswith("</table>"):
-            block.update_metadata(llm_error_count=1)
-            return
-
-        parsed_cell_text = "".join([cell.text for cell in parsed_cells])
-        orig_cell_text = "".join([cell.text for cell in children])
-        # Potentially a partial response
-        if len(parsed_cell_text) < len(orig_cell_text) * 0.5:
+            logger.debug(
+                "Table parsing issue, corrected html does not end with </table>"
+            )
             block.update_metadata(llm_error_count=1)
             return
 
