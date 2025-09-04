@@ -45,12 +45,13 @@ class OpenAIService(BaseService):
         if isinstance(images, Image.Image):
             images = [images]
 
+        img_fmt = self.openai_image_format
         return [
             {
                 "type": "image_url",
                 "image_url": {
                     "url": "data:image/{};base64,{}".format(
-                        self.openai_image_format, self.img_to_base64(img)
+                        img_fmt, self.img_to_base64(img, format=img_fmt)
                     ),
                 },
             }
