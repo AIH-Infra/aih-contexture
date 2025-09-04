@@ -29,4 +29,4 @@ jobs:
           path-to-document: 'https://github.com/VikParuchuri/marker/blob/master/CLA.md'
           # branch should not be protected
           branch: 'master'
-          allowlist: VikParuchuri
+          allowlist: VikParuchuri,Sandy

@@ -19,9 +19,9 @@ class BaseService:
         int, "The maximum number of output tokens to generate."
     ] = None
 
-    def img_to_base64(self, img: PIL.Image.Image):
+    def img_to_base64(self, img: PIL.Image.Image, format: str = "WEBP"):
         image_bytes = BytesIO()
-        img.save(image_bytes, format="WEBP")
+        img.save(image_bytes, format=format)
         return base64.b64encode(image_bytes.getvalue()).decode("utf-8")
 
     def process_images(self, images: List[PIL.Image.Image]) -> list:
