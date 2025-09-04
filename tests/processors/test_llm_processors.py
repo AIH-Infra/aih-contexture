@@ -39,14 +39,14 @@ def test_llm_form_processor_no_cells(pdf_document, llm_service):
 
 @pytest.mark.filename("form_1040.pdf")
 @pytest.mark.config({"page_range": [0]})
-def test_llm_form_processor(pdf_document, table_rec_model, recognition_model):
+def test_llm_form_processor(pdf_document, table_rec_model, recognition_model, detection_model):
     corrected_html = "<em>This is corrected markdown.</em>\n" * 100
     corrected_html = "<p>" + corrected_html.strip() + "</p>\n"
 
     mock_cls = Mock()
     mock_cls.return_value = {"corrected_html": corrected_html}
 
-    cell_processor = TableProcessor(recognition_model, table_rec_model)
+    cell_processor = TableProcessor(recognition_model, table_rec_model, detection_model)
     cell_processor(pdf_document)
 
     config = {"use_llm": True, "gemini_api_key": "test"}
@@ -61,7 +61,7 @@ def test_llm_form_processor(pdf_document, table_rec_model, recognition_model):
 
 @pytest.mark.filename("table_ex2.pdf")
 @pytest.mark.config({"page_range": [0]})
-def test_llm_table_processor(pdf_document, table_rec_model, recognition_model):
+def test_llm_table_processor(pdf_document, table_rec_model, recognition_model, detection_model):
     corrected_html = """
 <table>
     <tr>
@@ -88,7 +88,7 @@ def test_llm_table_processor(pdf_document, table_rec_model, recognition_model):
     mock_cls = Mock()
     mock_cls.return_value = {"corrected_html": corrected_html}
 
-    cell_processor = TableProcessor(recognition_model, table_rec_model)
+    cell_processor = TableProcessor(recognition_model, table_rec_model, detection_model)
     cell_processor(pdf_document)
 
     processor = LLMTableProcessor(mock_cls, {"use_llm": True, "gemini_api_key": "test"})
