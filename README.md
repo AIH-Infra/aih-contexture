@@ -11,6 +11,8 @@ Marker converts documents to markdown, JSON, chunks, and HTML quickly and accura
 - Optionally boost accuracy with LLMs (and your own prompt)
 - Works on GPU, CPU, or MPS
 
+For our managed API or on-prem document intelligence solution, check out [our platform here](https://datalab.to?utm_source=gh-marker).
+
 ## Performance
 
 <img src="data/images/overall.png" width="800px"/>
@@ -41,11 +43,11 @@ As you can see, the use_llm mode offers higher accuracy than marker or gemini al
 
 # Commercial usage
 
-Our model weights use a modified AI Pubs Open Rail-M license (free for research, personal use, and startups under $2M funding/revenue) and our code is GPL. For broader commercial licensing or to remove GPL requirements, visit our pricing page [here](https://www.datalab.to).
+Our model weights use a modified AI Pubs Open Rail-M license (free for research, personal use, and startups under $2M funding/revenue) and our code is GPL. For broader commercial licensing or to remove GPL requirements, visit our pricing page [here](https://www.datalab.to/pricing?utm_source=gh-marker).
 
 # Hosted API
 
-There's a hosted API for marker available [here](https://www.datalab.to/):
+There's a hosted API for marker available [here](https://www.datalab.to?utm_source=gh-marker):
 
 - Supports PDF, image, PPT, PPTX, DOC, DOCX, XLS, XLSX, HTML, EPUB files
 - 1/4th the price of leading cloud-based competitors
@@ -102,7 +104,7 @@ Options:
 - `--page_range TEXT`: Specify which pages to process. Accepts comma-separated page numbers and ranges. Example: `--page_range "0,5-10,20"` will process pages 0, 5 through 10, and page 20.
 - `--output_format [markdown|json|html|chunks]`: Specify the format for the output results.
 - `--output_dir PATH`: Directory where output files will be saved. Defaults to the value specified in settings.OUTPUT_DIR.
-- `--paginate_output`: Paginates the output, using `\n\n{PAGE_NUMBER}` followed by `-` * 48, then `\n\n` 
+- `--paginate_output`: Paginates the output, using `\n\n{PAGE_NUMBER}` followed by `-` * 48, then `\n\n`
 - `--use_llm`: Uses an LLM to improve accuracy.  You will need to configure the LLM backend - see [below](#llm-services).
 - `--force_ocr`: Force OCR processing on the entire document, even for pages that might contain extractable text.  This will also format inline math properly.
 - `--block_correction_prompt`: if LLM mode is active, an optional prompt that will be used to correct the output of marker.  This is useful for custom formatting or logic that you want to apply to the output.
@@ -182,7 +184,7 @@ rendered = converter("FILEPATH")
 
 ### Extract blocks
 
-Each document consists of one or more pages.  Pages contain blocks, which can themselves contain other blocks.  It's possible to programmatically manipulate these blocks.  
+Each document consists of one or more pages.  Pages contain blocks, which can themselves contain other blocks.  It's possible to programmatically manipulate these blocks.
 
 Here's an example of extracting all forms from a document:
 
@@ -222,7 +224,7 @@ text, _, images = text_from_rendered(rendered)
 
 This takes all the same configuration as the PdfConverter.  You can specify the configuration `force_layout_block=Table` to avoid layout detection and instead assume every page is a table.  Set `output_format=json` to also get cell bounding boxes.
 
-You can also run this via the CLI with 
+You can also run this via the CLI with
 ```shell
 marker_single FILENAME --use_llm --force_layout_block Table --converter_cls marker.converters.table.TableConverter --output_format json
 ```
@@ -243,7 +245,7 @@ rendered = converter("FILEPATH")
 
 This takes all the same configuration as the PdfConverter.
 
-You can also run this via the CLI with 
+You can also run this via the CLI with
 ```shell
 marker_single FILENAME --converter_cls marker.converters.ocr.OCRConverter
 ```
@@ -260,7 +262,7 @@ from pydantic import BaseModel
 
 class Links(BaseModel):
     links: list[str]
-    
+
 schema = Links.model_json_schema()
 config_parser = ConfigParser({
     "page_schema": schema
@@ -300,7 +302,7 @@ HTML output is similar to markdown output:
 
 JSON output will be organized in a tree-like structure, with the leaf nodes being blocks.  Examples of leaf nodes are a single list item, a paragraph of text, or an image.
 
-The output will be a list, with each list item representing a page.  Each page is considered a block in the internal marker schema.  There are different types of blocks to represent different elements.  
+The output will be a list, with each list item representing a page.  Each page is considered a block in the internal marker schema.  There are different types of blocks to represent different elements.
 
 Pages have the keys:
 
@@ -366,7 +368,7 @@ All output formats will return a metadata dictionary, with the following fields:
     ], // computed PDF table of contents
     "page_stats": [
       {
-        "page_id":  0, 
+        "page_id":  0,
         "text_extraction_method": "pdftext",
         "block_counts": [("Span", 200), ...]
       },
