@@ -23,7 +23,7 @@ Notes:
 
 > modal run --env <YOUR_MODAL_ENV> modal_deployment.py::download_models
 
-Which will create a [`Modal Volume`](https://modal.com/docs/reference/modal.Volume) to store them for re-use.
+Which will create a [`Modal Volume`](https://modal.com/docs/guide/Volumes) to store them for re-use.
 
 - Regardless, once the deploy is finished, you can submit a request. To do so, get the base URL for your endpoint:
     - Go into Modal
