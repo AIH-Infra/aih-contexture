@@ -25,13 +25,43 @@ Notes:
 
 Which will create a [`Modal Volume`](https://modal.com/docs/reference/modal.Volume) to store them for re-use.
 
-- Regardless, once the deploy is finished, you can submit a request. To do so, get the base URL for your endpoint:
-    - Go into Modal
-    - Find the app (default name: `datalab-marker-modal-demo`)
-    - Click on `MarkerModalDemoService`
-    - You should see the URL there
+Once the deploy is finished, you can:
+- Test a file upload locally through your CLI using an `invoke_conversion` command we expose through Modal's [`local_entrypoint`](https://modal.com/docs/reference/modal.App#local_entrypoint)
+- Get the URL of your endpoint and make a request through a client of your choice.
 
-- Make a request to `{BASE_URL}/convert` like this (you can also use Insomnia, etc. to help):
+**Test from your CLI with `invoke_conversion`**
+
+If your endpoint is live, simply run this command:
+
+```
+$ modal run marker_modal_deployment.py::invoke_conversion --pdf-file <PDF_FILE_PATH> --output-format markdown
+```
+
+And it'll automatically detect the URL of your new endpoint using [`.get_web_url()`](https://modal.com/docs/guide/webhook-urls#determine-the-url-of-a-web-endpoint-from-code), make sure it's healthy, submit your file, and store its output on your machine (in the same directory).
+
+**Making a request using your own client**
+
+If you want to make requests elsewhere e.g. with cURL or a client like Insomnia, you'll need to get the URL.
+
+When your `modal deploy` command from earlier finishes, it'll include your endpoint URL at the end. For example:
+
+```
+$ modal deploy marker_modal_deployment.py
+...
+✓ Created objects.
+├── 🔨 Created mount /marker/examples/marker_modal_deployment.py
+├── 🔨 Created function download_models.
+├── 🔨 Created function MarkerModalDemoService.*.
+└── 🔨 Created web endpoint for MarkerModalDemoService.fastapi_app => <YOUR_ENDPOINT_URL>
+✓ App deployed in 149.877s! 🎉
+```
+
+If you accidentally close your terminal session, you can also always go into Modal's dashboard and:
+  - Find the app (default name: `datalab-marker-modal-demo`)
+  - Click on `MarkerModalDemoService`
+  - Find your endpoint URL
+
+Once you have your URL, make a request to `{YOUR_ENDPOINT_URL}/convert` like this (you can also use Insomnia, etc.):
 ```
 curl --request POST \
   --url {BASE_URL}/convert \
@@ -55,3 +85,4 @@ You should get a response like this
 	"page_count": 2
 }
 ```
+

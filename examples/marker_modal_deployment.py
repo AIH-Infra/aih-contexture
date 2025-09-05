@@ -4,6 +4,7 @@ Modal deployment for Datalab Marker PDF conversion service.
 
 import modal
 import os
+from typing import Optional
 
 # Define the Modal app
 app = modal.App("datalab-marker-modal-demo")
@@ -119,7 +120,7 @@ class MarkerModalDemoService:
             self.models = None
 
     @modal.asgi_app()
-    def fastapi_app(self):
+    def marker_api(self):
         import traceback
         import io
         import base64
@@ -296,3 +297,101 @@ class MarkerModalDemoService:
                 )
 
         return web_app
+
+
+#
+# This does not get deployed. It's a useful entrypoint from your local CLI
+#    that you can use to test your deployment. It'll store the
+#    API response in a new file on your machine.
+#
+@app.local_entrypoint()
+async def invoke_conversion(
+    pdf_file: Optional[str] = None,
+    output_format: str = "markdown",
+    env: str = 'main'
+):
+    """
+    Local entrypoint to test your deployed Marker endpoint in Modal.
+
+    Usage:
+        modal run marker_modal_deployment.py::invoke_conversion --pdf-file /path/to/file.pdf --output-format markdown
+    """
+    import requests
+    import json
+    from pathlib import Path
+
+    if not pdf_file:
+        print("No PDF file specified. Use --pdf-file /path/to/your.pdf")
+        return
+
+    pdf_path = Path(pdf_file)
+    if not pdf_path.exists():
+        print(f"File not found: {pdf_file}")
+        return
+
+    #
+    # Get the web URL for our deployed service
+    #
+    try:
+        service = modal.Cls.from_name(
+            "datalab-marker-modal-demo",
+            "MarkerModalDemoService",
+            environment_name=env
+        )
+        web_url = service().marker_api.get_web_url()
+        print(f"Found deployed service at: {web_url}")
+    except Exception as e:
+        print(f"Error getting web URL: {e}")
+        print("Make sure you've deployed the service first with: modal deploy marker_modal_deployment.py")
+        return
+
+    print(f"Testing conversion of: {pdf_path.name}")
+    print(f"Output format: {output_format}")
+
+    #
+    # Test health endpoint first
+    #
+    try:
+        health_response = requests.get(f"{web_url}/health")
+        health_data = health_response.json()
+        print(f"Service health: {health_data['status']}")
+        print(f"Models loaded: {health_data['models_loaded']} ({health_data['model_count']} models)")
+
+        if not health_data['models_loaded']:
+            print("Warning: Models not loaded yet. First request may be slow.")
+
+    except Exception as e:
+        print(f"Health check failed: {e}")
+
+    #
+    # Make conversion request
+    #
+    try:
+        with open(pdf_path, 'rb') as f:
+            files = {'file': (pdf_path.name, f, 'application/pdf')}
+            data = {'output_format': output_format}
+
+            print(f"Sending request to {web_url}/convert...")
+            response = requests.post(f"{web_url}/convert", files=files, data=data)
+
+        if response.status_code == 200:
+            result = response.json()
+            print(f"✅ Conversion successful!")
+            print(f"Filename: {result['filename']}")
+            print(f"Format: {result['output_format']}")
+            print(f"Pages: {result['page_count']}")
+
+            output_file = f"{pdf_path.stem}_response.json"
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(result, f, indent=2, ensure_ascii=False)
+            print(f"Full API response saved to: {output_file}")
+
+            if result['images']:
+                print(f"Images extracted: {len(result['images'])}")
+
+        else:
+            print(f"❌ Conversion failed: {response.status_code}")
+            print(f"Error: {response.text}")
+
+    except Exception as e:
+        print(f"Request failed: {e}")
