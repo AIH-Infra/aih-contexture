@@ -89,3 +89,6 @@ You should get a response like this
 }
 ```
 
+[Modal](https://modal.com) makes deploying and scaling models and inference workloads much easier.
+
+If you're interested in Datalab's managed API or on-prem document intelligence solution, check out [our platform here](https://datalab.to/?utm_source=gh-marker).
