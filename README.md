@@ -45,12 +45,13 @@ As you can see, the use_llm mode offers higher accuracy than marker or gemini al
 
 Our model weights use a modified AI Pubs Open Rail-M license (free for research, personal use, and startups under $2M funding/revenue) and our code is GPL. For broader commercial licensing or to remove GPL requirements, visit our pricing page [here](https://www.datalab.to/pricing?utm_source=gh-marker).
 
-# Hosted API
+# Hosted API & On-prem
 
-There's a hosted API for marker available [here](https://www.datalab.to?utm_source=gh-marker):
+There's a [hosted API](https://www.datalab.to?utm_source=gh-marker) and [painless on-prem solution](https://www.datalab.to/blog/self-serve-on-prem-licensing) for marker - it's free to sign up, and we'll throw in credits for you to test it out.
 
+The API:
 - Supports PDF, image, PPT, PPTX, DOC, DOCX, XLS, XLSX, HTML, EPUB files
-- 1/4th the price of leading cloud-based competitors
+- Is 1/4th the price of leading cloud-based competitors
 - Fast - ~15s for a 250 page PDF
 - Supports LLM mode
 - High uptime (99.99%)
@@ -556,3 +557,10 @@ PDF is a tricky format, so marker will not always work perfectly.  Here are some
 - Forms may not be rendered well
 
 Note: Passing the `--use_llm` and `--force_ocr` flags will mostly solve these issues.
+
+# Usage and Deployment Examples
+
+You can always run `marker` locally, but if you wanted to expose it as an API, we have a few options:
+- [Deployment example with Modal](./examples/README_MODAL.md) that shows you how to deploy and access `marker` through a web endpoint using [`Modal`](https://modal.com), which makes compute easy to provision and scale.
+- Our platform API is also powered by `marker` and `surya` and is easy to test out - it's free to sign up, and we'll include credits, [try it out here](https://datalab.to)
+- Our painless on-prem solution for commercial use, which you can [read about here](https://www.datalab.to/blog/self-serve-on-prem-licensing)
