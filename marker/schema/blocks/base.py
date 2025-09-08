@@ -100,6 +100,7 @@ class Block(BaseModel):
     lowres_image: Image.Image | None = None
     highres_image: Image.Image | None = None
     removed: bool = False  # Has block been replaced by new block?
+    _metadata: Optional[dict] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
