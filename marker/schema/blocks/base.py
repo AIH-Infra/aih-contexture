@@ -100,6 +100,7 @@ class Block(BaseModel):
     lowres_image: Image.Image | None = None
     highres_image: Image.Image | None = None
     removed: bool = False  # Has block been replaced by new block?
+    _metadata: Optional[dict] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -113,6 +114,16 @@ class Block(BaseModel):
     def from_block(cls, block: Block) -> Block:
         block_attrs = block.model_dump(exclude=["id", "block_id", "block_type"])
         return cls(**block_attrs)
+
+    def set_internal_metadata(self, key, data):
+        if self._metadata is None:
+            self._metadata = {}
+        self._metadata[key] = data
+
+    def get_internal_metadata(self, key):
+        if self._metadata is None:
+            return None
+        return self._metadata.get(key)
 
     def get_image(
         self,
