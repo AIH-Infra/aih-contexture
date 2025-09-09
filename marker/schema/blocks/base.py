@@ -115,6 +115,16 @@ class Block(BaseModel):
         block_attrs = block.model_dump(exclude=["id", "block_id", "block_type"])
         return cls(**block_attrs)
 
+    def set_internal_metadata(self, key, data):
+        if self._metadata is None:
+            self._metadata = {}
+        self._metadata[key] = data
+
+    def get_internal_metadata(self, key):
+        if self._metadata is None:
+            return None
+        return self._metadata.get(key)
+
     def get_image(
         self,
         document: Document,

@@ -1,5 +1,7 @@
 import os
 
+from marker.schema.document import Document
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"  # disables a tokenizers warning
 
 from collections import defaultdict
@@ -171,7 +173,7 @@ class PdfConverter(BaseConverter):
             if temp_file is not None and os.path.exists(temp_file.name):
                 os.unlink(temp_file.name)
 
-    def build_document(self, filepath: str):
+    def build_document(self, filepath: str) -> Document:
         provider_cls = provider_from_filepath(filepath)
         layout_builder = self.resolve_dependencies(self.layout_builder_class)
         line_builder = self.resolve_dependencies(LineBuilder)
