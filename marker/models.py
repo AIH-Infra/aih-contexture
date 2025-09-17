@@ -16,11 +16,11 @@ def create_model_dict(
     device=None, dtype=None, attention_implementation: str | None = None
 ) -> dict:
     foundation_predictor = FoundationPredictor(
-        device=device, dtype=dtype, attention_implementation=attention_implementation
+        device=device, dtype=dtype
     )
     return {
         "foundation_model": foundation_predictor,
-        "layout_model": LayoutPredictor(device=device, dtype=dtype),
+        "layout_model": LayoutPredictor(foundation_predictor),
         "recognition_model": RecognitionPredictor(foundation_predictor),
         "table_rec_model": TableRecPredictor(device=device, dtype=dtype),
         "detection_model": DetectionPredictor(device=device, dtype=dtype),
