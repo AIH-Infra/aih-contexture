@@ -70,7 +70,6 @@ class LineBuilder(BaseBuilder):
         BlockTypes.Table,
         BlockTypes.Form,
         BlockTypes.TableOfContents,
-        BlockTypes.Equation,
     )
     disable_tqdm: Annotated[
         bool,
