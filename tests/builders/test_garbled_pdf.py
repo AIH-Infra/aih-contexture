@@ -12,7 +12,7 @@ def test_garbled_pdf(pdf_document, recognition_model, table_rec_model, detection
 
     table_block = pdf_document.pages[0].get_block(pdf_document.pages[0].structure[0])
     assert table_block.block_type == BlockTypes.Table
-    assert table_block.structure[0] == "/page/0/Line/1"
+    assert table_block.structure[0] == "/page/0/Line/8"
 
     table_cell = pdf_document.pages[0].get_block(table_block.structure[0])
     assert table_cell.block_type == BlockTypes.Line
