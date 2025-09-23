@@ -70,7 +70,6 @@ class LineBuilder(BaseBuilder):
         BlockTypes.Table,
         BlockTypes.Form,
         BlockTypes.TableOfContents,
-        BlockTypes.Equation,
     )
     disable_tqdm: Annotated[
         bool,
@@ -81,6 +80,7 @@ class LineBuilder(BaseBuilder):
         "Disable OCR for the document. This will only use the lines from the provider.",
     ] = False
     keep_chars: Annotated[bool, "Keep individual characters."] = False
+    detection_line_min_confidence: Annotated[float, "Minimum confidence for a detected line to be included"] = 0.8
 
     def __init__(
         self,
@@ -191,7 +191,7 @@ class LineBuilder(BaseBuilder):
             detection_boxes = []
             if detection_result:
                 detection_boxes = [
-                    PolygonBox(polygon=box.polygon) for box in detection_result.bboxes
+                    PolygonBox(polygon=box.polygon) for box in detection_result.bboxes if box.confidence > self.detection_line_min_confidence
                 ]
 
             detection_boxes = sort_text_lines(detection_boxes)
