@@ -169,6 +169,8 @@ class PageGroup(Group):
 
         max_intersection_pct = 0
         for block_idx, block in enumerate(structure_blocks):
+            if block.polygon.area == 0:
+                continue
             max_intersection_pct = max(max_intersection_pct, np.max(intersection_matrix[block_idx]) / block.polygon.area)
 
         return max_intersection_pct
