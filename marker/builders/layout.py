@@ -146,7 +146,9 @@ class LayoutBuilder(BaseBuilder):
                     layout_page_size, provider_page_size
                 ).fit_to_bounds((0, 0, *provider_page_size))
                 layout_block.top_k = {
-                    BlockTypes[label]: prob for (label, prob) in bbox.top_k.items()
+                    BlockTypes[label]: prob
+                    for (label, prob) in bbox.top_k.items()
+                    if label in BlockTypes.__members__
                 }
                 page.add_structure(layout_block)
 
