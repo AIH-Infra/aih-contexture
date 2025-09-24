@@ -62,6 +62,7 @@ class Markdownify(MarkdownConverter):
         page_separator,
         inline_math_delimiters,
         block_math_delimiters,
+        html_tables_in_markdown,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -69,6 +70,7 @@ class Markdownify(MarkdownConverter):
         self.page_separator = page_separator
         self.inline_math_delimiters = inline_math_delimiters
         self.block_math_delimiters = block_math_delimiters
+        self.html_tables_in_markdown = html_tables_in_markdown
 
     def convert_div(self, el, text, parent_tags):
         is_page = el.has_attr("class") and el["class"][0] == "page"
@@ -116,6 +118,9 @@ class Markdownify(MarkdownConverter):
             )
 
     def convert_table(self, el, text, parent_tags):
+        if self.html_tables_in_markdown:
+            return "\n\n" + str(el) + "\n\n"
+
         total_rows = len(el.find_all("tr"))
         colspans = []
         rowspan_cols = defaultdict(int)
@@ -268,6 +273,9 @@ class MarkdownRenderer(HTMLRenderer):
     block_math_delimiters: Annotated[
         Tuple[str], "The delimiters to use for block math."
     ] = ("$$", "$$")
+    html_tables_in_markdown: Annotated[
+        bool, "Return tables formatted as HTML, instead of in markdown"
+    ] = False
 
     @property
     def md_cls(self):
@@ -284,6 +292,7 @@ class MarkdownRenderer(HTMLRenderer):
             sup_symbol="<sup>",
             inline_math_delimiters=self.inline_math_delimiters,
             block_math_delimiters=self.block_math_delimiters,
+            html_tables_in_markdown=self.html_tables_in_markdown
         )
 
     def __call__(self, document: Document) -> MarkdownOutput:

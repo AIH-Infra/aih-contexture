@@ -47,6 +47,8 @@ class OcrBuilder(BaseBuilder):
         BlockTypes.Figure,
         BlockTypes.Picture,
         BlockTypes.Table,
+        BlockTypes.Form,
+        BlockTypes.TableOfContents,
     ]
     full_ocr_block_types: Annotated[
         List[BlockTypes],

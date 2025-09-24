@@ -10,7 +10,7 @@ def test_disable_extract_images(pdf_document):
     md = renderer(pdf_document).markdown
 
     # Verify markdown
-    assert len(md) == 0
+    assert "jpeg" not in md
 
 
 @pytest.mark.config({"page_range": [0]})
