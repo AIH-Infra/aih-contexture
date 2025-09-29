@@ -244,7 +244,7 @@ class PdfProvider(BaseProvider):
                         superscript = span.get("superscript", False)
                         subscript = span.get("subscript", False)
                         text = self.normalize_spaces(fix_text(span["text"]))
-                        if superscript or superscript:
+                        if superscript or subscript:
                             text = text.strip()
 
                         spans.append(
