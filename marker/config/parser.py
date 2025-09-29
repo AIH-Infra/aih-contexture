@@ -4,7 +4,6 @@ from typing import Dict
 
 import click
 
-from marker.config.crawler import crawler
 from marker.converters.pdf import PdfConverter
 from marker.logger import get_logger
 from marker.renderers.chunk import ChunkRenderer
@@ -107,8 +106,7 @@ class ConfigParser:
                 case "disable_image_extraction":
                     config["extract_images"] = False
                 case _:
-                    if k in crawler.attr_set:
-                        config[k] = v
+                    config[k] = v
 
         # Backward compatibility for google_api_key
         if settings.GOOGLE_API_KEY:
