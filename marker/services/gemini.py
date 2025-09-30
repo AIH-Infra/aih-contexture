@@ -21,6 +21,9 @@ class BaseGeminiService(BaseService):
     gemini_model_name: Annotated[
         str, "The name of the Google model to use for the service."
     ] = "gemini-2.0-flash"
+    thinking_budget: Annotated[
+        int, "The thinking token budget to use for the service."
+    ] = None
 
     def img_to_bytes(self, img: PIL.Image.Image):
         image_bytes = BytesIO()
@@ -65,6 +68,12 @@ class BaseGeminiService(BaseService):
             }
             if self.max_output_tokens:
                 config["max_output_tokens"] = self.max_output_tokens
+
+            if self.thinking_budget is not None:
+                # For gemini models, we can optionally set a thinking budget in the config
+                config["thinking_config"] = types.ThinkingConfig(
+                    thinking_budget=self.thinking_budget
+                )
 
             try:
                 responses = client.models.generate_content(
