@@ -344,11 +344,11 @@ with st.sidebar:
     force_ocr = False
     use_llm = False
 
-    # VLM 版面识别 defaults
-    vlm_layout_use_separate_config = False  # 是否使用独立配置
+    # VLM 版面识别 defaults (独立配置,不与OCR绑定)
     vlm_layout_base_url = os.environ.get("VLM_LAYOUT_BASE_URL", "http://127.0.0.1:1234/v1")
     vlm_layout_model = os.environ.get("VLM_LAYOUT_MODEL", "gpt-4o-mini")
     vlm_layout_api_key = os.environ.get("VLM_LAYOUT_API_KEY", "lm-studio")
+    vlm_layout_max_concurrent = int(os.environ.get("VLM_LAYOUT_MAX_CONCURRENT", "3"))
     vlm_layout_prompt_template = "modern"
     vlm_layout_prompt = ""
     vlm_layout_timeout = 120
@@ -748,66 +748,69 @@ with st.sidebar:
             elif layout_backend == "vlm":
                 st.success("🤖 **VLM 版面识别**\n\n使用视觉语言模型进行版面分析。")
                 with st.expander("VLM 版面识别配置", expanded=False):
-                    # API 配置选项
-                    vlm_layout_use_separate_config = st.checkbox(
-                        "使用独立的 API 配置（不复用 OCR VLM 配置）",
-                        value=vlm_layout_use_separate_config,
-                        help="勾选后可以为 Layout 和 OCR 使用不同的模型和 API",
+                    st.caption("📌 VLM Layout API 配置 (独立配置)")
+
+                    # API 配置
+                    vlm_layout_base_url = st.text_input(
+                        "Base URL",
+                        value=vlm_layout_base_url,
+                        help="OpenAI 兼容 API 的基础 URL",
+                        key="vlm_layout_base_url"
+                    )
+                    vlm_layout_model = st.text_input(
+                        "模型名称",
+                        value=vlm_layout_model,
+                        help="例如: gpt-4o, gpt-4o-mini, qwen-vl-max",
+                        key="vlm_layout_model"
+                    )
+                    vlm_layout_api_key = st.text_input(
+                        "API Key",
+                        value=vlm_layout_api_key,
+                        type="password",
+                        help="API 密钥（LM Studio 可以填任意值）",
+                        key="vlm_layout_api_key"
                     )
 
-                    if vlm_layout_use_separate_config:
-                        st.caption("📌 VLM Layout 专用 API 配置")
-                        vlm_layout_base_url = st.text_input(
-                            "Base URL",
-                            value=vlm_layout_base_url,
-                            help="OpenAI 兼容 API 的基础 URL",
-                        )
-                        vlm_layout_model = st.text_input(
-                            "模型名称",
-                            value=vlm_layout_model,
-                            help="例如: gpt-4o, gpt-4o-mini, qwen-vl-max",
-                        )
-                        vlm_layout_api_key = st.text_input(
-                            "API Key",
-                            value=vlm_layout_api_key,
-                            type="password",
-                            help="API 密钥（LM Studio 可以填任意值）",
-                        )
+                    # 并发配置
+                    vlm_layout_max_concurrent = st.slider(
+                        "最大并发数",
+                        min_value=1,
+                        max_value=20,
+                        value=int(vlm_layout_max_concurrent),
+                        help="同时处理的页面数",
+                        key="vlm_layout_max_concurrent"
+                    )
 
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            vlm_layout_image_format = st.selectbox(
-                                "图像格式",
-                                options=["jpeg", "png", "webp"],
-                                index=["jpeg", "png", "webp"].index(vlm_layout_image_format),
-                            )
-                            vlm_layout_max_image_dimension = st.number_input(
-                                "图像最大边长（像素）",
-                                min_value=512,
-                                max_value=4096,
-                                value=int(vlm_layout_max_image_dimension),
-                                step=128,
-                            )
-                        with col2:
-                            vlm_layout_jpeg_quality = st.number_input(
-                                "JPEG 质量 (1-100)",
-                                min_value=1,
-                                max_value=100,
-                                value=int(vlm_layout_jpeg_quality),
-                            )
-                            vlm_layout_timeout = st.number_input(
-                                "超时时间（秒）",
-                                min_value=30,
-                                max_value=300,
-                                value=int(vlm_layout_timeout),
-                            )
-                    else:
-                        st.caption("📌 复用 OCR VLM 的 API 配置（Base URL、模型、API Key）")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        vlm_layout_image_format = st.selectbox(
+                            "图像格式",
+                            options=["jpeg", "png", "webp"],
+                            index=["jpeg", "png", "webp"].index(vlm_layout_image_format),
+                            key="vlm_layout_image_format"
+                        )
+                        vlm_layout_max_image_dimension = st.number_input(
+                            "图像最大边长（像素）",
+                            min_value=512,
+                            max_value=4096,
+                            value=int(vlm_layout_max_image_dimension),
+                            step=128,
+                            key="vlm_layout_max_image_dimension"
+                        )
+                    with col2:
+                        vlm_layout_jpeg_quality = st.number_input(
+                            "JPEG 质量 (1-100)",
+                            min_value=1,
+                            max_value=100,
+                            value=int(vlm_layout_jpeg_quality),
+                            key="vlm_layout_jpeg_quality"
+                        )
                         vlm_layout_timeout = st.number_input(
                             "超时时间（秒）",
                             min_value=30,
                             max_value=300,
                             value=int(vlm_layout_timeout),
+                            key="vlm_layout_timeout"
                         )
 
                     # 提示词配置
@@ -1041,14 +1044,27 @@ with st.sidebar:
                 "Base URL",
                 value=openai_base_url,
                 help="OpenAI 兼容 API 地址（如 LM Studio）",
+                key="vlm_ocr_base_url"
                 )
-                openai_model = st.text_input("模型名称", value=openai_model)
-                openai_api_key = st.text_input("API Key", value=openai_api_key, type="password")
+                openai_model = st.text_input("模型名称", value=openai_model, key="vlm_ocr_model")
+                openai_api_key = st.text_input("API Key", value=openai_api_key, type="password", key="vlm_ocr_api_key")
+
+                # 并发配置
+                openai_max_concurrent = st.slider(
+                    "最大并发数",
+                    min_value=1,
+                    max_value=20,
+                    value=3,
+                    help="同时处理的OCR请求数",
+                    key="vlm_ocr_max_concurrent"
+                )
+
                 openai_image_format = st.selectbox(
                 "图像格式",
                 options=["jpeg", "png", "webp"],
                 index=["jpeg", "png", "webp"].index(openai_image_format) if openai_image_format in ["jpeg", "png", "webp"] else 0,
                 help="发送给 VLM 的图像格式",
+                key="vlm_ocr_image_format"
                 )
 
                 st.markdown("---")
@@ -1691,23 +1707,16 @@ if uploaded_files and len(uploaded_files) > 0:
                             # 如果都为空，使用默认模板
                             vlm_layout_config["vlm_layout_prompt_template"] = "modern"
 
-                        if vlm_layout_use_separate_config:
-                            # 使用独立的 VLM Layout 配置
-                            vlm_layout_config.update({
-                                "vlm_layout_base_url": vlm_layout_base_url,
-                                "vlm_layout_model": vlm_layout_model,
-                                "vlm_layout_api_key": vlm_layout_api_key,
-                                "vlm_layout_image_format": vlm_layout_image_format,
-                                "vlm_layout_max_image_dimension": vlm_layout_max_image_dimension,
-                                "vlm_layout_jpeg_quality": vlm_layout_jpeg_quality,
-                            })
-                        else:
-                            # 复用 OCR VLM 的 API 配置
-                            vlm_layout_config.update({
-                                "openai_base_url": openai_base_url,
-                                "openai_model": openai_model,
-                                "openai_api_key": openai_api_key,
-                            })
+                        # VLM Layout 始终使用独立配置
+                        vlm_layout_config.update({
+                            "vlm_layout_base_url": vlm_layout_base_url,
+                            "vlm_layout_model": vlm_layout_model,
+                            "vlm_layout_api_key": vlm_layout_api_key,
+                            "vlm_layout_max_concurrent": vlm_layout_max_concurrent,
+                            "vlm_layout_image_format": vlm_layout_image_format,
+                            "vlm_layout_max_image_dimension": vlm_layout_max_image_dimension,
+                            "vlm_layout_jpeg_quality": vlm_layout_jpeg_quality,
+                        })
 
                         config_params.update(vlm_layout_config)
 
