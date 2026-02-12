@@ -1,38 +1,39 @@
 @echo off
+chcp 65001 >nul
 
-:: AIH-Contexture Æô¶¯½Å±¾ (Windows)
+:: AIH-Contexture å¯åŠ¨è„šæœ¬ (Windows)
 
-:: ÇĞ»»µ½½Å±¾ËùÔÚÄ¿Â¼
+:: åˆ‡æ¢åˆ°è„šæœ¬æ‰€åœ¨ç›®å½•
 cd /d "%~dp0"
 
 echo.
 echo ==========================================
-echo   AIH-Contexture Æô¶¯ÖĞ...
-echo   ÃæÏòÈËÎÄÑ§¿ÆµÄÎÄÏ×½á¹¹»¯ÌáÈ¡Æ½Ì¨
+echo   AIH-Contexture å¯åŠ¨ä¸­...
+echo   é¢å‘äººæ–‡å­¦ç§‘çš„æ–‡çŒ®ç»“æ„åŒ–æå–å¹³å°
 echo ==========================================
 echo.
 
-:: ÊÍ·Å¶Ë¿Ú 6006£¨ÇåÀí²ĞÁô½ø³Ì£©
+:: é‡Šæ”¾ç«¯å£ 6006ï¼ˆæ¸…ç†æ®‹ç•™è¿›ç¨‹ï¼‰
 for /f "tokens=5" %%a in ('netstat -ano ^| findstr :6006 ^| findstr LISTENING') do (
     taskkill /f /pid %%a >nul 2>&1
 )
 
-:: ¼ì²éĞéÄâ»·¾³
+:: æ£€æŸ¥è™šæ‹Ÿç¯å¢ƒ
 if not exist .venv\Scripts\activate.bat (
-    echo [´íÎó] Î´ÕÒµ½ĞéÄâ»·¾³
-    echo ÇëÏÈÔËĞĞ install.bat °²×°
+    echo [é”™è¯¯] æœªæ‰¾åˆ°è™šæ‹Ÿç¯å¢ƒ
+    echo è¯·å…ˆè¿è¡Œ install.bat å®‰è£…
     pause
     exit /b 1
 )
 
-:: ¼¤»îĞéÄâ»·¾³
+:: æ¿€æ´»è™šæ‹Ÿç¯å¢ƒ
 call .venv\Scripts\activate.bat
 
-:: Æô¶¯Ó¦ÓÃ
-echo ÕıÔÚÆô¶¯ Web ½çÃæ...
+:: å¯åŠ¨åº”ç”¨
+echo æ­£åœ¨å¯åŠ¨ Web ç•Œé¢...
 echo.
-echo ·ÃÎÊµØÖ·: http://localhost:6006
-echo °´ Ctrl+C Í£Ö¹·şÎñ
+echo è®¿é—®åœ°å€: http://localhost:6006
+echo æŒ‰ Ctrl+C åœæ­¢æœåŠ¡
 echo.
 
 python contexture_app.py
