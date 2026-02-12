@@ -1,6 +1,6 @@
 import pytest
 
-from marker.processors.document_toc import DocumentTOCProcessor
+from aih_contexture.processors.document_toc import DocumentTOCProcessor
 
 
 @pytest.mark.config({"page_range": [0]})

@@ -1,17 +1,17 @@
 from unittest.mock import MagicMock, Mock
 
 import pytest
-from marker.processors.llm.llm_complex import LLMComplexRegionProcessor
-from marker.processors.llm.llm_equation import LLMEquationProcessor
+from aih_contexture.processors.llm.llm_complex import LLMComplexRegionProcessor
+from aih_contexture.processors.llm.llm_equation import LLMEquationProcessor
 
-from marker.processors.llm.llm_form import LLMFormProcessor
-from marker.processors.llm.llm_image_description import LLMImageDescriptionProcessor
-from marker.processors.llm.llm_meta import LLMSimpleBlockMetaProcessor
-from marker.processors.llm.llm_table import LLMTableProcessor
-from marker.processors.table import TableProcessor
-from marker.renderers.markdown import MarkdownRenderer
-from marker.schema import BlockTypes
-from marker.schema.blocks import ComplexRegion
+from aih_contexture.processors.llm.llm_form import LLMFormProcessor
+from aih_contexture.processors.llm.llm_image_description import LLMImageDescriptionProcessor
+from aih_contexture.processors.llm.llm_meta import LLMSimpleBlockMetaProcessor
+from aih_contexture.processors.llm.llm_table import LLMTableProcessor
+from aih_contexture.processors.table import TableProcessor
+from aih_contexture.renderers.markdown import MarkdownRenderer
+from aih_contexture.schema import BlockTypes
+from aih_contexture.schema.blocks import ComplexRegion
 
 
 @pytest.mark.filename("form_1040.pdf")

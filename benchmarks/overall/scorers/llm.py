@@ -10,7 +10,7 @@ from google import genai
 import pypdfium2 as pdfium
 
 from benchmarks.overall.scorers import BaseScorer, BlockScores
-from marker.settings import settings
+from aih_contexture.settings import settings
 
 rating_prompt = """
 You're a document analysis expert who is comparing some markdown to an image to make sure the markdown is correct. You're rating how effectively the provided markdown represents the full text and formatting in the image provided.

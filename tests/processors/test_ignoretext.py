@@ -1,7 +1,7 @@
 import pytest
 
-from marker.processors.ignoretext import IgnoreTextProcessor
-from marker.schema import BlockTypes
+from aih_contexture.processors.ignoretext import IgnoreTextProcessor
+from aih_contexture.schema import BlockTypes
 
 
 @pytest.mark.filename("bio_pdf.pdf")

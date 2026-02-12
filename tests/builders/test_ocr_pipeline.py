@@ -1,7 +1,7 @@
 import pytest
 
-from marker.schema import BlockTypes
-from marker.schema.text.line import Line
+from aih_contexture.schema import BlockTypes
+from aih_contexture.schema.text.line import Line
 
 
 def _ocr_pipeline_test(pdf_document):

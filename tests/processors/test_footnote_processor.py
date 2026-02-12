@@ -1,7 +1,7 @@
 import pytest
 
-from marker.processors.footnote import FootnoteProcessor
-from marker.schema import BlockTypes
+from aih_contexture.processors.footnote import FootnoteProcessor
+from aih_contexture.schema import BlockTypes
 
 
 @pytest.mark.filename("population_stats.pdf")

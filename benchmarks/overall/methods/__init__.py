@@ -8,7 +8,7 @@ from PIL import Image
 from playwright.sync_api import sync_playwright
 
 from benchmarks.overall.methods.schema import BenchmarkResult
-from marker.renderers.markdown import MarkdownRenderer
+from aih_contexture.renderers.markdown import MarkdownRenderer
 
 
 class BaseMethod:

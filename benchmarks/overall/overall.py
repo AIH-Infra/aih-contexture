@@ -13,9 +13,9 @@ from tqdm import tqdm
 from benchmarks.overall.display.dataset import build_dataset
 from benchmarks.overall.registry import SCORE_REGISTRY, METHOD_REGISTRY
 from benchmarks.overall.schema import FullResult
-from marker.logger import configure_logging
-from marker.models import create_model_dict
-from marker.settings import settings
+from aih_contexture.logger import configure_logging
+from aih_contexture.models import create_model_dict
+from aih_contexture.settings import settings
 from benchmarks.overall.display.table import print_scores
 
 configure_logging()

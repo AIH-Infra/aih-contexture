@@ -2,9 +2,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from marker.processors.llm.llm_table_merge import LLMTableMergeProcessor
-from marker.processors.table import TableProcessor
-from marker.schema import BlockTypes
+from aih_contexture.processors.llm.llm_table_merge import LLMTableMergeProcessor
+from aih_contexture.processors.table import TableProcessor
+from aih_contexture.schema import BlockTypes
 
 
 @pytest.mark.filename("table_ex2.pdf")

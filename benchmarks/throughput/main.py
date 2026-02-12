@@ -47,9 +47,9 @@ def single_batch(
 
     torch.set_num_threads(num_threads)
 
-    from marker.converters.pdf import PdfConverter
-    from marker.models import create_model_dict
-    from marker.output import text_from_rendered
+    from aih_contexture.converters.pdf import PdfConverter
+    from aih_contexture.models import create_model_dict
+    from aih_contexture.output import text_from_rendered
 
     ds = datasets.load_dataset("datalab-to/pdfs", split="train")
     model_dict = create_model_dict()

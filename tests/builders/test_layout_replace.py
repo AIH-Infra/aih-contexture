@@ -1,11 +1,11 @@
 import pytest
 
-from marker.builders.document import DocumentBuilder
-from marker.builders.layout import LayoutBuilder
-from marker.builders.line import LineBuilder
-from marker.renderers.markdown import MarkdownRenderer
-from marker.schema import BlockTypes
-from marker.schema.registry import get_block_class
+from aih_contexture.builders.document import DocumentBuilder
+from aih_contexture.builders.layout import LayoutBuilder
+from aih_contexture.builders.line import LineBuilder
+from aih_contexture.renderers.markdown import MarkdownRenderer
+from aih_contexture.schema import BlockTypes
+from aih_contexture.schema.registry import get_block_class
 
 
 @pytest.mark.filename("thinkpython.pdf")

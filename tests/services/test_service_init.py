@@ -1,11 +1,11 @@
 import pytest
 
-from marker.converters.pdf import PdfConverter
-from marker.services.gemini import GoogleGeminiService
-from marker.services.ollama import OllamaService
-from marker.services.vertex import GoogleVertexService
-from marker.services.openai import OpenAIService
-from marker.services.azure_openai import AzureOpenAIService
+from aih_contexture.converters.pdf import PdfConverter
+from aih_contexture.services.gemini import GoogleGeminiService
+from aih_contexture.services.ollama import OllamaService
+from aih_contexture.services.vertex import GoogleVertexService
+from aih_contexture.services.ocr_vlm import VlmOcrService
+from aih_contexture.services.azure_openai import AzureOpenAIService
 
 
 @pytest.mark.output_format("markdown")
@@ -59,13 +59,13 @@ def test_llm_ollama(pdf_converter: PdfConverter, temp_doc):
     {
         "page_range": [0],
         "use_llm": True,
-        "llm_service": "marker.services.openai.OpenAIService",
+        "llm_service": "marker.services.ocr_vlm.VlmOcrService",
         "openai_api_key": "test",
     }
 )
 def test_llm_openai(pdf_converter: PdfConverter, temp_doc):
     assert pdf_converter.artifact_dict["llm_service"] is not None
-    assert isinstance(pdf_converter.llm_service, OpenAIService)
+    assert isinstance(pdf_converter.llm_service, VlmOcrService)
 
 
 @pytest.mark.output_format("markdown")

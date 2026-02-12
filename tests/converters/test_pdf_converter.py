@@ -1,8 +1,8 @@
 import io
 
 import pytest
-from marker.converters.pdf import PdfConverter
-from marker.renderers.markdown import MarkdownOutput
+from aih_contexture.converters.pdf import PdfConverter
+from aih_contexture.renderers.markdown import MarkdownOutput
 
 
 @pytest.mark.output_format("markdown")

@@ -1,7 +1,7 @@
 import pytest
 
-from marker.converters.ocr import OCRConverter
-from marker.renderers.ocr_json import OCRJSONOutput, OCRJSONPageOutput
+from aih_contexture.converters.ocr import OCRConverter
+from aih_contexture.renderers.ocr_json import OCRJSONOutput, OCRJSONPageOutput
 
 
 def _ocr_converter(config, model_dict, temp_pdf, line_count: int, eq_count: int):

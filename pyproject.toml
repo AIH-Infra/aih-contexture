@@ -1,18 +1,18 @@
 [tool.poetry]
-name = "marker-pdf"
-version = "1.10.1"
-description = "Convert documents to markdown with high speed and accuracy."
-authors = ["Vik Paruchuri <github@vikas.sh>"]
+name = "aih-contexture"
+version = "0.1.0"
+description = "Weaving Data from History - 面向人文学科的文献结构化提取平台"
+authors = ["Güriedrich & Baireinhold <aih-infra@example.com>"]
 readme = "README.md"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/VikParuchuri/marker"
-keywords = ["pdf", "markdown", "ocr", "nlp"]
+repository = "https://github.com/AIH-Infra/aih-contexture"
+keywords = ["pdf", "markdown", "ocr", "humanities", "digital-humanities", "historical-documents"]
 packages = [
-    {include = "marker"}
+    {include = "aih_contexture"}
 ]
 include = [
-    "marker/scripts/*.sh",
-    "marker/scripts/*.html",
+    "aih_contexture/scripts/*.sh",
+    "aih_contexture/scripts/*.html",
 ]
 
 [tool.poetry.dependencies]
@@ -66,12 +66,12 @@ playwright = "^1.49.1"
 full = ["mammoth", "openpyxl", "python-pptx", "ebooklib", "weasyprint"]
 
 [tool.poetry.scripts]
-marker = "marker.scripts.convert:convert_cli"
-marker_single = "marker.scripts.convert_single:convert_single_cli"
-marker_chunk_convert = "marker.scripts.chunk_convert:chunk_convert_cli"
-marker_gui = "marker.scripts.run_streamlit_app:streamlit_app_cli"
-marker_extract = "marker.scripts.run_streamlit_app:extraction_app_cli"
-marker_server = "marker.scripts.server:server_cli"
+contexture = "aih_contexture.scripts.convert:convert_cli"
+contexture_single = "aih_contexture.scripts.convert_single:convert_single_cli"
+contexture_chunk = "aih_contexture.scripts.chunk_convert:chunk_convert_cli"
+contexture_gui = "aih_contexture.scripts.run_streamlit_app:streamlit_app_cli"
+contexture_extract = "aih_contexture.scripts.run_streamlit_app:extraction_app_cli"
+contexture_server = "aih_contexture.scripts.server:server_cli"
 
 [build-system]
 requires = ["poetry-core"]

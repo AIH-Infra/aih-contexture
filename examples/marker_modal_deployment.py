@@ -36,7 +36,7 @@ def setup_models_with_cache_check(logger, commit_volume=False):
     """
     import os
     import gc
-    from marker.models import create_model_dict
+    from aih_contexture.models import create_model_dict
 
     # Check if models exist in cache
     models_dir_exists = os.path.exists(MODEL_PATH_PREFIX)
@@ -132,9 +132,9 @@ class MarkerModalDemoService:
         from fastapi import FastAPI, Form, File, UploadFile, HTTPException
         from fastapi.responses import JSONResponse
 
-        from marker.converters.pdf import PdfConverter
-        from marker.config.parser import ConfigParser
-        from marker.settings import settings
+        from aih_contexture.converters.pdf import PdfConverter
+        from aih_contexture.config.parser import ConfigParser
+        from aih_contexture.settings import settings
 
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
         logger = logging.getLogger(__name__)
@@ -249,7 +249,7 @@ class MarkerModalDemoService:
                     # For JSON, return the structured data directly
                     json_content = rendered_output.model_dump()
                 else:
-                    from marker.output import text_from_rendered
+                    from aih_contexture.output import text_from_rendered
                     text, _, images = text_from_rendered(rendered_output)
 
                     # Assign to appropriate content field

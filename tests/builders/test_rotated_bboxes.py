@@ -1,6 +1,6 @@
 import pytest
 
-from marker.schema import BlockTypes
+from aih_contexture.schema import BlockTypes
 
 
 @pytest.mark.config({"page_range": [0]})

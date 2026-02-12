@@ -13,7 +13,7 @@ from tabulate import tabulate
 import json
 from concurrent.futures import ProcessPoolExecutor
 
-from marker.settings import settings
+from aih_contexture.settings import settings
 from benchmarks.table.inference import inference_tables
 
 from scoring import wrap_table_html, similarity_eval_html

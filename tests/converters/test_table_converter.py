@@ -1,7 +1,7 @@
 import pytest
-from marker.converters.table import TableConverter
-from marker.renderers.markdown import MarkdownOutput
-from marker.util import classes_to_strings
+from aih_contexture.converters.table import TableConverter
+from aih_contexture.renderers.markdown import MarkdownOutput
+from aih_contexture.util import classes_to_strings
 
 def _table_converter(config, model_dict, renderer, temp_pdf):
     converter = TableConverter(

@@ -1,5 +1,5 @@
-from marker.providers.image import ImageProvider
-from marker.renderers.markdown import MarkdownOutput
+from aih_contexture.providers.image import ImageProvider
+from aih_contexture.renderers.markdown import MarkdownOutput
 
 
 def test_image_provider(config, temp_image):

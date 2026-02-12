@@ -1,6 +1,6 @@
 import pytest
 
-from marker.renderers.json import JSONRenderer
+from aih_contexture.renderers.json import JSONRenderer
 
 
 @pytest.mark.config({"page_range": [0]})

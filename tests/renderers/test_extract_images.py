@@ -1,6 +1,6 @@
 import pytest
 
-from marker.renderers.markdown import MarkdownRenderer
+from aih_contexture.renderers.markdown import MarkdownRenderer
 
 
 @pytest.mark.config({"page_range": [0]})

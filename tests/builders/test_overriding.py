@@ -2,12 +2,12 @@ import multiprocessing as mp
 
 import pytest
 
-from marker.providers.pdf import PdfProvider
-from marker.schema import BlockTypes
-from marker.schema.blocks import SectionHeader
-from marker.schema.document import Document
-from marker.schema.registry import register_block_class
-from marker.schema.text import Line
+from aih_contexture.providers.pdf import PdfProvider
+from aih_contexture.schema import BlockTypes
+from aih_contexture.schema.blocks import SectionHeader
+from aih_contexture.schema.document import Document
+from aih_contexture.schema.registry import register_block_class
+from aih_contexture.schema.text import Line
 from tests.utils import setup_pdf_provider
 
 

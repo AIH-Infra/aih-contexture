@@ -1,0 +1,55 @@
+# 档案文件模板
+# 针对历史档案、公文、手稿等的优化配置
+
+name: "Archive Documents"
+scenario: "archive_documents"
+description: "针对历史档案、官方公文、手写文档的优化配置"
+version: "1.0"
+author: "Marker Community"
+tags:
+  - "archive"
+  - "historical"
+  - "handwriting"
+  - "official"
+  - "manuscript"
+
+layout:
+  layout_backend: "surya"
+  reading_direction: "ltr"
+  column_layout: "single"
+  expected_block_types:
+    - "Text"
+    - "Handwriting"
+    - "SectionHeader"
+    - "Form"
+    - "Table"
+  expand_block_types:
+    - "Picture"
+    - "Figure"
+    - "Form"
+  max_expand_frac: 0.08  # 档案文件边距可能不规则
+
+ocr:
+  ocr_backend: "surya"
+  language_hints: []  # 根据具体档案设置
+  force_ocr: true  # 扫描件通常需要 OCR
+  ocr_batch_size: 24
+
+page_numbering:
+  enabled: true
+  format: "arabic"
+  use_printed_page_number: false  # 档案通常使用机器编号
+  printed_number_location: "corner"
+
+metadata:
+  document_type: "archive"
+  typical_content:
+    - "official documents"
+    - "correspondence"
+    - "legal records"
+    - "manuscripts"
+  challenges:
+    - "variable quality"
+    - "handwriting"
+    - "stamps and seals"
+    - "aging damage"

@@ -8,14 +8,14 @@ import base64
 import tempfile
 
 from benchmarks.table.gemini import gemini_table_rec
-from marker.config.parser import ConfigParser
-from marker.converters.table import TableConverter
-from marker.models import create_model_dict
-from marker.processors.llm.llm_table import LLMTableProcessor
-from marker.processors.table import TableProcessor
-from marker.renderers.json import JSONBlockOutput
-from marker.schema.polygon import PolygonBox
-from marker.util import matrix_intersection_area
+from aih_contexture.config.parser import ConfigParser
+from aih_contexture.converters.table import TableConverter
+from aih_contexture.models import create_model_dict
+from aih_contexture.processors.llm.llm_table import LLMTableProcessor
+from aih_contexture.processors.table import TableProcessor
+from aih_contexture.renderers.json import JSONBlockOutput
+from aih_contexture.schema.polygon import PolygonBox
+from aih_contexture.util import matrix_intersection_area
 
 
 def extract_tables(children: List[JSONBlockOutput]):

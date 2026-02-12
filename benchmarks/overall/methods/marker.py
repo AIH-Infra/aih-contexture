@@ -3,8 +3,8 @@ import tempfile
 import time
 
 from benchmarks.overall.methods import BaseMethod, BenchmarkResult
-from marker.config.parser import ConfigParser
-from marker.converters.pdf import PdfConverter
+from aih_contexture.config.parser import ConfigParser
+from aih_contexture.converters.pdf import PdfConverter
 
 
 class MarkerMethod(BaseMethod):

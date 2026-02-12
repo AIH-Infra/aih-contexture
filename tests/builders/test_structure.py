@@ -1,6 +1,6 @@
 import pytest
 
-from marker.builders.structure import StructureBuilder
+from aih_contexture.builders.structure import StructureBuilder
 
 
 @pytest.mark.config({"page_range": [0]})

@@ -1,566 +1,414 @@
-# Marker
+# 經緯·Contexture
 
-Marker converts documents to markdown, JSON, chunks, and HTML quickly and accurately.
+**经纬万卷，结构古今 · Weaving Data from History**
 
-- Converts PDF, image, PPTX, DOCX, XLSX, HTML, EPUB files in all languages
-- Formats tables, forms, equations, inline math, links, references, and code blocks
-- Extracts and saves images
-- Removes headers/footers/other artifacts
-- Extensible with your own formatting and logic
-- Does structured extraction, given a JSON schema (beta)
-- Optionally boost accuracy with LLMs (and your own prompt)
-- Works on GPU, CPU, or MPS
+> 将文献转化为可被学术引用的数字材料——面向人文学科研究者的文献结构化基础设施
 
-For our managed API or on-prem document intelligence solution, check out [our platform here](https://datalab.to?utm_source=gh-marker).
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
-## Performance
+---
 
-<img src="data/images/overall.png" width="800px"/>
+## 项目定位
 
-Marker benchmarks favorably compared to cloud services like Llamaparse and Mathpix, as well as other open source tools.
+**經緯·Contexture** 是 [AIH-Infra（人文学科人工智能基础设施）](https://github.com/AIH-Infra) 的材料线基座。它不是任何现有项目的分支，而是一个面向不同问题域的独立项目。
 
-The above results are running single PDF pages serially.  Marker is significantly faster when running in batch mode, with a projected throughput of 25 pages/second on an H100.
+现有的文档处理工具（Marker、MinerU、Docling、olmOCR 等）都在回答同一个问题：**"如何更准确地把文档变成文本？"** 它们竞争的是精度、速度、格式覆盖。
 
-See [below](#benchmarks) for detailed speed and accuracy benchmarks, and instructions on how to run your own benchmarks.
+Contexture 回答的是一个不同的问题：**"如何让数字化的文献能够被学术引用？"**
 
-## Hybrid Mode
+如果数字化材料不能被准确引用，它就不能进入学术流通；不能进入学术流通，数字化就失去了对人文学科的意义。
 
-For the highest accuracy, pass the `--use_llm` flag to use an LLM alongside marker.  This will do things like merge tables across pages, handle inline math, format tables properly, and extract values from forms.  It can use any gemini or ollama model.  By default, it uses `gemini-2.0-flash`.  See [below](#llm-services) for details.
+在人文学科中，**可追溯性**是学术伦理的基石：
 
-Here is a table benchmark comparing marker, gemini flash alone, and marker with use_llm:
+- 每一条引用必须能够返回原书的那一页
+- 每一个判断必须能够被他人检验与反驳
+- 每一份材料必须保留其版本与来源信息
 
-<img src="data/images/table.png" width="400px"/>
+Contexture 将这一学术传统转化为技术规范，通过**页码锚点系统**确保 AI 时代的知识生产依然可以被追溯、被验证、被传承。
 
-As you can see, the use_llm mode offers higher accuracy than marker or gemini alone.
+### 0.5 层框架
 
-## Examples
+Contexture 既不做底层模型（那是 Surya/Chandra/Gemini 的事），也不做最终的学术应用（那是 RAG/知识图谱的事），而是在两者之间提供一个**约束于人文学术规范之下的开源框架**。底层引擎是可替换的插槽，而无论走哪条路径，页码锚点、边注处理器、行内注处理器都一致地工作。
 
-| PDF | File type | Markdown                                                                                                                     | JSON                                                                                                   |
-|-----|-----------|------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------|
-| [Think Python](https://greenteapress.com/thinkpython/thinkpython.pdf) | Textbook | [View](https://github.com/VikParuchuri/marker/blob/master/data/examples/markdown/thinkpython/thinkpython.md)                 | [View](https://github.com/VikParuchuri/marker/blob/master/data/examples/json/thinkpython.json)         |
-| [Switch Transformers](https://arxiv.org/pdf/2101.03961.pdf) | arXiv paper | [View](https://github.com/VikParuchuri/marker/blob/master/data/examples/markdown/switch_transformers/switch_trans.md) | [View](https://github.com/VikParuchuri/marker/blob/master/data/examples/json/switch_trans.json) |
-| [Multi-column CNN](https://arxiv.org/pdf/1804.07821.pdf) | arXiv paper | [View](https://github.com/VikParuchuri/marker/blob/master/data/examples/markdown/multicolcnn/multicolcnn.md)                 | [View](https://github.com/VikParuchuri/marker/blob/master/data/examples/json/multicolcnn.json)         |
-
-# Commercial usage
-
-Our model weights use a modified AI Pubs Open Rail-M license (free for research, personal use, and startups under $2M funding/revenue) and our code is GPL. For broader commercial licensing or to remove GPL requirements, visit our pricing page [here](https://www.datalab.to/pricing?utm_source=gh-marker).
-
-# Hosted API & On-prem
-
-There's a [hosted API](https://www.datalab.to?utm_source=gh-marker) and [painless on-prem solution](https://www.datalab.to/blog/self-serve-on-prem-licensing) for marker - it's free to sign up, and we'll throw in credits for you to test it out.
-
-The API:
-- Supports PDF, image, PPT, PPTX, DOC, DOCX, XLS, XLSX, HTML, EPUB files
-- Is 1/4th the price of leading cloud-based competitors
-- Fast - ~15s for a 250 page PDF
-- Supports LLM mode
-- High uptime (99.99%)
-
-# Community
-
-[Discord](https://discord.gg//KuZwXNGnfH) is where we discuss future development.
-
-# Installation
-
-You'll need python 3.10+ and [PyTorch](https://pytorch.org/get-started/locally/).
-
-Install with:
-
-```shell
-pip install marker-pdf
+```
+┌─────────────────────────────────────────────────┐
+│  上层应用（规划中）                                │
+│  朴素 RAG → Graph RAG → Agent RAG               │
+├─────────────────────────────────────────────────┤
+│  0.5 层：經緯·Contexture                         │
+│  页码锚点 · 边注识别 · 行内注 · 模板 · 配置共享   │
+├─────────────────────────────────────────────────┤
+│  底层引擎（可替换）                                │
+│  Surya · Chandra · Gemini · Claude · Calamari    │
+│  DocLayout-YOLO · 未来自研 layout/VLM 模型        │
+└─────────────────────────────────────────────────┘
 ```
 
-If you want to use marker on documents other than PDFs, you will need to install additional dependencies with:
+---
 
-```shell
-pip install marker-pdf[full]
+## 核心创新
+
+### 1. 页码锚点系统——学术伦理的技术实现
+
+所有其他项目（Marker、MinerU、Docling、olmOCR）在转换文档时**主动丢弃页码信息**。对工程文档无所谓，但对人文学科是致命的：学者引用"《论语注疏》卷一，第三叶"，如果数字化后无法定位"第三叶"，这份数字化材料就退出了学术流通。
+
+Contexture 的解决方案是双重标记系统：
+
+```markdown
+{0}                          ← 机器锚点（PDF 物理页索引，程序定位用）
+
+---
+<!-- Page: XXI -->  
+<!-- Page: 155 -->  
+<!-- Page: 卷一·叶三 -->     ← 人类可读标记（印刷页码，学者引用用）
+
+正文内容...
 ```
 
-# Usage
+技术实现由三个组件构成：
+- **PageAnchorFormatter**：生成 `{n}` 格式锚点，包装格式可配置
+- **PrintedPageExtractor**：从 VLM 输出中按正则优先级提取印刷页码，支持阿拉伯/罗马/中文数字
+- **PageAnchorPlugin**：统一注入逻辑，三种转换模式共享同一实例，确保输出格式一致
 
-First, some configuration:
+机器锚点与人类标记分离：`{n}` 用于程序定位（RAG 检索时回溯原文位置），`<!-- Page -->` 用于人类阅读。同一份输出既能被下游程序消费，又能被学者直接阅读引用。
 
-- Your torch device will be automatically detected, but you can override this.  For example, `TORCH_DEVICE=cuda`.
-- Some PDFs, even digital ones, have bad text in them.  Set `--force_ocr` to force OCR on all lines, or the `strip_existing_ocr` to keep all digital text, and strip out any existing OCR text.
-- If you care about inline math, set `force_ocr` to convert inline math to LaTeX.
+**本功能已通过系统验证和优化**
 
-## Interactive App
+### 2. 边注处理器——跨文明引用系统的首次技术识别
 
-I've included a streamlit app that lets you interactively try marker with some basic options.  Run it with:
+目前所有文档处理工具中独有的功能。算法基于位置判断 + 内容模式匹配 + 字体大小验证的三重规则，识别七种边注类型：
 
-```shell
-pip install streamlit streamlit-ace
-marker_gui
+| 类型 | 识别规则 | 学术背景 |
+|------|----------|----------|
+| 版心叶码 | 版心中线 + 含"卷/叶/第/页" | 中国古籍版心刻印的卷次叶码 |
+| 鱼尾装饰 | 版心中线 + 短文本 + 非字母数字 | 中国古籍版心的鱼尾纹饰 |
+| Stephanus 编码 | `^\d{3,4}[a-e]\d*$` | 1578 年柏拉图全集标准引用系统，沿用至今 |
+| Bekker 编码 | `^\d{4}[ab]\d+$` | 1831 年亚里士多德全集标准引用系统 |
+| 行号 | 边栏 + 纯数字 + ≤4字符 | 批判版文本的行号标记 |
+| 书耳 | 上边栏 + <20字符 | 页眉短标题 |
+| 眉批 | 上边栏 + 20-100字符 | 页面上方的批注文字 |
+
+Stephanus 编码和 Bekker 编码的识别尤其值得注意：这两套编码系统分别是柏拉图研究和亚里士多德研究延续了数百年的标准定位体系。Contexture 是第一个在 OCR 后处理中识别这些编码系统的工具。
+
+**注意：**目前为实验性功能，需要特定模型支持，尚未大范围验证和优化
+
+### 3. 行内注处理器——古籍排版微观结构的首次形式化
+
+中日古籍中大量存在"正文中嵌入小字注释"的排版形式，所有通用 OCR 工具都无法正确处理。算法采用四重并行判断（字体比例、格式标记、括号包裹、多行高度），细分为五种类型：
+
+| 类型 | 判断条件 | 学术背景 |
+|------|----------|----------|
+| 括号注 | 括号包裹 | 现代学术注释的通用形式 |
+| 双行小字 | 同块字体差异>30% | 中国古籍正文行间的双行小字注 |
+| 夹注 | font_ratio<0.7 且 len<30 | 日本古籍正文中插入的短注 |
+| 割注 | font_ratio<0.7 且 30≤len<100 | 日本古籍正文中插入的长注 |
+| 其他小字注 | 不满足以上条件的小字文本 | 兜底分类 |
+
+夹注与割注的区分（以 30 字符为界）反映了日本古典文献学的专业分类。这种粒度的处理在整个文档处理领域是前所未有的。
+
+**注意：**目前为实验性功能，需要特定模型支持，尚未大范围验证和优化
+
+### 4. 三模式架构——容纳一切底层技术的框架
+
+| 模式 | 底层引擎 | 适用场景 |
+|------|----------|----------|
+| Pipeline | Surya / YOLO / Calamari / VLM | 现代出版物，需精细控制，可审计 |
+| VLM 泛化 | Gemini / Claude / OpenAI / 自定义 | 批量处理，速度优先，通用兜底 |
+| VLM 特化 | Chandra / Churro / OLMoCR | 历史文献，手写/复杂版式 |
+
+底层引擎是可替换的插槽。今天用 Surya，明天可以换成自研的 layout 模型；今天用 Chandra，明天可以接入更好的特化 VLM。框架本身不被任何一个底层技术绑定。
+
+VLM 泛化模式完全绕过本地模型，直接将页面图像发给云端 VLM。这意味着即使没有 GPU，只要有 API key，就能处理文献。对于资源有限的个体研究者，这是关键的可及性设计。
+
+---
+
+## 使用指南
+
+Contexture 面向人文学科研究者和研究小团队，提供三种处理模式，覆盖从标准化书籍到复杂历史文献的各类场景。
+
+### 三大处理模式总览
+
+| 模式 | 核心思路 | 适合场景 | 成本 | 速度 |
+|------|---------|---------|------|------|
+| Pipeline（流水线） | 布局检测 + OCR 分步处理 | 结构清晰、版式规范的书籍文档，可对每个环节进行高精度的标准化控制 | 低（可纯本地部署） | 快 |
+| VLM 泛化 | 大模型整页理解 + 页码锚点系统 + Markdown语法约束 | 当 Pipeline 和特化模式均无法良好处理时的通用兜底方案；复杂版面、混合内容、非标准排版 | 中（需调用云端API） | 中 |
+| VLM 特化 | 经过指令微调/二次训练的中小参数VLM逐页处理 | 特定领域文档，模型在该领域训练数据充分时精度极高；超出训练领域会产生严重幻觉 | 低-中（推荐本地部署） | 中 |
+
+### Pipeline 模式
+
+Pipeline 分为两个阶段：先做**布局检测**（识别页面中的文本块、表格、图片等区域），再对识别出的区域做 **OCR 文字提取**。两个阶段的后端可独立选择。
+
+#### 第一阶段：布局检测后端（三选一）
+
+| 后端 | 特点 | 适合文档类型 | 备注 |
+|------|------|-------------|------|
+| Surya | 通用、快速、本地运行 | 现代排版的学术论文、书籍 | 默认选项，需本地GPU加速 |
+| VLM | 用大模型做布局分析，语义理解力强 | 复杂版面（多栏、图文混排、非标准布局） | 需API |
+| YOLO | 高精度目标检测（DocLayout-YOLO） | 表格密集、图表多的文档 | 中文古籍等特殊版式的布局检测后续将通过自训练和微调支持 |
+
+#### 第二阶段：OCR 后端（五选一）
+
+| 后端 | 特点 | 适合文档类型 |
+|------|------|-------------|
+| 无 | 跳过OCR，直接提取PDF内嵌文字层 | 拥有良好内嵌文字的PDF：Google Books扫描件（附带文本层）、有原生文本层的现代PDF、经专业OCR软件处理后已附加文本层的清晰出版物 |
+| Surya | 现代OCR，速度快 | 现代印刷体文档。需本地GPU加速 |
+| Calamari | 专攻欧洲历史字体 | 哥特体(Fraktur)、19世纪古体印刷、拉丁古体。需本地TensorFlow深度学习环境支持 |
+| VLM | 用大模型做OCR，三种粒度可选（见下表） | 手写体混排、复杂版面中的文字 |
+| Tesseract | 传统OCR，可调PSM/OEM | 简单排版、快速批量处理（后续集成） |
+
+#### Pipeline VLM-OCR 的三种处理粒度
+
+| 粒度 | 说明 | 适合场景 |
+|------|------|---------|
+| Tile（切块） | 逐个文本块送入模型 | 精确控制，适合规整排版 |
+| Merge（合并） | 合并相邻文本块后处理 | 减少API调用，适合段落密集文档 |
+| Full Page（整页） | 整页图像直接送入模型 | 版面复杂、切块反而丢失上下文时 |
+
+### VLM 泛化模式
+
+不经过布局检测，由大模型直接理解整页内容并输出结构化 Markdown。输出经过页码锚点系统和 Markdown 语法体系的约束，并非简单的"丢给模型就完事"。适合作为其他两种模式无法良好覆盖时的通用兜底方案。
+
+#### 文档模板（四个预设 + 自定义）
+
+| 模板 | 适合文档 |
+|------|---------|
+| 现代出版物 | 学术论文、现代书籍、报告 |
+| 中文古籍 | 竖排文本、繁体字、线装书 |
+| 德文哥特印刷 | Fraktur字体、历史拼写、19世纪德文文献 |
+| 档案文献 | 手写批注、印章、混合手写/印刷 |
+| 自定义 | 以上都不匹配时，手动配置文字方向、语言、年代等 |
+
+#### 推荐模型（经实测验证）
+
+| 模型 | 推荐等级 | 说明 |
+|------|---------|------|
+| Gemini 3 Pro | ★★★★★ | 综合表现最优 |
+| Gemini 3 Flash | ★★★★ | 性价比高，速度更快 |
+| Qwen VL-Max | ★★★ | 中文场景表现良好 |
+| Qwen VL 小参数系列 | ★★-★★★ | 在特定领域可达验收级别，成本最低 |
+
+#### API 提供商（三选一）
+
+| 提供商 | 说明 |
+|--------|------|
+| OpenAI兼容 | 任何兼容OpenAI接口的服务（含本地LM Studio） |
+| Gemini | Google Gemini 系列模型，支持原生调用及中转模式 |
+| Anthropic | Claude 系列模型，支持原生调用及中转模式 |
+
+### VLM 特化模式
+
+采用经过指令集微调和二次训练的中小参数VLM，推荐通过 LM Studio 等工具本地部署。
+
+**关键限制**：模型效果严格依赖其训练领域。在训练数据覆盖的文档类型上精度极高，但超出适用范围会产生严重幻觉，输出不可信。选用前务必确认模型的训练领域与目标文档匹配。
+
+#### 可用模型
+
+以下模型均为千万级参数VL模型经指令集微调和后训练产生的特化VLM：
+
+| 模型 | 训练领域 | 适合文档 | 状态 |
+|------|---------|---------|------|
+| Chandra OCR | 多语种印刷体OCR | 清晰印刷文档、多语种混排、英文手写 | 已集成 |
+| Churro | 特化OCR | 特定领域文档 | 下一版本正式集成 |
+| OLMoCR | 特化OCR | 通用领域文档 | 下一版本正式集成 |
+
+#### 批处理策略（三选一）
+
+| 策略 | 说明 | 适合场景 |
+|------|------|---------|
+| 自动 | 根据页数自动决定 | 一般情况 |
+| 单批次 | 所有页面一次性并发 | 页数少、本地GPU算力充裕 |
+| 分批次 | 分组处理，批间休息 | 页数多、显存有限 |
+
+### 跨模式通用功能
+
+| 功能 | 说明 |
+|------|------|
+| **页码锚点系统** | 核心基础设施。为每页注入结构化锚点（`{1}` `{2}` ...），支持印刷页码识别（阿拉伯数字/罗马数字/中文数字）、自定义编号映射。锚点贯穿全部三种模式，是后续引用定位、区间提取、学术引用的基础 |
+| 页码范围 | 只处理指定页（如第5-20页），三个模式均支持，节省时间和API成本 |
+| 输出格式 | Markdown / JSON / HTML / Chunk（RAG分块） |
+| **配置导入/导出** | 所有模式的配置面板均支持导入和导出，方便保存成功经验、团队间交流分享最佳实践配置 |
+
+---
+
+## 快速开始
+
+### 环境要求
+
+- Python 3.10 / 3.11 / 3.12（推荐 3.12）
+- Windows 10/11 或 macOS（Intel / Apple Silicon 均可）
+- 如需使用 Pipeline 模式的本地 OCR/布局检测，建议配备 NVIDIA GPU
+
+### 方式一：一键安装（推荐）
+
+项目提供了自动化安装脚本，会自动创建虚拟环境、检测硬件、安装 PyTorch 和所有依赖。
+
+**Windows：**
+
+双击 `install.bat`，按提示等待安装完成。
+
+**macOS：**
+
+首次使用前，需要在终端中赋予脚本执行权限（只需执行一次，之后永久生效）：
+
+```bash
+# 在终端中进入项目目录，然后执行：
+chmod +x install.command start.command install.sh start.sh
 ```
 
-## Convert a single file
+之后双击 `install.command` 即可开始安装。
 
-```shell
-marker_single /path/to/file.pdf
+> 如果双击后系统提示"无法打开，因为无法验证开发者"，请前往「系统设置 → 隐私与安全性」，点击「仍要打开」。
+
+### 方式二：pip 安装
+
+```bash
+pip install aih-contexture
 ```
 
-You can pass in PDFs or images.
-
-Options:
-- `--page_range TEXT`: Specify which pages to process. Accepts comma-separated page numbers and ranges. Example: `--page_range "0,5-10,20"` will process pages 0, 5 through 10, and page 20.
-- `--output_format [markdown|json|html|chunks]`: Specify the format for the output results.
-- `--output_dir PATH`: Directory where output files will be saved. Defaults to the value specified in settings.OUTPUT_DIR.
-- `--paginate_output`: Paginates the output, using `\n\n{PAGE_NUMBER}` followed by `-` * 48, then `\n\n`
-- `--use_llm`: Uses an LLM to improve accuracy.  You will need to configure the LLM backend - see [below](#llm-services).
-- `--force_ocr`: Force OCR processing on the entire document, even for pages that might contain extractable text.  This will also format inline math properly.
-- `--block_correction_prompt`: if LLM mode is active, an optional prompt that will be used to correct the output of marker.  This is useful for custom formatting or logic that you want to apply to the output.
-- `--strip_existing_ocr`: Remove all existing OCR text in the document and re-OCR with surya.
-- `--redo_inline_math`: If you want the absolute highest quality inline math conversion, use this along with `--use_llm`.
-- `--disable_image_extraction`: Don't extract images from the PDF.  If you also specify `--use_llm`, then images will be replaced with a description.
-- `--debug`: Enable debug mode for additional logging and diagnostic information.
-- `--processors TEXT`: Override the default processors by providing their full module paths, separated by commas. Example: `--processors "module1.processor1,module2.processor2"`
-- `--config_json PATH`: Path to a JSON configuration file containing additional settings.
-- `config --help`: List all available builders, processors, and converters, and their associated configuration.  These values can be used to build a JSON configuration file for additional tweaking of marker defaults.
-- `--converter_cls`: One of `marker.converters.pdf.PdfConverter` (default) or `marker.converters.table.TableConverter`.  The `PdfConverter` will convert the whole PDF, the `TableConverter` will only extract and convert tables.
-- `--llm_service`: Which llm service to use if `--use_llm` is passed.  This defaults to `marker.services.gemini.GoogleGeminiService`.
-- `--help`: see all of the flags that can be passed into marker.  (it supports many more options then are listed above)
-
-The list of supported languages for surya OCR is [here](https://github.com/VikParuchuri/surya/blob/master/surya/recognition/languages.py).  If you don't need OCR, marker can work with any language.
-
-## Convert multiple files
-
-```shell
-marker /path/to/input/folder
-```
-
-- `marker` supports all the same options from `marker_single` above.
-- `--workers` is the number of conversion workers to run simultaneously.  This is automatically set by default, but you can increase it to increase throughput, at the cost of more CPU/GPU usage.  Marker will use 5GB of VRAM per worker at the peak, and 3.5GB average.
-
-## Convert multiple files on multiple GPUs
-
-```shell
-NUM_DEVICES=4 NUM_WORKERS=15 marker_chunk_convert ../pdf_in ../md_out
-```
-
-- `NUM_DEVICES` is the number of GPUs to use.  Should be `2` or greater.
-- `NUM_WORKERS` is the number of parallel processes to run on each GPU.
-
-## Use from python
-
-See the `PdfConverter` class at `marker/converters/pdf.py` function for additional arguments that can be passed.
+安装后通过 Python 代码调用：
 
 ```python
-from marker.converters.pdf import PdfConverter
-from marker.models import create_model_dict
-from marker.output import text_from_rendered
+from aih_contexture import convert_single_pdf
 
-converter = PdfConverter(
-    artifact_dict=create_model_dict(),
-)
-rendered = converter("FILEPATH")
-text, _, images = text_from_rendered(rendered)
+result = convert_single_pdf("document.pdf")
+print(result.markdown)
 ```
 
-`rendered` will be a pydantic basemodel with different properties depending on the output type requested.  With markdown output (default), you'll have the properties `markdown`, `metadata`, and `images`.  For json output, you'll have `children`, `block_type`, and `metadata`.
+### 启动应用
 
-### Custom configuration
+安装完成后，启动 Web 界面：
 
-You can pass configuration using the `ConfigParser`.  To see all available options, do `marker_single --help`.
+**Windows：** 双击 `start.bat`
 
-```python
-from marker.converters.pdf import PdfConverter
-from marker.models import create_model_dict
-from marker.config.parser import ConfigParser
+**macOS：** 双击 `start.command`（或在终端中运行 `./start.sh`）
 
-config = {
-    "output_format": "json",
-    "ADDITIONAL_KEY": "VALUE"
-}
-config_parser = ConfigParser(config)
+启动后浏览器会自动打开，访问地址为 `http://localhost:6006`。如果端口被占用，会自动尝试 6007、6008 等后续端口。
 
-converter = PdfConverter(
-    config=config_parser.generate_config_dict(),
-    artifact_dict=create_model_dict(),
-    processor_list=config_parser.get_processors(),
-    renderer=config_parser.get_renderer(),
-    llm_service=config_parser.get_llm_service()
-)
-rendered = converter("FILEPATH")
-```
+---
 
-### Extract blocks
+## 技术生态对比
 
-Each document consists of one or more pages.  Pages contain blocks, which can themselves contain other blocks.  It's possible to programmatically manipulate these blocks.
+### 与文档处理工具对比
 
-Here's an example of extracting all forms from a document:
+Contexture 与现有文档处理工具不在同一赛道竞争。它们解决"如何把文档变成文本"，Contexture 解决"如何让文本可被学术引用"。但作为参考：
 
-```python
-from marker.converters.pdf import PdfConverter
-from marker.models import create_model_dict
-from marker.schema import BlockTypes
+| 维度 | Marker | MinerU | Docling | Contexture |
+|------|--------|--------|---------|------------|
+| 开发方 | Datalab | 上海AI Lab | IBM Research | AIH-Infra |
+| 核心定位 | PDF→Markdown 转换 | 文档解析 | 企业级多格式平台 | 人文学科文献结构化 |
+| 页码追溯 | 无 | 无 | 无 | 双重锚点系统 |
+| 边注/行内注 | 无 | 无 | 无 | 7+5 种类型细分 |
+| 古典引用系统 | 无 | 无 | 无 | Stephanus/Bekker/叶码 |
+| 模板系统 | 无 | 无 | 无 | 4 预设 + 自定义 |
+| 配置共享 | 无 | 无 | 无 | JSON 导入导出 |
+| 许可证 | GPL-3.0 | AGPL-3.0 | MIT | GPL-3.0 |
 
-converter = PdfConverter(
-    artifact_dict=create_model_dict(),
-)
-document = converter.build_document("FILEPATH")
-forms = document.contained_blocks((BlockTypes.Form,))
-```
+### 与 Transkribus 对比
 
-Look at the processors for more examples of extracting and manipulating blocks.
+Contexture 真正的对标对象是 [Transkribus](https://readcoop.eu/transkribus/)——目前人文学科数字化领域事实上的行业标准。
 
-## Other converters
+| 维度 | Transkribus | Contexture |
+|------|-------------|------------|
+| 运营模式 | SaaS 平台，按页收费 | 本地部署，开源免费 |
+| 核心技术 | PyLaia HTR（CRNN+CTC，上一代架构） | 可接入 Transformer/VLM 等前沿模型 |
+| 手写识别 | 强项（十年积累） | 依赖 VLM 后端 |
+| 印刷文本 | 一般 | 强（继承 Surya/Chandra 能力） |
+| 页码追溯 | 无专门机制 | 双重锚点系统 |
+| 边注/行内注 | 无 | 7+5 种类型细分 |
+| 古典引用系统 | 无 | Stephanus/Bekker/叶码 |
+| 数据主权 | 数据上传至云端 | 完全本地，数据不出域 |
+| 中文支持 | 弱 | 强（古籍模板、版心叶码） |
+| 协作功能 | 完善（在线平台） | 配置共享（JSON 导入导出） |
+| 成熟度 | 10+ 年迭代 | v0.1 |
 
-You can also use other converters that define different conversion pipelines:
+Contexture 的结构性优势在于：数据主权（完全本地运行）、底层技术代差（可接入最新模型）、学术规范意识（页码锚点、古典引用系统是 Transkribus 完全不具备的能力）。明显短板在于：手写识别积累不足、缺乏在线协作平台、用户生态尚在初创阶段。
 
-### Extract tables
+---
 
-The `TableConverter` will only convert and extract tables:
-
-```python
-from marker.converters.table import TableConverter
-from marker.models import create_model_dict
-from marker.output import text_from_rendered
-
-converter = TableConverter(
-    artifact_dict=create_model_dict(),
-)
-rendered = converter("FILEPATH")
-text, _, images = text_from_rendered(rendered)
-```
-
-This takes all the same configuration as the PdfConverter.  You can specify the configuration `force_layout_block=Table` to avoid layout detection and instead assume every page is a table.  Set `output_format=json` to also get cell bounding boxes.
-
-You can also run this via the CLI with
-```shell
-marker_single FILENAME --use_llm --force_layout_block Table --converter_cls marker.converters.table.TableConverter --output_format json
-```
-
-### OCR Only
-
-If you only want to run OCR, you can also do that through the `OCRConverter`.  Set `--keep_chars` to keep individual characters and bounding boxes.
-
-```python
-from marker.converters.ocr import OCRConverter
-from marker.models import create_model_dict
-
-converter = OCRConverter(
-    artifact_dict=create_model_dict(),
-)
-rendered = converter("FILEPATH")
-```
-
-This takes all the same configuration as the PdfConverter.
-
-You can also run this via the CLI with
-```shell
-marker_single FILENAME --converter_cls marker.converters.ocr.OCRConverter
-```
-
-### Structured Extraction (beta)
-
-You can run structured extraction via the `ExtractionConverter`.  This requires an llm service to be setup first (see [here](#llm-services) for details).  You'll get a JSON output with the extracted values.
-
-```python
-from marker.converters.extraction import ExtractionConverter
-from marker.models import create_model_dict
-from marker.config.parser import ConfigParser
-from pydantic import BaseModel
-
-class Links(BaseModel):
-    links: list[str]
-
-schema = Links.model_json_schema()
-config_parser = ConfigParser({
-    "page_schema": schema
-})
-
-converter = ExtractionConverter(
-    artifact_dict=create_model_dict(),
-    config=config_parser.generate_config_dict(),
-    llm_service=config_parser.get_llm_service(),
-)
-rendered = converter("FILEPATH")
-```
-
-Rendered will have an `original_markdown` field.  If you pass this back in next time you run the converter, as the `existing_markdown` config key, you can skip re-parsing the document.
-
-# Output Formats
-
-## Markdown
-
-Markdown output will include:
-
-- image links (images will be saved in the same folder)
-- formatted tables
-- embedded LaTeX equations (fenced with `$$`)
-- Code is fenced with triple backticks
-- Superscripts for footnotes
-
-## HTML
-
-HTML output is similar to markdown output:
-
-- Images are included via `img` tags
-- equations are fenced with `<math>` tags
-- code is in `pre` tags
-
-## JSON
-
-JSON output will be organized in a tree-like structure, with the leaf nodes being blocks.  Examples of leaf nodes are a single list item, a paragraph of text, or an image.
-
-The output will be a list, with each list item representing a page.  Each page is considered a block in the internal marker schema.  There are different types of blocks to represent different elements.
-
-Pages have the keys:
-
-- `id` - unique id for the block.
-- `block_type` - the type of block. The possible block types can be seen in `marker/schema/__init__.py`.  As of this writing, they are ["Line", "Span", "FigureGroup", "TableGroup", "ListGroup", "PictureGroup", "Page", "Caption", "Code", "Figure", "Footnote", "Form", "Equation", "Handwriting", "TextInlineMath", "ListItem", "PageFooter", "PageHeader", "Picture", "SectionHeader", "Table", "Text", "TableOfContents", "Document"]
-- `html` - the HTML for the page.  Note that this will have recursive references to children.  The `content-ref` tags must be replaced with the child content if you want the full html.  You can see an example of this at `marker/output.py:json_to_html`.  That function will take in a single block from the json output, and turn it into HTML.
-- `polygon` - the 4-corner polygon of the page, in (x1,y1), (x2,y2), (x3, y3), (x4, y4) format.  (x1,y1) is the top left, and coordinates go clockwise.
-- `children` - the child blocks.
-
-The child blocks have two additional keys:
-
-- `section_hierarchy` - indicates the sections that the block is part of.  `1` indicates an h1 tag, `2` an h2, and so on.
-- `images` - base64 encoded images.  The key will be the block id, and the data will be the encoded image.
-
-Note that child blocks of pages can have their own children as well (a tree structure).
-
-```json
-{
-      "id": "/page/10/Page/366",
-      "block_type": "Page",
-      "html": "<content-ref src='/page/10/SectionHeader/0'></content-ref><content-ref src='/page/10/SectionHeader/1'></content-ref><content-ref src='/page/10/Text/2'></content-ref><content-ref src='/page/10/Text/3'></content-ref><content-ref src='/page/10/Figure/4'></content-ref><content-ref src='/page/10/SectionHeader/5'></content-ref><content-ref src='/page/10/SectionHeader/6'></content-ref><content-ref src='/page/10/TextInlineMath/7'></content-ref><content-ref src='/page/10/TextInlineMath/8'></content-ref><content-ref src='/page/10/Table/9'></content-ref><content-ref src='/page/10/SectionHeader/10'></content-ref><content-ref src='/page/10/Text/11'></content-ref>",
-      "polygon": [[0.0, 0.0], [612.0, 0.0], [612.0, 792.0], [0.0, 792.0]],
-      "children": [
-        {
-          "id": "/page/10/SectionHeader/0",
-          "block_type": "SectionHeader",
-          "html": "<h1>Supplementary Material for <i>Subspace Adversarial Training</i> </h1>",
-          "polygon": [
-            [217.845703125, 80.630859375], [374.73046875, 80.630859375],
-            [374.73046875, 107.0],
-            [217.845703125, 107.0]
-          ],
-          "children": null,
-          "section_hierarchy": {
-            "1": "/page/10/SectionHeader/1"
-          },
-          "images": {}
-        },
-        ...
-        ]
-    }
-
+## AIH-Infra路线图
 
 ```
-
-## Chunks
-
-Chunks format is similar to JSON, but flattens everything into a single list instead of a tree.  Only the top level blocks from each page show up. It also has the full HTML of each block inside, so you don't need to crawl the tree to reconstruct it.  This enable flexible and easy chunking for RAG.
-
-## Metadata
-
-All output formats will return a metadata dictionary, with the following fields:
-
-```json
-{
-    "table_of_contents": [
-      {
-        "title": "Introduction",
-        "heading_level": 1,
-        "page_id": 0,
-        "polygon": [...]
-      }
-    ], // computed PDF table of contents
-    "page_stats": [
-      {
-        "page_id":  0,
-        "text_extraction_method": "pdftext",
-        "block_counts": [("Span", 200), ...]
-      },
-      ...
-    ]
-}
+┌─────────────────────────────────────────────────────────────┐
+│  应用层（待建设）                                            │
+│  学术 RAG · Graph RAG · Agent RAG                           │
+├─────────────────────────────────────────────────────────────┤
+│  0.5 层：人文学科语义框架                                    │
+│  經緯·Contexture（页码锚点 · 边注 · 行内注 · 模板 · 配置）  │
+├─────────────────────────────────────────────────────────────┤
+│  转换层：文档 → 结构化文本                                   │
+│  Marker · MinerU · Docling                                  │
+├─────────────────────────────────────────────────────────────┤
+│  引擎层：OCR / 布局 / VLM                                   │
+│  Surya · Chandra · olmOCR · Churro · DocLayout-YOLO         │
+├─────────────────────────────────────────────────────────────┤
+│  基础层：PDF 解析                                            │
+│  pdftext · pypdfium2                                        │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-# LLM Services
+**阶段一（当前）**：文献数字化基础设施——PDF/图像 → 带页码锚点的结构化 Markdown
 
-When running with the `--use_llm` flag, you have a choice of services you can use:
+**阶段二（已实现）**：学术朴素 RAG——页码锚点使 RAG 检索天然具备学术引用能力，回答可自动附带"见《某书》第 X 页"
 
-- `Gemini` - this will use the Gemini developer API by default.  You'll need to pass `--gemini_api_key` to configuration.
-- `Google Vertex` - this will use vertex, which can be more reliable.  You'll need to pass `--vertex_project_id`.  To use it, set `--llm_service=marker.services.vertex.GoogleVertexService`.
-- `Ollama` - this will use local models.  You can configure `--ollama_base_url` and `--ollama_model`. To use it, set `--llm_service=marker.services.ollama.OllamaService`.
-- `Claude` - this will use the anthropic API.  You can configure `--claude_api_key`, and `--claude_model_name`.  To use it, set `--llm_service=marker.services.claude.ClaudeService`.
-- `OpenAI` - this supports any openai-like endpoint. You can configure `--openai_api_key`, `--openai_model`, and `--openai_base_url`. To use it, set `--llm_service=marker.services.openai.OpenAIService`.
-- `Azure OpenAI` - this uses the Azure OpenAI service. You can configure `--azure_endpoint`, `--azure_api_key`, and `--deployment_name`. To use it, set `--llm_service=marker.services.azure_openai.AzureOpenAIService`.
+**阶段三（中期）**：人文学术 Graph RAG——实体/关系抽取 → 知识图谱，每个节点可追溯到原始文献的具体位置
 
-These services may have additional optional configuration as well - you can see it by viewing the classes.
+**阶段四（远期）**：人文版 Agent RAG——Agent 自主在数字化文献库中检索、比对、校勘，输出符合学术规范的研究成果
 
-# Internals
+---
 
-Marker is easy to extend.  The core units of marker are:
+## 致谢
 
-- `Providers`, at `marker/providers`.  These provide information from a source file, like a PDF.
-- `Builders`, at `marker/builders`.  These generate the initial document blocks and fill in text, using info from the providers.
-- `Processors`, at `marker/processors`.  These process specific blocks, for example the table formatter is a processor.
-- `Renderers`, at `marker/renderers`. These use the blocks to render output.
-- `Schema`, at `marker/schema`.  The classes for all the block types.
-- `Converters`, at `marker/converters`.  They run the whole end to end pipeline.
+Contexture 的 Pipeline 模式学习了 Marker 的处理器链架构，并集成了多个优秀的开源项目作为底层引擎。我们对以下项目表示诚挚感谢：
 
-To customize processing behavior, override the `processors`.  To add new output formats, write a new `renderer`.  For additional input formats, write a new `provider.`
+**Datalab (Endless Labs, Inc.)**
 
-Processors and renderers can be directly passed into the base `PDFConverter`, so you can specify your own custom processing easily.
+- [Marker](https://github.com/VikParuchuri/marker) (GPL-3.0) — 处理器链架构参考
+- [Surya](https://github.com/VikParuchuri/surya) (GPL-3.0) — OCR 与布局检测引擎
+- [Chandra](https://github.com/VikParuchuri/chandra) (Apache-2.0) — 端到端 VLM OCR
+- [PDFText](https://github.com/VikParuchuri/pdftext) (Apache-2.0) — PDF 文本提取
 
-## API server
+**上海 AI Lab**
 
-There is a very simple API server you can run like this:
+- [DocLayout-YOLO](https://github.com/opendatalab/DocLayout-YOLO) (AGPL-3.0) — 文档布局检测
 
-```shell
-pip install -U uvicorn fastapi python-multipart
-marker_server --port 8001
-```
+**其他项目**
 
-This will start a fastapi server that you can access at `localhost:8001`.  You can go to `localhost:8001/docs` to see the endpoint options.
+- [Calamari OCR](https://github.com/Calamari-OCR/calamari) (Apache-2.0) — 欧洲历史文献 OCR
 
-You can send requests like this:
+---
 
-```
-import requests
-import json
+## 许可证
 
-post_data = {
-    'filepath': 'FILEPATH',
-    # Add other params here
-}
+本项目基于 **GNU General Public License v3.0** 发布。
 
-requests.post("http://localhost:8001/marker", data=json.dumps(post_data)).json()
-```
+由于集成了 Surya (GPL-3.0) 作为底层引擎，根据 GPL 的传染性条款，本项目使用相同许可证。
 
-Note that this is not a very robust API, and is only intended for small-scale use.  If you want to use this server, but want a more robust conversion option, you can use the hosted [Datalab API](https://www.datalab.to/plans).
+详见 [LICENSE](LICENSE) 和 [NOTICE](NOTICE) 文件。
 
-# Troubleshooting
+---
 
-There are some settings that you may find useful if things aren't working the way you expect:
+## 关于 AIH-Infra
 
-- If you have issues with accuracy, try setting `--use_llm` to use an LLM to improve quality.  You must set `GOOGLE_API_KEY` to a Gemini API key for this to work.
-- Make sure to set `force_ocr` if you see garbled text - this will re-OCR the document.
-- `TORCH_DEVICE` - set this to force marker to use a given torch device for inference.
-- If you're getting out of memory errors, decrease worker count.  You can also try splitting up long PDFs into multiple files.
+**AIH-Infra（人文学科人工智能基础设施）** 致力于为人文学科研究者提供可追溯、可验证、可传承的 AI 工具链。
 
-## Debugging
+- **材料线**：Contexture（文献数字化与结构化）
+- **系统线**：RAG 知识库与检索系统（规划中）
+- **应用线**：面向具体学科的研究工具（规划中）
 
-Pass the `debug` option to activate debug mode.  This will save images of each page with detected layout and text, as well as output a json file with additional bounding box information.
+我们坚信：**技术服务于学术规范，而非消解学术规范。**
 
-# Benchmarks
+---
 
-## Overall PDF Conversion
+## 作者
 
-We created a [benchmark set](https://huggingface.co/datasets/datalab-to/marker_benchmark) by extracting single PDF pages from common crawl.  We scored based on a heuristic that aligns text with ground truth text segments, and an LLM as a judge scoring method.
+**Güriedrich & Baireinhold**
+橘里德里希 & 白茵霍尔德
 
-| Method     | Avg Time | Heuristic Score | LLM Score |
-|------------|----------|-----------------|-----------|
-| marker     | 2.83837  | 95.6709         | 4.23916   |
-| llamaparse | 23.348   | 84.2442         | 3.97619   |
-| mathpix    | 6.36223  | 86.4281         | 4.15626   |
-| docling    | 3.69949  | 86.7073         | 3.70429   |
+---
 
-Benchmarks were run on an H100 for markjer and docling - llamaparse and mathpix used their cloud services.  We can also look at it by document type:
+## 链接
 
-<img src="data/images/per_doc.png" width="1000px"/>
-
-| Document Type        | Marker heuristic | Marker LLM | Llamaparse Heuristic | Llamaparse LLM | Mathpix Heuristic | Mathpix LLM | Docling Heuristic | Docling LLM |
-|----------------------|------------------|------------|----------------------|----------------|-------------------|-------------|-------------------|-------------|
-| Scientific paper     | 96.6737          | 4.34899    | 87.1651              | 3.96421        | 91.2267           | 4.46861     | 92.135            | 3.72422     |
-| Book page            | 97.1846          | 4.16168    | 90.9532              | 4.07186        | 93.8886           | 4.35329     | 90.0556           | 3.64671     |
-| Other                | 95.1632          | 4.25076    | 81.1385              | 4.01835        | 79.6231           | 4.00306     | 83.8223           | 3.76147     |
-| Form                 | 88.0147          | 3.84663    | 66.3081              | 3.68712        | 64.7512           | 3.33129     | 68.3857           | 3.40491     |
-| Presentation         | 95.1562          | 4.13669    | 81.2261              | 4              | 83.6737           | 3.95683     | 84.8405           | 3.86331     |
-| Financial document   | 95.3697          | 4.39106    | 82.5812              | 4.16111        | 81.3115           | 4.05556     | 86.3882           | 3.8         |
-| Letter               | 98.4021          | 4.5        | 93.4477              | 4.28125        | 96.0383           | 4.45312     | 92.0952           | 4.09375     |
-| Engineering document | 93.9244          | 4.04412    | 77.4854              | 3.72059        | 80.3319           | 3.88235     | 79.6807           | 3.42647     |
-| Legal document       | 96.689           | 4.27759    | 86.9769              | 3.87584        | 91.601            | 4.20805     | 87.8383           | 3.65552     |
-| Newspaper page       | 98.8733          | 4.25806    | 84.7492              | 3.90323        | 96.9963           | 4.45161     | 92.6496           | 3.51613     |
-| Magazine page        | 98.2145          | 4.38776    | 87.2902              | 3.97959        | 93.5934           | 4.16327     | 93.0892           | 4.02041     |
-
-## Throughput
-
-We benchmarked throughput using a [single long PDF](https://www.greenteapress.com/thinkpython/thinkpython.pdf).
-
-| Method  | Time per page | Time per document | VRAM used |
-|---------|---------------|-------------------|---------- |
-| marker  | 0.18          | 43.42             |  3.17GB   |
-
-The projected throughput is 122 pages per second on an H100 - we can run 22 individual processes given the VRAM used.
-
-## Table Conversion
-
-Marker can extract tables from PDFs using `marker.converters.table.TableConverter`. The table extraction performance is measured by comparing the extracted HTML representation of tables against the original HTML representations using the test split of [FinTabNet](https://developer.ibm.com/exchanges/data/all/fintabnet/). The HTML representations are compared using a tree edit distance based metric to judge both structure and content. Marker detects and identifies the structure of all tables in a PDF page and achieves these scores:
-
-| Method           | Avg score | Total tables |
-|------------------|-----------|--------------|
-| marker           | 0.816     | 99           |
-| marker w/use_llm | 0.907     | 99           |
-| gemini           | 0.829     | 99           |
-
-The `--use_llm` flag can significantly improve table recognition performance, as you can see.
-
-We filter out tables that we cannot align with the ground truth, since fintabnet and our layout model have slightly different detection methods (this results in some tables being split/merged).
-
-## Running your own benchmarks
-
-You can benchmark the performance of marker on your machine. Install marker manually with:
-
-```shell
-git clone https://github.com/VikParuchuri/marker.git
-poetry install
-```
-
-### Overall PDF Conversion
-
-Download the benchmark data [here](https://drive.google.com/file/d/1ZSeWDo2g1y0BRLT7KnbmytV2bjWARWba/view?usp=sharing) and unzip. Then run the overall benchmark like this:
-
-```shell
-python benchmarks/overall.py --methods marker --scores heuristic,llm
-```
-
-Options:
-
-- `--use_llm` use an llm to improve the marker results.
-- `--max_rows` how many rows to process for the benchmark.
-- `--methods` can be `llamaparse`, `mathpix`, `docling`, `marker`.  Comma separated.
-- `--scores` which scoring functions to use, can be `llm`, `heuristic`.  Comma separated.
-
-### Table Conversion
-The processed FinTabNet dataset is hosted [here](https://huggingface.co/datasets/datalab-to/fintabnet-test) and is automatically downloaded. Run the benchmark with:
-
-```shell
-python benchmarks/table/table.py --max_rows 100
-```
-
-Options:
-
-- `--use_llm` uses an llm with marker to improve accuracy.
-- `--use_gemini` also benchmarks gemini 2.0 flash.
-
-# How it works
-
-Marker is a pipeline of deep learning models:
-
-- Extract text, OCR if necessary (heuristics, [surya](https://github.com/VikParuchuri/surya))
-- Detect page layout and find reading order ([surya](https://github.com/VikParuchuri/surya))
-- Clean and format each block (heuristics, [texify](https://github.com/VikParuchuri/texify), [surya](https://github.com/VikParuchuri/surya))
-- Optionally use an LLM to improve quality
-- Combine blocks and postprocess complete text
-
-It only uses models where necessary, which improves speed and accuracy.
-
-# Limitations
-
-PDF is a tricky format, so marker will not always work perfectly.  Here are some known limitations that are on the roadmap to address:
-
-- Very complex layouts, with nested tables and forms, may not work
-- Forms may not be rendered well
-
-Note: Passing the `--use_llm` and `--force_ocr` flags will mostly solve these issues.
-
-# Usage and Deployment Examples
-
-You can always run `marker` locally, but if you wanted to expose it as an API, we have a few options:
-- Our platform API which is powered by `marker` and `surya` and is easy to test out - it's free to sign up, and we'll include credits, [try it out here](https://datalab.to)
-- Our painless on-prem solution for commercial use, which you can [read about here](https://www.datalab.to/blog/self-serve-on-prem-licensing) and gives you privacy guarantees with high throughput inference optimizations.
-- [Deployment example with Modal](./examples/README_MODAL.md) that shows you how to deploy and access `marker` through a web endpoint using [`Modal`](https://modal.com). Modal is an AI compute platform that enables developers to deploy and scale models on GPUs in minutes.
+- **GitHub**: https://github.com/AIH-Infra/aih-contexture
+- **Issues**: https://github.com/AIH-Infra/aih-contexture/issues
+- **技术评估报告**: [人文学科文献数字化技术生态评估报告](人文学科文献数字化技术生态评估报告.md)

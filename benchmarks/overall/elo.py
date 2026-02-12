@@ -15,7 +15,7 @@ from google.genai.errors import APIError
 from pydantic import BaseModel
 from tqdm import tqdm
 
-from marker.settings import settings
+from aih_contexture.settings import settings
 
 rating_prompt = """
 You're a document analysis expert who is comparing two different markdown samples to an image to see which one represents the content of the image better. The markdown will be called version A and version B.

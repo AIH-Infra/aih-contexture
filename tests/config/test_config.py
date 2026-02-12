@@ -2,9 +2,9 @@ import sys
 from contextlib import suppress
 import click
 
-from marker.config.printer import CustomClickPrinter
-from marker.config.crawler import crawler
-from marker.config.parser import ConfigParser
+from aih_contexture.config.printer import CustomClickPrinter
+from aih_contexture.config.crawler import crawler
+from aih_contexture.config.parser import ConfigParser
 
 
 def capture_kwargs(argv):

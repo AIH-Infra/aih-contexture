@@ -1,9 +1,9 @@
 import pytest
 
-from marker.builders.document import DocumentBuilder
-from marker.builders.line import LineBuilder
-from marker.processors.table import TableProcessor
-from marker.schema import BlockTypes
+from aih_contexture.builders.document import DocumentBuilder
+from aih_contexture.builders.line import LineBuilder
+from aih_contexture.processors.table import TableProcessor
+from aih_contexture.schema import BlockTypes
 
 
 @pytest.mark.filename("water_damage.pdf")

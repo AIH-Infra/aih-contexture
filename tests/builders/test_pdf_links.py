@@ -2,11 +2,11 @@ import re
 
 import pytest
 
-from marker.converters.pdf import PdfConverter
-from marker.renderers.markdown import MarkdownOutput
-from marker.schema import BlockTypes
-from marker.schema.document import Document
-from marker.util import classes_to_strings
+from aih_contexture.converters.pdf import PdfConverter
+from aih_contexture.renderers.markdown import MarkdownOutput
+from aih_contexture.schema import BlockTypes
+from aih_contexture.schema.document import Document
+from aih_contexture.util import classes_to_strings
 
 
 @pytest.mark.filename("arxiv_test.pdf")

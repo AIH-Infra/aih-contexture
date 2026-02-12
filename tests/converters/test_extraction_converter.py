@@ -1,10 +1,10 @@
 import json
 import pytest
 
-from marker.converters.extraction import ExtractionConverter
-from marker.extractors.page import PageExtractionSchema
-from marker.extractors.document import DocumentExtractionSchema
-from marker.services import BaseService
+from aih_contexture.converters.extraction import ExtractionConverter
+from aih_contexture.extractors.page import PageExtractionSchema
+from aih_contexture.extractors.document import DocumentExtractionSchema
+from aih_contexture.services import BaseService
 
 
 class MockLLMService(BaseService):

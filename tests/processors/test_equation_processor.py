@@ -1,7 +1,7 @@
 import pytest
 
-from marker.schema import BlockTypes
-from marker.processors.equation import EquationProcessor
+from aih_contexture.schema import BlockTypes
+from aih_contexture.processors.equation import EquationProcessor
 
 
 @pytest.mark.config({"page_range": [0]})

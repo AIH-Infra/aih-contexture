@@ -6,22 +6,22 @@ from PIL import Image, ImageDraw
 import datasets
 import pytest
 
-from marker.builders.document import DocumentBuilder
-from marker.builders.layout import LayoutBuilder
-from marker.builders.line import LineBuilder
-from marker.builders.ocr import OcrBuilder
-from marker.builders.structure import StructureBuilder
-from marker.converters.pdf import PdfConverter
-from marker.models import create_model_dict
-from marker.providers.registry import provider_from_filepath
-from marker.renderers.chunk import ChunkRenderer
-from marker.renderers.html import HTMLRenderer
-from marker.schema import BlockTypes
-from marker.schema.blocks import Block
-from marker.renderers.markdown import MarkdownRenderer
-from marker.renderers.json import JSONRenderer
-from marker.schema.registry import register_block_class
-from marker.util import classes_to_strings, strings_to_classes
+from aih_contexture.builders.document import DocumentBuilder
+from aih_contexture.builders.layout import LayoutBuilder
+from aih_contexture.builders.line import LineBuilder
+from aih_contexture.builders.ocr import OcrBuilder
+from aih_contexture.builders.structure import StructureBuilder
+from aih_contexture.converters.pdf import PdfConverter
+from aih_contexture.models import create_model_dict
+from aih_contexture.providers.registry import provider_from_filepath
+from aih_contexture.renderers.chunk import ChunkRenderer
+from aih_contexture.renderers.html import HTMLRenderer
+from aih_contexture.schema import BlockTypes
+from aih_contexture.schema.blocks import Block
+from aih_contexture.renderers.markdown import MarkdownRenderer
+from aih_contexture.renderers.json import JSONRenderer
+from aih_contexture.schema.registry import register_block_class
+from aih_contexture.util import classes_to_strings, strings_to_classes
 
 
 @pytest.fixture(scope="session")

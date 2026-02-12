@@ -1,4 +1,4 @@
-from marker.providers.pdf import PdfProvider
+from aih_contexture.providers.pdf import PdfProvider
 import tempfile
 
 import datasets

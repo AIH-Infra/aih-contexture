@@ -2,10 +2,10 @@ from typing import List
 
 import pytest
 
-from marker.renderers.markdown import MarkdownRenderer
-from marker.schema import BlockTypes
-from marker.processors.table import TableProcessor
-from marker.schema.blocks import TableCell
+from aih_contexture.renderers.markdown import MarkdownRenderer
+from aih_contexture.schema import BlockTypes
+from aih_contexture.processors.table import TableProcessor
+from aih_contexture.schema.blocks import TableCell
 
 
 @pytest.mark.config({"page_range": [5]})

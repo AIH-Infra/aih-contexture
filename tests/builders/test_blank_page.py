@@ -1,8 +1,8 @@
 from surya.layout.schema import LayoutResult
 
-from marker.builders.document import DocumentBuilder
-from marker.builders.layout import LayoutBuilder
-from marker.builders.line import LineBuilder
+from aih_contexture.builders.document import DocumentBuilder
+from aih_contexture.builders.layout import LayoutBuilder
+from aih_contexture.builders.line import LineBuilder
 
 
 def test_blank_page(config, doc_provider, layout_model, ocr_error_model, detection_model):

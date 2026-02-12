@@ -1,6 +1,6 @@
 from PIL import Image
 
-from marker.builders.ocr import OcrBuilder
+from aih_contexture.builders.ocr import OcrBuilder
 
 
 def test_blank_char_builder(recognition_model):

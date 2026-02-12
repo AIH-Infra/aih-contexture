@@ -5,7 +5,7 @@ from google.genai import types
 from io import BytesIO
 from pydantic import BaseModel
 
-from marker.settings import settings
+from aih_contexture.settings import settings
 
 prompt = """
 You're an expert document analyst who is good at turning tables in documents into HTML.  Analyze the provided image, and convert it to a faithful HTML representation.

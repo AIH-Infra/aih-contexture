@@ -1,6 +1,6 @@
 import pytest
 
-from marker.renderers.chunk import ChunkRenderer
+from aih_contexture.renderers.chunk import ChunkRenderer
 
 
 @pytest.mark.config({"page_range": [0]})

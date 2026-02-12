@@ -1,6 +1,6 @@
 import pytest
 
-from marker.renderers.html import HTMLRenderer
+from aih_contexture.renderers.html import HTMLRenderer
 
 
 @pytest.mark.config(
