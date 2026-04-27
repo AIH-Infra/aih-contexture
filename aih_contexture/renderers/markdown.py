@@ -13,6 +13,7 @@ from aih_contexture.renderers.html import HTMLRenderer
 from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.document import Document
 from aih_contexture.formatters import PageAnchorFormatter, CustomIDInjector
+from aih_contexture.postprocess import MarkdownPostprocessEngine
 
 logger = get_logger()
 
@@ -25,6 +26,18 @@ def cleanup_text(full_text):
     full_text = re.sub(r"\n{3,}", "\n\n", full_text)
     full_text = re.sub(r"(\n\s){3,}", "\n\n", full_text)
     return full_text.strip()
+
+
+def normalize_page_comment_text(text):
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", str(text)).strip().lower()
+
+
+def sanitize_page_comment_text(text):
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", str(text)).replace("--", "- -").strip()
 
 
 def get_formatted_table_text(element):
@@ -66,6 +79,8 @@ class Markdownify(MarkdownConverter):
         html_tables_in_markdown,
         page_anchor_formatter=None,
         custom_id_injector=None,
+        emit_page_header_comment=False,
+        emit_page_footer_comment=False,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -76,12 +91,17 @@ class Markdownify(MarkdownConverter):
         self.html_tables_in_markdown = html_tables_in_markdown
         self.page_anchor_formatter = page_anchor_formatter or PageAnchorFormatter()
         self.custom_id_injector = custom_id_injector
+        self.emit_page_header_comment = emit_page_header_comment
+        self.emit_page_footer_comment = emit_page_footer_comment
+        self.page_image_description_counts = defaultdict(int)
 
     def convert_div(self, el, text, parent_tags):
         is_page = el.has_attr("class") and el["class"][0] == "page"
         if self.paginate_output and is_page:
             page_id = int(el["data-page-id"])
             printed_page_id = el.get("data-printed-page", "")
+            page_header_text = sanitize_page_comment_text(el.get("data-page-header", ""))
+            page_footer_text = sanitize_page_comment_text(el.get("data-page-footer", ""))
             if not printed_page_id:
                 printed_page_id = None
 
@@ -97,15 +117,43 @@ class Markdownify(MarkdownConverter):
             if printed_page_id:
                 page_tag = f"<!-- Page: {printed_page_id} -->\n"
 
+            comment_lines = []
+            seen_comments = set()
+            normalized_printed_page = normalize_page_comment_text(printed_page_id)
+
+            if self.emit_page_header_comment and page_header_text:
+                normalized_header = normalize_page_comment_text(page_header_text)
+                if normalized_header and normalized_header != normalized_printed_page:
+                    seen_comments.add(normalized_header)
+                    comment_lines.append(f"<!-- page-header: {page_header_text} -->")
+
+            if self.emit_page_footer_comment and page_footer_text:
+                normalized_footer = normalize_page_comment_text(page_footer_text)
+                if normalized_footer and normalized_footer != normalized_printed_page and normalized_footer not in seen_comments:
+                    comment_lines.append(f"<!-- page-footer: {page_footer_text} -->")
+
+            comment_block = ""
+            if comment_lines:
+                comment_block = "\n".join(comment_lines) + "\n"
+
             # 调整顺序：{n} -> 分页符 -> <!-- Page: X -->
             pagination_item = (
-                "\n\n" + page_anchor + "\n" + self.page_separator + "\n" + page_tag + "\n"
+                "\n\n" + page_anchor + "\n" + self.page_separator + "\n" + comment_block + page_tag + "\n"
             )
             return pagination_item + text
         else:
             return text
 
     def convert_p(self, el, text, parent_tags):
+        if el.get("role") == "img" and el.get("data-original-image-id"):
+            page_key = self._current_page_key(el)
+            self.page_image_description_counts[page_key] += 1
+            image_index = self.page_image_description_counts[page_key]
+            description_text = sanitize_page_comment_text(text)
+            if not description_text:
+                return ""
+            return f"\n\n<!-- image-description-{image_index}: {description_text} -->\n\n"
+
         hyphens = r"-—¬"
         has_continuation = el.has_attr("class") and "has-continuation" in el["class"]
         if has_continuation:
@@ -119,6 +167,16 @@ class Markdownify(MarkdownConverter):
             if block_type == BlockTypes.ListGroup:
                 return f"{text}"
         return f"{text}\n\n" if text else ""  # default convert_p behavior
+
+    def _current_page_key(self, el) -> str:
+        page_container = el.find_parent(
+            lambda tag: tag.name == "div"
+            and tag.has_attr("class")
+            and "page" in tag.get("class", [])
+        )
+        if page_container and page_container.has_attr("data-page-id"):
+            return str(page_container["data-page-id"])
+        return "global"
 
     def convert_math(self, el, text, parent_tags):
         block = el.has_attr("display") and el["display"] == "block"
@@ -378,6 +436,42 @@ class MarkdownRenderer(HTMLRenderer):
     markdown_formatting_enabled: Annotated[
         bool, "启用 Markdown 格式化（修正语法错误）"
     ] = True
+    markdown_postprocess_enabled: Annotated[
+        bool, "启用共享 Markdown 后处理引擎"
+    ] = False
+    markdown_postprocess_review_only: Annotated[
+        bool, "Markdown 后处理仅 review，不覆盖原语义"
+    ] = True
+    markdown_postprocess_enable_cleanup: Annotated[
+        bool, "Markdown 后处理中的基础清理"
+    ] = True
+    markdown_postprocess_enable_printed_page_repair: Annotated[
+        bool, "Markdown 后处理中的印刷页码修正"
+    ] = False
+    markdown_postprocess_enable_llm: Annotated[
+        bool, "Markdown 后处理中的 LLM 辅助"
+    ] = False
+    markdown_postprocess_llm_provider: Annotated[
+        str, "Markdown 后处理 LLM 提供方"
+    ] = "openai"
+    markdown_postprocess_llm_base_url: Annotated[
+        str | None, "Markdown 后处理 LLM Base URL"
+    ] = None
+    markdown_postprocess_llm_model: Annotated[
+        str | None, "Markdown 后处理 LLM 模型"
+    ] = None
+    markdown_postprocess_llm_api_key: Annotated[
+        str | None, "Markdown 后处理 LLM API Key"
+    ] = None
+    markdown_postprocess_llm_timeout: Annotated[
+        int, "Markdown 后处理 LLM 超时秒数"
+    ] = 60
+    markdown_postprocess_llm_max_retries: Annotated[
+        int, "Markdown 后处理 LLM 最大重试次数"
+    ] = 1
+    markdown_postprocess_strict_null_policy: Annotated[
+        bool, "Markdown 后处理严格空值策略"
+    ] = True
 
     # 自定义编号配置
     custom_id_source: Annotated[
@@ -413,6 +507,8 @@ class MarkdownRenderer(HTMLRenderer):
             html_tables_in_markdown=self.html_tables_in_markdown,
             page_anchor_formatter=formatter,
             custom_id_injector=custom_id_injector,
+            emit_page_header_comment=self.emit_page_header_comment,
+            emit_page_footer_comment=self.emit_page_footer_comment,
         )
 
     def __call__(self, document: Document) -> MarkdownOutput:
@@ -437,6 +533,24 @@ class MarkdownRenderer(HTMLRenderer):
             page_count = len(document.pages)
             final_anchor = f"{{{page_count}}}"
             markdown += f"\n\n{final_anchor}"
+
+        if self.markdown_postprocess_enabled:
+            engine = MarkdownPostprocessEngine({
+                "markdown_postprocess_enabled": self.markdown_postprocess_enabled,
+                "markdown_postprocess_review_only": self.markdown_postprocess_review_only,
+                "markdown_postprocess_enable_cleanup": self.markdown_postprocess_enable_cleanup,
+                "markdown_postprocess_enable_printed_page_repair": self.markdown_postprocess_enable_printed_page_repair,
+                "markdown_postprocess_enable_llm": self.markdown_postprocess_enable_llm,
+                "markdown_postprocess_llm_provider": self.markdown_postprocess_llm_provider,
+                "markdown_postprocess_llm_base_url": self.markdown_postprocess_llm_base_url,
+                "markdown_postprocess_llm_model": self.markdown_postprocess_llm_model,
+                "markdown_postprocess_llm_api_key": self.markdown_postprocess_llm_api_key,
+                "markdown_postprocess_llm_timeout": self.markdown_postprocess_llm_timeout,
+                "markdown_postprocess_llm_max_retries": self.markdown_postprocess_llm_max_retries,
+                "markdown_postprocess_strict_null_policy": self.markdown_postprocess_strict_null_policy,
+            })
+            result = engine.process(markdown)
+            markdown = result.markdown
 
         return MarkdownOutput(
             markdown=markdown,

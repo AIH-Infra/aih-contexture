@@ -36,6 +36,10 @@ class VlmPromptTemplate(BaseModel):
 
     # 🆕 图片描述功能
     describe_images: bool = False  # 是否描述图片/印章/照片
+    anti_hallucination: bool = True  # 缺失信息不猜测
+    extract_bboxes: bool = True  # 是否提取 bbox
+    include_confidence: bool = False  # 是否输出近似置信度
+    enhance_tables_equations: bool = True  # 是否增强表格/公式结构
     special_features: List[str] = []
 
     # API 参数配置
@@ -98,73 +102,151 @@ class VlmPromptTemplate(BaseModel):
         return APIParameterAdapter.adapt_params(api_type, params)
 
     def _get_core_instruction(self) -> str:
-        """获取核心指令 - 包含完整 Markdown 语法规范"""
+        """获取核心指令 - JSON输出模式"""
         direction_hint = ""
         if self.text_direction == "vertical":
-            direction_hint = "Note: Text is vertical (read right-to-left, top-to-bottom). Convert to horizontal output.\n\n"
+            direction_hint = "\n\n## Text Direction\n- Text is vertical (read right-to-left, top-to-bottom)\n- Transcribe in reading order"
         elif self.text_direction == "mixed":
-            direction_hint = "Note: Text may be horizontal or vertical. Convert all to horizontal output.\n\n"
+            direction_hint = "\n\n## Text Direction\n- Text may be horizontal or vertical\n- Transcribe in reading order"
 
-        return f"""Convert this document page to Markdown format.
+        language_hint = ""
+        if self.primary_language:
+            lang_names = {
+                "zh": "Chinese",
+                "zh-Hans": "Simplified Chinese",
+                "zh-Hant": "Traditional Chinese",
+                "en": "English",
+                "de": "German",
+                "fr": "French",
+                "ja": "Japanese",
+                "ko": "Korean"
+            }
+            lang_name = lang_names.get(self.primary_language, self.primary_language)
+            language_hint = f"\n\n## Primary Language\n- Document is primarily in {lang_name}\n- Preserve original text exactly"
 
-{direction_hint}## Markdown Syntax (use as needed)
+        bbox_rule = (
+            "- Estimate bbox in image pixels as [x0, y0, x1, y1] for each visible region. If uncertain, use null."
+            if self.extract_bboxes
+            else "- Set every bbox field to null."
+        )
+        confidence_rule = (
+            "- Use confidence only as an approximate self-assessment from 0.0 to 1.0. If uncertain, use null."
+            if self.include_confidence
+            else "- Set every confidence field to null."
+        )
+        anti_hallucination_rule = ""
+        if self.anti_hallucination:
+            anti_hallucination_rule = """
+## Anti-Hallucination Rules
+- Include only regions and text that are actually visible on the page.
+- If a value is not visible or cannot be determined, use null or an empty array.
+- Do not guess missing text, page numbers, labels, coordinates, confidence, captions, or image descriptions.
+- Do not copy values from schema examples; the schema below shows types, not page content."""
 
-**Headings** (if present): # ## ###
-**Lists** (if present): - item or 1. item
-**Tables** (if present):
-| Col1 | Col2 |
-|------|------|
-| data | data |
-**Emphasis**: **bold**, *italic*
-**Math** (if present): $inline$ or $$block$$
-**Footnotes** (if present): [^1] reference, [^1]: definition
-**Blockquote** (if present): > quoted text
+        marginalia_enabled = "marginal_notes" in self.special_features
+        margin_labels = (
+            "**Margins:** Marginal-Note-Left, Marginal-Note-Right, Footnote"
+            if marginalia_enabled
+            else "**Margins:** Footnote"
+        )
+        marginalia_rule = (
+            "2. **Marginal Notes:** Keep marginal notes separate; do NOT merge them into main text"
+            if marginalia_enabled
+            else "2. **Marginal Notes:** Do not use Marginal-Note-Left or Marginal-Note-Right labels; transcribe visible side text as normal Text unless it is clearly a Footnote"
+        )
+        reading_order_rule = (
+            "3. **Reading Order:** Top-to-bottom, left-to-right; marginal notes near associated text"
+            if marginalia_enabled
+            else "3. **Reading Order:** Top-to-bottom, left-to-right"
+        )
 
-## CRITICAL Output Rules
-1. Wrap ALL your output in a single ```markdown``` code block
-2. Do NOT add any explanations, introductions, or summaries OUTSIDE the code block
-3. Do NOT say "以下是..." or "Here is..." before the code block
-4. Inside the code block, output ONLY the document content
-5. Preserve original text exactly - DO NOT translate
-6. Keep the original language (Chinese stays Chinese, etc.)
-7. Mark unclear text as [unclear]
+        return f"""OCR this document page and return one structured JSON object with layout regions and text content.{direction_hint}{language_hint}
 
-Example output format:
-```markdown
-# Document Title
-Content here...
-```"""
+## Region Labels (use EXACTLY one per region)
+
+**Main:** Section-Header, Text, List-Group, Table, Figure, Equation-Block
+{margin_labels}
+**Structure:** Page-Header, Page-Footer, Caption
+**Special:** Code-Block, Table-Of-Contents, Complex-Block
+
+## JSON Schema
+
+{{
+  "printed_page_number": string | null,
+  "page_width": number,
+  "page_height": number,
+  "regions": [
+    {{
+      "label": string,
+      "bbox": [number, number, number, number] | null,
+      "text": string,
+      "confidence": number | null
+    }}
+  ]
+}}
+
+## Field Rules
+
+- `printed_page_number`: extract from visible Page-Header/Page-Footer only; otherwise use null.
+- `page_width` and `page_height`: use the actual image dimensions when available; do not invent fixed example dimensions.
+{bbox_rule}
+- `text`: transcribe exactly as printed. Use `***bold italic***`, `**bold**`, `*italic*`, `^superscript^`, `~subscript~`, `\\n` for line breaks, and `\\t` for table columns only when visible.
+{confidence_rule}
+{anti_hallucination_rule}
+
+## Detection Rules
+
+1. **Granularity:** 5-30 semantic blocks per page (paragraphs, not lines)
+{marginalia_rule}
+{reading_order_rule}
+4. **Preserve:** Original text, spelling, formatting, line breaks
+5. **Do NOT:** Modernize, translate, correct "errors", add comments
+
+## Output
+- Output ONLY the JSON object
+- Start with `{{` and end with `}}`
+- No markdown fences
+- No text before or after the JSON
+- Stop immediately after the closing `}}`
+- Detect all visible content including small/faint text"""
 
     def _get_special_instructions(self) -> str:
-        """根据参数生成特殊指导"""
+        """根据参数生成特殊指导 - JSON模式"""
         instructions = []
 
         # 手写识别（混合模式才标记）
         if self.handwriting_mode == "mixed":
-            instructions.append("**Handwriting**: Mark handwritten parts as `**[手写]** content`")
+            instructions.append("## Handwriting Recognition\n- Mark handwritten text as `**[手写]** content` within the text field\n- Distinguish printed vs handwritten content")
 
         # 脚注
         if self.may_have_footnotes:
-            instructions.append("**Footnotes**: Use [^1] for references, [^1]: for definitions")
+            instructions.append("## Footnotes\n- Create separate regions with label \"Footnote\"\n- Place at bottom of page in reading order")
 
         # 页码提取
         if self.may_have_page_numbers:
-            instructions.append("**Page number**: If visible, output at start: `<!-- page-header: NUMBER -->`")
+            instructions.append("## Page Numbers\n- Extract printed page number from Page-Header or Page-Footer regions\n- Set \"printed_page_number\" field (string or null)")
 
         # 图片描述
         if self.describe_images:
-            instructions.append("""**Images/Stamps/Photos**: Describe in brackets:
-- [印章: description]
-- [照片: description]
-- [图片: description]
-- [图表: description]""")
+            instructions.append("""## Image Description
+- This is non-mandatory: only describe explicit non-text visual content such as figures, photos, stamps, diagrams, maps, or illustrations.
+- Do not describe ordinary text blocks as images.
+- For Figure regions, describe only visible image content concisely in the text field.
+- Keep image descriptions in the document's primary language.
+- If the image content is unclear, use an empty string.""")
         else:
-            # 默认简单占位
-            instructions.append("**Images**: Use [图片] as placeholder for images")
+            instructions.append("## Images\n- For Figure regions, do not invent descriptions. Use visible captions as separate Caption regions; otherwise use an empty string in the Figure text field.")
 
-        # 边注
+        if self.enhance_tables_equations:
+            instructions.append("""## Tables and Equations
+- Preserve tables as structured text or markdown tables when possible.
+- Label standalone formulas as Equation-Block and preserve mathematical notation.""")
+        else:
+            instructions.append("## Tables and Equations\n- Do not force table or equation structure when uncertain; use Text regions instead.")
+
+        # 边注（如果启用）
         if "marginal_notes" in self.special_features:
-            instructions.append("**Marginal notes**: Include in parentheses: （边注：content）")
+            instructions.append("## Marginal Notes\n- Create separate regions with labels \"Marginal-Note-Left\" or \"Marginal-Note-Right\"\n- Do NOT merge into main text")
 
         return "\n\n".join(instructions) if instructions else ""
 

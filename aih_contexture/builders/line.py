@@ -330,6 +330,12 @@ class LineBuilder(BaseBuilder):
         page_size = (page.polygon.width, page.polygon.height)
         page_image = page.get_image()
         image_size = page_image.size
+        sensitive_block_types = (
+            BlockTypes.PageHeader,
+            BlockTypes.PageFooter,
+            BlockTypes.SectionHeader,
+        )
+        sensitive_blocks = page.current_children if page.children else []
 
         good_lines = []
         for line in lines:
@@ -337,8 +343,31 @@ class LineBuilder(BaseBuilder):
                 page_size, image_size
             )
             line_bbox = line_polygon_rescaled.fit_to_bounds((0, 0, *image_size)).bbox
+            crop_is_blank = is_blank_image(page_image.crop(line_bbox))
 
-            if not is_blank_image(page_image.crop(line_bbox)):
+            # Small structured labels like "IRELAND." can look blank at low DPI.
+            # If a pdftext line overlaps a structural header/footer region, retry
+            # with a tiny padding before discarding it.
+            if (
+                crop_is_blank
+                and line.spans
+                and any(
+                    block.block_type in sensitive_block_types
+                    and not block.removed
+                    and block.polygon.intersection_pct(line.line.polygon) > 0
+                    for block in sensitive_blocks
+                )
+            ):
+                pad = 2
+                padded_bbox = [
+                    max(0, line_bbox[0] - pad),
+                    max(0, line_bbox[1] - pad),
+                    min(image_size[0], line_bbox[2] + pad),
+                    min(image_size[1], line_bbox[3] + pad),
+                ]
+                crop_is_blank = is_blank_image(page_image.crop(padded_bbox))
+
+            if not crop_is_blank:
                 good_lines.append(line)
 
         return good_lines

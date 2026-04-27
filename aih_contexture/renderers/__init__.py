@@ -29,6 +29,18 @@ class BaseRenderer:
     keep_pagefooter_in_output: Annotated[
         bool, "Keep the page footer in the output HTML."
     ] = False
+    emit_page_header_comment: Annotated[
+        bool, "Emit page header metadata in paginated output."
+    ] = False
+    emit_page_footer_comment: Annotated[
+        bool, "Emit page footer metadata in paginated output."
+    ] = False
+    footnote_enabled: Annotated[
+        bool, "Whether footnote-style markup should be preserved in output."
+    ] = True
+    superscript_policy: Annotated[
+        str, "Superscript output policy: auto, preserve_all, suppress_footnote_like, suppress_all."
+    ] = "auto"
     add_block_ids: Annotated[bool, "Whether to add block IDs to the output HTML."] = (
         False
     )
@@ -36,9 +48,16 @@ class BaseRenderer:
     def __init__(self, config: Optional[BaseModel | dict] = None):
         assign_config(self, config)
 
+        if self.superscript_policy == "auto":
+            self.superscript_policy = (
+                "preserve_all" if self.footnote_enabled else "suppress_footnote_like"
+            )
+
         self.block_config = {
             "keep_pageheader_in_output": self.keep_pageheader_in_output,
             "keep_pagefooter_in_output": self.keep_pagefooter_in_output,
+            "footnote_enabled": self.footnote_enabled,
+            "superscript_policy": self.superscript_policy,
             "add_block_ids": self.add_block_ids,
         }
 

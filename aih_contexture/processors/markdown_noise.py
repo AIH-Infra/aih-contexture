@@ -13,9 +13,12 @@ Markdown Noise Removal Processor
 import re
 from typing import Annotated
 
+from aih_contexture.logger import get_logger
 from aih_contexture.processors import BaseProcessor
 from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.document import Document
+
+logger = get_logger()
 
 
 class MarkdownNoiseRemovalProcessor(BaseProcessor):
@@ -54,15 +57,10 @@ class MarkdownNoiseRemovalProcessor(BaseProcessor):
 
     def __call__(self, document: Document):
         """处理文档中的所有文本块"""
-        # 🔍 调试：确认处理器被调用
-        print("=" * 80)
-        print("🧹 MarkdownNoiseRemovalProcessor 被调用")
-        print(f"   清理级别: {self.markdown_noise_cleaning_level}")
-        print(f"   只清理行首: {self.markdown_noise_line_start_only}")
-        print(f"   自定义符号: '{self.markdown_noise_custom_symbols}'")
-        print("=" * 80)
-
         total_cleaned = 0
+        scanned_spans = 0
+        scanned_lines = 0
+        symbols = self._get_symbols_to_clean()
 
         for page in document.pages:
             for block in page.children:
@@ -72,32 +70,36 @@ class MarkdownNoiseRemovalProcessor(BaseProcessor):
                 if block.structure is None:
                     continue
 
-                # 使用 structure_blocks 获取所有 Line 对象
                 lines = block.structure_blocks(document)
 
                 for line in lines:
                     if line is None or line.structure is None:
                         continue
+                    scanned_lines += 1
 
-                    # 使用 structure_blocks 获取所有 Span 对象
                     spans = line.structure_blocks(document)
 
                     for span in spans:
                         if not hasattr(span, 'text') or not span.text:
                             continue
+                        scanned_spans += 1
 
                         original_text = span.text
                         cleaned_text = self.clean_text(original_text)
 
                         if cleaned_text != original_text:
-                            print(f"🔧 清理文本:")
-                            print(f"   原文: {original_text[:50]}...")
-                            print(f"   清理后: {cleaned_text[:50]}...")
                             span.text = cleaned_text
                             total_cleaned += 1
 
-        print(f"✅ 清理完成，共清理 {total_cleaned} 个文本片段")
-        print("=" * 80)
+        logger.info(
+            "[MarkdownNoiseRemovalProcessor] completed: level=%s line_start_only=%s symbols=%s scanned_lines=%s scanned_spans=%s cleaned_spans=%s",
+            self.markdown_noise_cleaning_level,
+            self.markdown_noise_line_start_only,
+            symbols,
+            scanned_lines,
+            scanned_spans,
+            total_cleaned,
+        )
 
     def clean_text(self, text: str) -> str:
         """清理文本中的 Markdown 噪音符号"""

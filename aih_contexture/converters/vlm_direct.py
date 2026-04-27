@@ -91,12 +91,12 @@ class VlmDirectConverter(BaseConverter):
     vlm_direct_image_format: Annotated[
         str,
         "图像格式: jpeg, png, webp"
-    ] = "jpeg"
+    ] = "png"
 
     vlm_direct_max_image_dimension: Annotated[
         int,
-        "图像最大边长（像素）"
-    ] = 2048
+        "图像最大边长（像素，0=不缩放）"
+    ] = 0
 
     vlm_direct_jpeg_quality: Annotated[
         int,
@@ -156,9 +156,19 @@ class VlmDirectConverter(BaseConverter):
             api_key=self.api_key or "default-key"
         )
 
+    def _resolve_image_mime(self) -> str:
+        fmt = (self.image_format or "png").lower()
+        if fmt in ("jpg", "jpeg"):
+            return "image/jpeg"
+        if fmt == "webp":
+            return "image/webp"
+        return "image/png"
+
     def _resize_if_needed(self, img: Image.Image) -> Image.Image:
         """如果图像超过最大尺寸则缩放"""
         w, h = img.size
+        if self.max_image_dimension <= 0:
+            return img
         if w <= self.max_image_dimension and h <= self.max_image_dimension:
             return img
         scale = min(self.max_image_dimension / w, self.max_image_dimension / h)
@@ -191,8 +201,7 @@ class VlmDirectConverter(BaseConverter):
 
         # 构建请求
         b64_img = self._img_to_base64(img)
-        fmt = (self.image_format or "jpeg").lower()
-        mime = "jpeg" if fmt in ("jpg", "jpeg") else ("png" if fmt == "png" else "webp")
+        mime = self._resolve_image_mime().split("/", 1)[1]
 
         content = [
             {

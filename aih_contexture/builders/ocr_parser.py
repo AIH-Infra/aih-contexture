@@ -162,6 +162,10 @@ class OcrParser:
 
         for idx, div in enumerate(top_level_divs):
             try:
+                label = div.get("data-label", "Text")
+                if label == "Blank-Page":
+                    continue
+
                 # 1. 提取 bbox
                 bbox_str = div.get("data-bbox")
                 if not bbox_str:
@@ -173,9 +177,12 @@ class OcrParser:
                     bbox = json.loads(bbox_str)
                     if not isinstance(bbox, list) or len(bbox) != 4:
                         raise ValueError(f"Invalid bbox format: {bbox}")
-                except Exception as e:
-                    logger.warning(f"Block {idx}: Failed to parse bbox '{bbox_str}': {e}")
-                    continue
+                except Exception:
+                    parts = str(bbox_str).split()
+                    if len(parts) != 4:
+                        logger.warning(f"Block {idx}: Failed to parse bbox '{bbox_str}'")
+                        continue
+                    bbox = [float(part) for part in parts]
 
                 # 3. 转换为实际像素坐标
                 bbox_pixels = [
@@ -185,13 +192,10 @@ class OcrParser:
                     min(int(bbox[3] * height_scaler), page_size[1])
                 ]
 
-                # 4. 提取标签
-                label = div.get("data-label", "Text")
-
-                # 5. 提取内容
+                # 4. 提取内容
                 content_html = str(div.decode_contents())
 
-                # 6. 映射标签
+                # 5. 映射标签
                 block_type = self._map_chandra_label(label)
 
                 # 7. 根据类型决定是否保留 HTML 结构
@@ -271,6 +275,10 @@ class OcrParser:
             "Form": "form",
             "Table-Of-Contents": "toc",
             "Figure": "figure",
+            "Chemical-Block": "text",
+            "Diagram": "figure",
+            "Bibliography": "text",
+            "Blank-Page": "text",
             # 小写版本
             "caption": "caption",
             "footnote": "footnote",
@@ -286,6 +294,10 @@ class OcrParser:
             "form": "form",
             "toc": "toc",
             "figure": "figure",
+            "chemical-block": "text",
+            "diagram": "figure",
+            "bibliography": "text",
+            "blank-page": "text",
         }
         return mapping.get(label, "text")
 
@@ -398,7 +410,8 @@ class OcrParser:
         ocr_output: Dict[str, Any] | str,
         page_id: int,
         page_size: Tuple[int, int],
-        output_format: str = "json"
+        output_format: str = "json",
+        bbox_scale: int = 1024,
     ) -> PageGroup:
         """
         将 OCR 输出解析为 PageGroup (主入口)
@@ -414,7 +427,7 @@ class OcrParser:
         """
         # Chandra HTML 格式（带 data-bbox 和 data-label）
         if isinstance(ocr_output, str) and "data-bbox" in ocr_output and "data-label" in ocr_output:
-            return self.parse_chandra_html_to_page(ocr_output, page_id, page_size)
+            return self.parse_chandra_html_to_page(ocr_output, page_id, page_size, bbox_scale=bbox_scale)
         # 传统格式
         elif output_format == "json" and isinstance(ocr_output, dict):
             return self.parse_json_to_page(ocr_output, page_id, page_size)
@@ -525,7 +538,8 @@ class OcrParser:
         ocr_output: Dict[str, Any] | str,
         page_id: int,
         page_size: Tuple[int, int],
-        output_format: str = "json"
+        output_format: str = "json",
+        bbox_scale: int = 1024,
     ) -> PageGroup:
         """
         将 OCR 输出解析为 PageGroup (主入口)
@@ -541,7 +555,7 @@ class OcrParser:
         """
         # Chandra HTML 格式（带 data-bbox 和 data-label）
         if isinstance(ocr_output, str) and "data-bbox" in ocr_output and "data-label" in ocr_output:
-            return self.parse_chandra_html_to_page(ocr_output, page_id, page_size)
+            return self.parse_chandra_html_to_page(ocr_output, page_id, page_size, bbox_scale=bbox_scale)
         # 传统格式
         elif output_format == "json" and isinstance(ocr_output, dict):
             return self.parse_json_to_page(ocr_output, page_id, page_size)

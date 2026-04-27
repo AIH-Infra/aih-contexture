@@ -2,6 +2,8 @@ import warnings
 from typing import Annotated, Dict, List
 
 import numpy as np
+
+from aih_contexture.logger import get_logger
 from sklearn.cluster import KMeans
 from sklearn.exceptions import ConvergenceWarning
 
@@ -11,6 +13,7 @@ from aih_contexture.schema.document import Document
 
 # Ignore sklearn warning about not converging
 warnings.filterwarnings("ignore", category=ConvergenceWarning)
+logger = get_logger()
 
 
 class SectionHeaderProcessor(BaseProcessor):
@@ -37,6 +40,10 @@ class SectionHeaderProcessor(BaseProcessor):
 
     def __call__(self, document: Document):
         line_heights: Dict[int, float] = {}
+        ignored_empty_headers = 0
+        assigned_headers = 0
+        default_level_headers = 0
+
         for page in document.pages:
             # Iterate children to grab all section headers
             for block in page.children:
@@ -47,6 +54,7 @@ class SectionHeaderProcessor(BaseProcessor):
                 else:
                     line_heights[block.id] = 0
                     block.ignore_for_output = True  # Don't output an empty section header
+                    ignored_empty_headers += 1
 
         flat_line_heights = list(line_heights.values())
         heading_ranges = self.bucket_headings(flat_line_heights)
@@ -65,6 +73,19 @@ class SectionHeaderProcessor(BaseProcessor):
 
                 if block.heading_level is None:
                     block.heading_level = self.default_level
+                    if block_height > 0:
+                        default_level_headers += 1
+
+                if block_height > 0:
+                    assigned_headers += 1
+
+        logger.info(
+            "[SectionHeaderProcessor] completed: headings=%s ignored_empty=%s default_level=%s heading_ranges=%s",
+            assigned_headers,
+            ignored_empty_headers,
+            default_level_headers,
+            heading_ranges,
+        )
 
     def bucket_headings(self, line_heights: List[float], num_levels=4):
         if len(line_heights) <= self.level_count:

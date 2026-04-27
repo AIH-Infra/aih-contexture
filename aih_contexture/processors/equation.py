@@ -3,6 +3,8 @@ from PIL import Image
 import re
 from bs4 import BeautifulSoup
 
+from aih_contexture.logger import get_logger
+
 from ftfy import fix_text, TextFixerConfig
 from surya.recognition import RecognitionPredictor, OCRResult
 
@@ -12,6 +14,7 @@ from aih_contexture.schema.document import Document
 from aih_contexture.settings import settings
 
 MATH_TAG_PATTERN = re.compile(r"<math[^>]*>(.*?)</math>")
+logger = get_logger()
 
 
 class EquationProcessor(BaseProcessor):
@@ -79,9 +82,12 @@ class EquationProcessor(BaseProcessor):
             equation_block_ids.append(page_equation_block_ids)
 
         if total_equation_blocks == 0:
+            logger.info("[EquationProcessor] completed: equation_blocks=0 batch_size=%s", self.get_batch_size())
             return
 
         predictions = self.get_latex_batched(images, equation_boxes)
+        predicted_pages = len(predictions)
+        predicted_equations = sum(len(page_predictions) for page_predictions in predictions)
         for page_predictions, page_equation_block_ids in zip(
             predictions, equation_block_ids
         ):
@@ -93,6 +99,14 @@ class EquationProcessor(BaseProcessor):
             ):
                 block = document.get_block(block_id)
                 block.html = self.fix_latex(block_prediction)
+
+        logger.info(
+            "[EquationProcessor] completed: equation_blocks=%s predicted_pages=%s predicted_equations=%s batch_size=%s",
+            total_equation_blocks,
+            predicted_pages,
+            predicted_equations,
+            self.get_batch_size(),
+        )
 
     def fix_latex(self, math_html: str):
         math_html = math_html.strip()

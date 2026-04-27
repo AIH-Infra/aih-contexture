@@ -27,10 +27,11 @@ from bs4 import BeautifulSoup
 
 from aih_contexture.converters import BaseConverter
 from aih_contexture.schema.document import Document
-from aih_contexture.services.ocr_chandra import OcrChandraService
+from aih_contexture.services.ocr_factory import OcrServiceFactory
 from aih_contexture.builders.ocr_parser import OcrParser
 from aih_contexture.formatters import PageAnchorPlugin, PrintedPageExtractor
 from aih_contexture.utils.api_key_pool import APIKeyPool
+from aih_contexture.utils.chandra_output import parse_markdown, parse_html, parse_chunks
 from aih_contexture.logger import get_logger
 
 logger = get_logger()
@@ -117,12 +118,25 @@ class OcrDirectAsyncConverter(BaseConverter):
         super().__init__(config)
         config = config or {}
 
+        # 🆕 接收后端类型和输出格式
+        self.backend = config.get("ocr_backend", "chandra")
+        self.chandra_version = str(config.get("chandra_version", "1.0"))
+        self.final_output_formats = config.get("final_output_formats", ["markdown"])
+
         # 加载配置（支持字典访问）
         self.endpoint = config.get("ocr_endpoint", self.ocr_endpoint)
 
-        # 端点自动补全：如果只填了 /v1，自动补全为 /v1/chat/completions
+        # 协议风格：默认走 LM Studio 原生协议
+        self.api_style = config.get("ocr_api_style", "lmstudio-native")
+
+        # 端点自动补全：
+        # - openai            : /v1 -> /v1/chat/completions
+        # - lmstudio-native   : /v1 -> /api/v1/chat
         if self.endpoint.endswith("/v1"):
-            self.endpoint = self.endpoint.replace("/v1", "/v1/chat/completions")
+            if self.api_style == "lmstudio-native":
+                self.endpoint = self.endpoint.replace("/v1", "/api/v1/chat")
+            else:
+                self.endpoint = self.endpoint.replace("/v1", "/v1/chat/completions")
 
         self.model = config.get("ocr_model", self.ocr_model)
         self.api_key = config.get("ocr_api_key", self.ocr_api_key)
@@ -132,13 +146,19 @@ class OcrDirectAsyncConverter(BaseConverter):
         self.timeout = config.get("ocr_timeout", self.ocr_timeout)
         self.max_retries = config.get("ocr_max_retries", self.ocr_max_retries)
 
-        self.concurrency = config.get("ocr_concurrency", self.ocr_concurrency)
-        self.batch_size = config.get("ocr_batch_size", self.ocr_batch_size)
-        self.batch_rest = config.get("ocr_batch_rest", self.ocr_batch_rest)
+        self.ocr_concurrency = config.get("ocr_concurrency", self.ocr_concurrency)
+        self.ocr_batch_size = config.get("ocr_batch_size", self.ocr_batch_size)
+        self.ocr_batch_rest = config.get("ocr_batch_rest", self.ocr_batch_rest)
+        self.concurrency = self.ocr_concurrency
+        self.batch_size = self.ocr_batch_size
+        self.batch_rest = self.ocr_batch_rest
 
-        self.resize_max = config.get("ocr_resize_max", self.ocr_resize_max)
-        self.image_format = config.get("ocr_image_format", self.ocr_image_format)
-        self.image_quality = config.get("ocr_image_quality", self.ocr_image_quality)
+        self.ocr_resize_max = config.get("ocr_resize_max", self.ocr_resize_max)
+        self.ocr_image_format = str(config.get("ocr_image_format", self.ocr_image_format)).upper()
+        self.ocr_image_quality = config.get("ocr_image_quality", self.ocr_image_quality)
+        self.resize_max = self.ocr_resize_max
+        self.image_format = self.ocr_image_format
+        self.image_quality = self.ocr_image_quality
 
         self.page_anchor_enabled = config.get("ocr_page_anchor_enabled", self.ocr_page_anchor_enabled)
 
@@ -157,21 +177,26 @@ class OcrDirectAsyncConverter(BaseConverter):
         self.noise_removal_enabled = config.get("ocr_noise_removal", True)
         self.noise_patterns = self._parse_noise_patterns(config.get("ocr_noise_patterns", ""))
         self.footnote_fix_enabled = config.get("ocr_footnote_fix", True)
+        self.hyphenation_fix_enabled = config.get("ocr_hyphenation_fix", True)
         self.filter_page_header = config.get("ocr_filter_page_header", False)
         self.filter_page_footer = config.get("ocr_filter_page_footer", False)
 
-        # 初始化 OCR 服务
+        # 初始化 OCR 服务（使用工厂模式）
         ocr_service_config = {
+            "ocr_backend": self.backend,
+            "chandra_version": self.chandra_version,
+            "ocr_api_style": self.api_style,
             "ocr_endpoint": self.endpoint,
             "ocr_model": self.model,
-            "ocr_api_key": self.api_key or "",  # 确保不是 None
+            "ocr_api_key": self.api_key or "",
             "ocr_output_format": self.output_format,
-            "ocr_max_tokens": self.max_tokens,  # 传递 max_tokens 参数
+            "ocr_max_tokens": self.max_tokens,
             "ocr_temperature": self.temperature,
             "ocr_timeout": self.timeout,
             "max_retries": self.max_retries
         }
-        self.ocr_service = OcrChandraService(ocr_service_config)
+        self.ocr_service = OcrServiceFactory.create_service(ocr_service_config)
+        self.runtime_profile = self._build_runtime_profile(config)
 
         # 初始化解析器
         self.parser = OcrParser(config)
@@ -191,6 +216,7 @@ class OcrDirectAsyncConverter(BaseConverter):
             anchor_wrapper = config.get("ocr_page_anchor_wrapper", "{{{}}}")
             anchor_position = config.get("ocr_page_anchor_position", "before")
             extract_printed = config.get("ocr_extract_printed_pages", True)
+            self.extract_printed_pages = extract_printed  # 保存为实例属性
             custom_patterns = config.get("ocr_printed_page_patterns", None)
 
             # 自定义编号配置
@@ -227,11 +253,75 @@ class OcrDirectAsyncConverter(BaseConverter):
             self.page_anchor_plugin = None
             self.printed_page_extractor = None
 
+        # 初始化输出缓存变量（用于 Streamlit 文件保存）
+        self._last_xml_pages = None
+        self._last_clean_html_pages = None
+        self._last_chunks = None
+
+    def _build_runtime_profile(self, config: dict) -> dict:
+        """
+        构建当前执行 profile 元数据。
+
+        这里先提供一个稳定的读取口，便于后续在 1.0 / 2.0 之间透传
+        bbox_scale、preprocess profile 等元信息。
+        """
+        service_profile = {}
+        get_runtime_profile = getattr(self.ocr_service, "get_runtime_profile", None)
+        if callable(get_runtime_profile):
+            service_profile = get_runtime_profile() or {}
+
+        bbox_scale = service_profile.get("bbox_scale")
+        if bbox_scale is None and self.backend == "chandra":
+            bbox_scale = int(config.get("chandra_bbox_scale", 1024))
+
+        return {
+            "backend": self.backend,
+            "api_style": self.api_style,
+            "chandra_version": self.chandra_version if self.backend == "chandra" else None,
+            "bbox_scale": bbox_scale,
+            "preprocess_profile": service_profile.get("preprocess_profile"),
+            "sampling_profile": service_profile.get("sampling_profile"),
+            "image_transport": service_profile.get("image_transport", self.ocr_image_format),
+        }
+
+    def _get_chandra_bbox_scale(self) -> int:
+        """获取当前 Chandra profile 的 bbox scale。"""
+        bbox_scale = self.runtime_profile.get("bbox_scale")
+        if isinstance(bbox_scale, int):
+            return bbox_scale
+        return 1024
+
+    def _get_preprocess_profile(self) -> Optional[str]:
+        """获取当前 OCR profile 的图像预处理策略。"""
+        return self.runtime_profile.get("preprocess_profile")
+
     def _parse_noise_patterns(self, patterns_text: str) -> List[str]:
         """解析噪音模式文本为列表"""
         if not patterns_text:
             return []
         return [p.strip() for p in patterns_text.split('\n') if p.strip()]
+
+    def _fix_unicode_superscript_footnotes(self, markdown_pages: List[str]) -> List[str]:
+        """转换行首Unicode上标脚注：^¹) → <sup>1)</sup>"""
+        fixed = []
+        superscript_map = {
+            '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
+            '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁰': '0'
+        }
+        for page in markdown_pages:
+            for sup_char, normal_char in superscript_map.items():
+                page = re.sub(f'^{sup_char}\\)', f'<sup>{normal_char})</sup>', page, flags=re.MULTILINE)
+            fixed.append(page)
+        return fixed
+
+    def _fix_hyphenation(self, markdown_pages: List[str]) -> List[str]:
+        """删除 Markdown 强制换行，让文本连续流动"""
+        fixed = []
+        for page in markdown_pages:
+            # 把"一个或多个空格+换行"替换为"一个空格"
+            page = re.sub(r' +\r?\n', ' ', page)
+            fixed.append(page)
+        return fixed
 
     def _preprocess_image(self, img: Image.Image) -> Image.Image:
         """
@@ -243,10 +333,21 @@ class OcrDirectAsyncConverter(BaseConverter):
         Returns:
             预处理后的图像
         """
-        # 1. 调整大小
+        preprocess_profile = self._get_preprocess_profile()
+
+        # 1. Chandra 2.0 对齐：优先保证较高的最短边
+        if preprocess_profile == "official_v2":
+            min_dim = min(img.size)
+            if min_dim < 1536:
+                scale = 1536 / min_dim
+                new_size = (int(img.width * scale), int(img.height * scale))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+                logger.info(f"[Chandra v2] Upscaled image from {min_dim}px min side to {min(new_size)}px")
+
+        # 2. 调整大小
         img = self._resize_if_needed(img)
 
-        # 2. 颜色空间转换
+        # 3. 颜色空间转换
         if img.mode != "RGB":
             img = img.convert("RGB")
 
@@ -262,7 +363,7 @@ class OcrDirectAsyncConverter(BaseConverter):
         Returns:
             调整后的图像
         """
-        max_size = self.ocr_resize_max
+        max_size = self.resize_max
 
         if max(img.size) > max_size:
             ratio = max_size / max(img.size)
@@ -284,16 +385,19 @@ class OcrDirectAsyncConverter(BaseConverter):
         """
         buffered = BytesIO()
 
-        # 强制使用 JPEG 格式以减小大小
-        # PNG 对于 LM Studio 来说太大了
-        img_format = "JPEG"
-        quality = min(self.ocr_image_quality, 70)  # 限制最大质量为 70（LM Studio 上下文窗口限制）
+        img_format = self.image_format if self.image_format in {"PNG", "JPEG", "JPG"} else "JPEG"
+        if img_format == "JPG":
+            img_format = "JPEG"
+        quality = min(self.image_quality, 70)  # 限制最大质量为 70（LM Studio 上下文窗口限制）
 
         # 确保是 RGB 模式（JPEG 不支持 RGBA）
         if img.mode in ("RGBA", "LA", "P"):
             img = img.convert("RGB")
 
-        img.save(buffered, format="JPEG", quality=quality, optimize=True)
+        save_kwargs = {"format": img_format}
+        if img_format == "JPEG":
+            save_kwargs.update({"quality": quality, "optimize": True})
+        img.save(buffered, **save_kwargs)
 
         base64_str = base64.b64encode(buffered.getvalue()).decode()
 
@@ -784,11 +888,18 @@ class OcrDirectAsyncConverter(BaseConverter):
         Returns:
             清理后的页面列表
         """
-        # 使用配置的噪音模式，如果没有则使用默认
-        noise_patterns = self.noise_patterns if self.noise_patterns else [
-            r"Digitized\s+by\s+Google",
-            r"Digitized\s+by\s+the\s+Internet\s+Archive",
-        ]
+        # 始终包含 HTML 清理模式（包括不完整的标签）
+        # 排除 sup/sub 标签（脚注和上下标需要保留）
+        base_patterns = [r"</(?!sup|sub)[a-z]+>?"]  # 负向前瞻，不匹配 </sup> 和 </sub>
+
+        # 添加用户配置的模式或默认模式
+        if self.noise_patterns:
+            noise_patterns = base_patterns + self.noise_patterns
+        else:
+            noise_patterns = base_patterns + [
+                r"Digitized\s+by\s+Google",
+                r"Digitized\s+by\s+the\s+Internet\s+Archive",
+            ]
 
         cleaned = []
         for page in markdown_pages:
@@ -796,7 +907,7 @@ class OcrDirectAsyncConverter(BaseConverter):
                 try:
                     page = re.sub(pattern, '', page, flags=re.IGNORECASE)
                 except re.error:
-                    pass  # 忽略无效正则
+                    pass
             page = re.sub(r'\n{3,}', '\n\n', page)
             cleaned.append(page.strip())
         return cleaned
@@ -806,9 +917,10 @@ class OcrDirectAsyncConverter(BaseConverter):
         修复脚注格式
 
         处理：
-        1. 未识别的脚注（如 "1) 文本"）添加 <sup> 标签
+        1. 未识别的脚注（如 "1) 文本", "*) 文本"）添加 <sup> 标签
         2. 重复的括号（如 "<sup>1)</sup>)"）
         3. 统一脚注格式
+        4. 清理脚注中的 HTML 残留
 
         Args:
             markdown_pages: Markdown 页面列表
@@ -818,19 +930,95 @@ class OcrDirectAsyncConverter(BaseConverter):
         """
         fixed = []
         for page in markdown_pages:
-            # 1. 修复重复括号：<sup>1)</sup>) -> <sup>1)</sup>
-            page = re.sub(r'<sup>(\d+)\)</sup>\)', r'<sup>\1)</sup>', page)
+            # 1. 转换行首的Unicode上标脚注（脚注定义）
+            # ^¹) → <sup>1)</sup>
+            superscript_map = {
+                '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
+                '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁰': '0'
+            }
+            for sup_char, normal_char in superscript_map.items():
+                page = re.sub(f'^{sup_char}\\)', f'<sup>{normal_char})</sup>', page, flags=re.MULTILINE)
 
-            # 2. 识别未标记的脚注（行首的 "1) 文本" 格式）
-            page = re.sub(
-                r'^(\d+)\)\s+',
-                r'<sup>\1)</sup> ',
-                page,
-                flags=re.MULTILINE
-            )
+            # 2. 识别 Markdown 转义的脚注并添加 sup 标签
+            # \*) → <sup>*)</sup>
+            page = re.sub(r'\\(\*+)\)', r'<sup>\1)</sup>', page)
+            # \1) → <sup>1)</sup>
+            page = re.sub(r'\\(\d+)\)', r'<sup>\1)</sup>', page)
+
+            # 3. 修复可能的重复括号
+            page = re.sub(r'<sup>(\d+)\)</sup>\)', r'<sup>\1)</sup>', page)
+            page = re.sub(r'<sup>(\*+)\)</sup>\)', r'<sup>\1)</sup>', page)
 
             fixed.append(page)
         return fixed
+
+    def _extract_page_number_from_html(self, html: str) -> Optional[str]:
+        """
+        从 Chandra HTML 中提取印刷页码（基于 data-label）
+
+        Args:
+            html: Chandra 原始 HTML
+
+        Returns:
+            页码字符串或 None
+        """
+        from bs4 import BeautifulSoup
+
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            # 查找 Page-Header 或 Page-Footer 标签
+            for label in ["Page-Header", "Page-Footer"]:
+                divs = soup.find_all("div", {"data-label": label})
+                for div in divs:
+                    text = div.get_text(strip=True)
+                    # 提取阿拉伯数字（1-999）
+                    match = re.match(r'^(\d{1,3})$', text)
+                    if match:
+                        return match.group(1)
+                    # 提取罗马数字（i-vi, I-VI）
+                    match = re.match(r'^([ivxIVX]{1,6})$', text)
+                    if match:
+                        return match.group(1)
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to extract page number from HTML: {e}")
+            return None
+
+    def _validate_page_sequence(self, page_numbers: List[Optional[str]]) -> List[Optional[str]]:
+        """
+        验证页码序列的连续性
+
+        Args:
+            page_numbers: 提取的页码列表
+
+        Returns:
+            验证后的页码列表（无效的设为 None）
+        """
+        validated = list(page_numbers)
+
+        # 转换为数字（阿拉伯数字）
+        numeric = []
+        for pn in page_numbers:
+            if pn and pn.isdigit():
+                numeric.append(int(pn))
+            else:
+                numeric.append(None)
+
+        # 检查连续性
+        for i in range(1, len(numeric)):
+            if numeric[i] is not None and numeric[i-1] is not None:
+                diff = numeric[i] - numeric[i-1]
+                # 允许 +1（正常）或 +0（重复页）或 -1（回退）
+                if diff not in [0, 1, -1]:
+                    # 检查前后页是否支持当前页
+                    if i + 1 < len(numeric) and numeric[i+1] is not None:
+                        next_diff = numeric[i+1] - numeric[i]
+                        if next_diff not in [0, 1]:
+                            # 当前页不连续，标记为无效
+                            logger.warning(f"Page {i+1}: Invalid sequence {numeric[i-1]} -> {numeric[i]} -> {numeric[i+1]}")
+                            validated[i] = None
+
+        return validated
 
     def _filter_page_markers(self, markdown_pages: List[str]) -> List[str]:
         """
@@ -977,31 +1165,25 @@ class OcrDirectAsyncConverter(BaseConverter):
                 if isinstance(ocr_output, str):
                     logger.info(f"Page {page_num + 1}: OCR output is string, length = {len(ocr_output)}")
 
-                # 4. 转换为 Markdown
-                if isinstance(ocr_output, str):
-                    markdown = self._ocr_html_to_markdown(ocr_output)
-                else:
-                    # JSON 格式，提取文本
-                    markdown = "\n\n".join(
-                        block.get("text", "")
-                        for block in ocr_output.get("blocks", [])
-                        if isinstance(block, dict)
-                    )
+                # 4. 保存 raw_html（供后续官方工具批量转换）
+                raw_html = ocr_output if isinstance(ocr_output, str) else ""
 
                 # 5. 解析输出为 PageGroup
                 page = self.parser.parse_to_page(
                     ocr_output,
                     page_num,
                     img_size,
-                    self.ocr_service.ocr_output_format
+                    self.ocr_service.ocr_output_format,
+                    bbox_scale=self._get_chandra_bbox_scale(),
                 )
 
-                logger.info(f"Processed page {page_num + 1}, markdown length: {len(markdown)}")
-                return (page_num, page, markdown, img_size)
+                logger.info(f"Processed page {page_num + 1}, raw_html length: {len(raw_html)}")
+                return (page_num, page, raw_html, img_size, processed_img)
 
             except Exception as e:
                 logger.error(f"Failed to process page {page_num + 1}: {e}")
-                # 返回空页面
+                if self.backend == "churro":
+                    raise RuntimeError(f"Churro OCR failed on page {page_num + 1}: {e}") from e
                 from aih_contexture.schema.polygon import PolygonBox
                 from aih_contexture.schema.groups.page import PageGroup
                 page_polygon = PolygonBox.from_bbox([0, 0, img.width, img.height])
@@ -1010,7 +1192,7 @@ class OcrDirectAsyncConverter(BaseConverter):
                     polygon=page_polygon,
                     structure=[]
                 )
-                return (page_num, empty_page, "", img.size)
+                return (page_num, empty_page, "", img.size, img)
 
     async def _convert_page_async_no_semaphore(
         self,
@@ -1044,29 +1226,25 @@ class OcrDirectAsyncConverter(BaseConverter):
                 session, processed_img, api_key
             )
 
-            # 4. 转换为 Markdown
-            if isinstance(ocr_output, str):
-                markdown = self._ocr_html_to_markdown(ocr_output)
-            else:
-                markdown = "\n\n".join(
-                    block.get("text", "")
-                    for block in ocr_output.get("blocks", [])
-                    if isinstance(block, dict)
-                )
+            # 4. 保存 raw_html（供后续官方工具批量转换）
+            raw_html = ocr_output if isinstance(ocr_output, str) else ""
 
             # 5. 解析输出为 PageGroup
             page = self.parser.parse_to_page(
                 ocr_output,
                 page_num,
                 img_size,
-                self.ocr_service.ocr_output_format
+                self.ocr_service.ocr_output_format,
+                bbox_scale=self._get_chandra_bbox_scale(),
             )
 
             logger.info(f"Processed page {page_num + 1}")
-            return (page_num, page, markdown, img_size)
+            return (page_num, page, raw_html, img_size, processed_img)
 
         except Exception as e:
             logger.error(f"Failed to process page {page_num + 1}: {e}")
+            if self.backend == "churro":
+                raise RuntimeError(f"Churro OCR failed on page {page_num + 1}: {e}") from e
             from aih_contexture.schema.polygon import PolygonBox
             from aih_contexture.schema.groups.page import PageGroup
             page_polygon = PolygonBox.from_bbox([0, 0, img.width, img.height])
@@ -1075,7 +1253,7 @@ class OcrDirectAsyncConverter(BaseConverter):
                 polygon=page_polygon,
                 structure=[]
             )
-            return (page_num, empty_page, "", img.size)
+            return (page_num, empty_page, "", img.size, img)
 
     async def _process_batch_async(
         self,
@@ -1097,7 +1275,7 @@ class OcrDirectAsyncConverter(BaseConverter):
             处理结果列表
         """
         all_results = []
-        concurrency = self.ocr_concurrency
+        concurrency = self.concurrency
 
         async with aiohttp.ClientSession() as session:
             # 将 batch 分成小批次，每批 = 并发数
@@ -1122,6 +1300,9 @@ class OcrDirectAsyncConverter(BaseConverter):
                 # 等待当前小批次全部完成
                 print(f"[STRICT BATCH] Waiting for all {len(tasks)} tasks to complete...")
                 sub_results = await asyncio.gather(*tasks, return_exceptions=True)
+                failures = [result for result in sub_results if isinstance(result, Exception)]
+                if failures:
+                    raise RuntimeError("; ".join(str(failure) for failure in failures))
                 print(f"[STRICT BATCH] Sub-batch completed! {len(sub_results)} results")
                 all_results.extend(sub_results)
 
@@ -1153,10 +1334,10 @@ class OcrDirectAsyncConverter(BaseConverter):
 
         # 2. 批处理
         all_results = []
-        for batch_idx in range(0, len(pages_images), self.ocr_batch_size):
-            batch = pages_images[batch_idx:batch_idx + self.ocr_batch_size]
-            batch_num = batch_idx // self.ocr_batch_size + 1
-            total_batches = (len(pages_images) + self.ocr_batch_size - 1) // self.ocr_batch_size
+        for batch_idx in range(0, len(pages_images), self.batch_size):
+            batch = pages_images[batch_idx:batch_idx + self.batch_size]
+            batch_num = batch_idx // self.batch_size + 1
+            total_batches = (len(pages_images) + self.batch_size - 1) // self.batch_size
 
             logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} pages)")
 
@@ -1165,24 +1346,115 @@ class OcrDirectAsyncConverter(BaseConverter):
             all_results.extend(batch_results)
 
             # 4. 批次间休息
-            if batch_idx + self.ocr_batch_size < len(pages_images):
-                logger.info(f"Resting for {self.ocr_batch_rest} seconds...")
-                await asyncio.sleep(self.ocr_batch_rest)
+            if batch_idx + self.batch_size < len(pages_images):
+                logger.info(f"Resting for {self.batch_rest} seconds...")
+                await asyncio.sleep(self.batch_rest)
 
         # 5. 按页码排序
         all_results.sort(key=lambda x: x[0])
 
-        # 6. 提取 pages 和 markdown_pages
+        # 6. 提取 pages、raw_output_pages、img_list
         pages = [result[1] for result in all_results]
-        markdown_pages = [result[2] for result in all_results]
+        raw_output_pages = [result[2] for result in all_results]  # HTML 或 XML
+        img_list = [result[4] for result in all_results]
 
-        # 7. 提取印刷页码（如果启用）
-        printed_pages = None
+        # 6.1 根据后端类型处理输出
+        logger.info(f"[DEBUG] Backend type: {self.backend}")
+        logger.info(f"[DEBUG] raw_output_pages count: {len(raw_output_pages)}")
+        if self.backend == "churro":
+            # Churro: XML 输出
+            logger.info("Processing Churro XML output...")
+            from aih_contexture.utils.churro_output import xml_to_markdown, xml_to_json, xml_to_html, extract_page_number
+
+            # 保存原始 XML
+            self._last_xml_pages = raw_output_pages
+            logger.info(f"[DEBUG] Saved {len(self._last_xml_pages)} XML pages")
+            if self._last_xml_pages:
+                logger.info(f"[DEBUG] First XML page length: {len(self._last_xml_pages[0])}")
+            empty_xml_pages = [idx + 1 for idx, xml in enumerate(raw_output_pages) if not isinstance(xml, str) or not xml.strip()]
+            if empty_xml_pages:
+                raise ValueError(f"Churro returned empty XML for pages: {empty_xml_pages}")
+
+            # 转换为 Markdown
+            markdown_pages = [xml_to_markdown(xml) for xml in raw_output_pages]
+
+            # 提取印刷页码
+            html_extracted_pages = [extract_page_number(xml) for xml in raw_output_pages]
+
+            # 生成其他格式
+            self._last_clean_html_pages = [xml_to_html(xml) for xml in raw_output_pages]
+            self._last_chunks = [xml_to_json(xml) for xml in raw_output_pages]
+
+        else:
+            # Chandra: HTML 输出
+            logger.info("Converting HTML to Markdown via official Chandra tools...")
+            _include_hf = not (
+                getattr(self, "filter_page_header", False) or
+                getattr(self, "filter_page_footer", False)
+            )
+            _extract_page = self.extract_printed_pages if hasattr(self, 'extract_printed_pages') else False
+
+            if _extract_page:
+                results = [
+                    parse_markdown(html, include_headers_footers=_include_hf, extract_printed_page=True)
+                    for html in raw_output_pages
+                ]
+                markdown_pages = [r[0] for r in results]
+                html_extracted_pages = [r[1] for r in results]
+                found_count = sum(1 for p in html_extracted_pages if p is not None)
+                logger.info(f"Extracted {found_count}/{len(html_extracted_pages)} printed page numbers")
+            else:
+                markdown_pages = [
+                    parse_markdown(html, include_headers_footers=_include_hf)
+                    for html in raw_output_pages
+                ]
+                html_extracted_pages = [None] * len(raw_output_pages)
+
+            # 生成 clean_html
+            logger.info("Generating clean HTML via official Chandra tools...")
+            self._last_clean_html_pages = [
+                parse_html(html, include_headers_footers=_include_hf)
+                for html in raw_output_pages
+            ]
+
+            # 生成 chunks
+            logger.info("Generating chunks via official Chandra tools...")
+            self._last_chunks = []
+            for i, (html, img) in enumerate(zip(raw_output_pages, img_list)):
+                try:
+                    chunks = parse_chunks(html, img, bbox_scale=self._get_chandra_bbox_scale())
+                    self._last_chunks.append({
+                        "page_num": i,
+                        "img_size": list(img.size),
+                        "chunks": chunks
+                    })
+                except Exception as e:
+                    logger.warning(f"parse_chunks failed for page {i + 1}: {e}")
+                    self._last_chunks.append({
+                        "page_num": i,
+                        "img_size": list(img.size) if img else [],
+                        "chunks": []
+                    })
+
+        # 7. 提取印刷页码（优先使用 HTML 提取，regex 作为 fallback）
+        printed_pages = html_extracted_pages  # 使用 HTML 提取的结果
+
         if self.printed_page_extractor:
-            logger.info("Extracting printed pages...")
-            markdown_pages, printed_pages = self.printed_page_extractor.extract_batch(markdown_pages)
+            logger.info("Applying regex fallback for missing page numbers...")
+            # 对 HTML 提取失败的页面，尝试 regex 提取
+            markdown_pages, regex_pages = self.printed_page_extractor.extract_batch(markdown_pages)
+
+            # 合并结果：HTML 优先，regex 作为 fallback
+            for i in range(len(printed_pages)):
+                if printed_pages[i] is None and regex_pages[i] is not None:
+                    printed_pages[i] = regex_pages[i]
+                    logger.info(f"Page {i+1}: Used regex fallback, found '{regex_pages[i]}'")
+
             found_count = sum(1 for p in printed_pages if p is not None)
-            logger.info(f"Found {found_count} printed pages")
+            logger.info(f"Final: {found_count} printed pages (HTML + regex fallback)")
+        else:
+            found_count = sum(1 for p in printed_pages if p is not None)
+            logger.info(f"Final: {found_count} printed pages (HTML only)")
 
         # 8. 清理页面分隔符（避免嵌套）
         logger.info("Cleaning page separators...")
@@ -1193,12 +1465,17 @@ class OcrDirectAsyncConverter(BaseConverter):
             logger.info("Removing noise...")
             markdown_pages = self._remove_noise(markdown_pages)
 
-        # 8.6 修复脚注格式
+        # 8.6 修复Unicode上标脚注
         if self.footnote_fix_enabled:
-            logger.info("Fixing footnotes...")
-            markdown_pages = self._fix_footnotes(markdown_pages)
+            logger.info("Fixing unicode superscript footnotes...")
+            markdown_pages = self._fix_unicode_superscript_footnotes(markdown_pages)
 
-        # 8.7 过滤页眉/页脚标记
+        # 8.7 修复断行
+        if self.hyphenation_fix_enabled:
+            logger.info("Fixing hyphenation...")
+            markdown_pages = self._fix_hyphenation(markdown_pages)
+
+        # 8.8 过滤页眉/页脚标记
         if self.filter_page_header or self.filter_page_footer:
             logger.info("Filtering page markers...")
             markdown_pages = self._filter_page_markers(markdown_pages)

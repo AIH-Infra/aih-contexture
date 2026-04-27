@@ -18,8 +18,10 @@ VLM Direct Async Converter - 异步并发版本
 
 import asyncio
 import base64
+import json
 import time
 import re
+from dataclasses import dataclass
 from io import BytesIO
 from typing import Annotated, List, Optional
 
@@ -37,29 +39,111 @@ from aih_contexture.utils.api_key_pool import APIKeyPool
 logger = get_logger()
 
 
-# 默认提示词 - 要求输出在 markdown 代码块中（便于提取和处理推理模型输出）
-DEFAULT_PROMPT = """Convert this document page to Markdown format.
+@dataclass
+class PageResult:
+    page_num: int
+    ok: bool
+    raw_text: str
+    cleaned_text: str
+    content_kind: str
+    error_kind: str
+    http_status: Optional[int] = None
+    finish_reason: Optional[str] = None
+    truncated: bool = False
+    provider: str = "unknown"
+    parse_stage: str = "none"
+    parse_detail: Optional[str] = None
+    raw_json_text: Optional[str] = None
 
-## Markdown Syntax (use as needed)
-**Headings**: # ## ###
-**Lists**: - item or 1. item
-**Tables**: | Col1 | Col2 |
-**Emphasis**: **bold**, *italic*
-**Math**: $inline$ or $$block$$
 
-## CRITICAL Output Rules
-1. Wrap ALL your output in a single ```markdown``` code block
-2. Do NOT add any explanations OUTSIDE the code block
-3. Inside the code block, output ONLY the document content
-4. Preserve original text exactly - DO NOT translate
-5. Keep the original language (Chinese stays Chinese, etc.)
-6. Mark unclear text as [unclear]
+GEMINI_JSON_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "printed_page_number": {"type": "STRING", "nullable": True},
+        "page_width": {"type": "NUMBER"},
+        "page_height": {"type": "NUMBER"},
+        "regions": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "label": {"type": "STRING"},
+                    "bbox": {
+                        "type": "ARRAY",
+                        "items": {"type": "NUMBER"},
+                        "nullable": True,
+                    },
+                    "text": {"type": "STRING"},
+                    "confidence": {"type": "NUMBER", "nullable": True},
+                },
+                "required": ["label", "bbox", "text", "confidence"],
+            },
+        },
+    },
+    "required": ["printed_page_number", "page_width", "page_height", "regions"],
+}
 
-Example output format:
-```markdown
-# Document Title
-Content here...
-```"""
+
+# 默认提示词 - JSON 输出模式；运行时优先使用 PromptBuilder 生成的模板。
+DEFAULT_PROMPT = """OCR this document page and return one structured JSON object with layout regions and text content.
+
+## CRITICAL - Historical Documents
+- Preserve historical ligatures: æ, œ, ſ (long s)
+- Do NOT modernize: keep "hæc" not "haec", "quæ" not "quae"
+- Transcribe EXACTLY as printed
+
+## Region Labels (use EXACTLY one per region)
+
+**Main:** Section-Header, Text, List-Group, Table, Figure, Equation-Block
+**Margins:** Footnote
+**Structure:** Page-Header, Page-Footer, Caption
+**Special:** Code-Block, Table-Of-Contents, Complex-Block
+
+## JSON Schema
+
+{
+  "printed_page_number": string | null,
+  "page_width": number,
+  "page_height": number,
+  "regions": [
+    {
+      "label": string,
+      "bbox": [number, number, number, number] | null,
+      "text": string,
+      "confidence": number | null
+    }
+  ]
+}
+
+## Field Rules
+
+- `printed_page_number`: extract from visible Page-Header/Page-Footer only; otherwise use null.
+- `page_width` and `page_height`: use actual image dimensions when available; do not invent fixed example dimensions.
+- Estimate bbox in image pixels as [x0, y0, x1, y1] for each visible region. If uncertain, use null.
+- `text`: transcribe exactly as printed. Use `***bold italic***`, `**bold**`, `*italic*`, `^superscript^`, `~subscript~`, `\\n` for line breaks, and `\\t` for table columns only when visible.
+- Set confidence to null unless it can be estimated reliably.
+
+## Anti-Hallucination Rules
+- Include only regions and text that are actually visible on the page.
+- If a value is not visible or cannot be determined, use null or an empty array.
+- Do not guess missing text, page numbers, labels, coordinates, confidence, captions, or image descriptions.
+- Do not copy values from schema examples; the schema above shows types, not page content.
+
+## Detection Rules
+
+1. **Granularity:** 5-30 semantic blocks per page (paragraphs, not lines)
+2. **Marginal Notes:** Do not use Marginal-Note-Left or Marginal-Note-Right labels unless marginalia recognition is explicitly enabled.
+3. **Reading Order:** Top-to-bottom, left-to-right
+4. **Preserve:** Historical characters, original spelling, formatting, line breaks
+5. **Do NOT:** Modernize, translate, correct "errors", add comments
+
+## Output
+- Output ONLY the JSON object
+- Start with `{` and end with `}`
+- No markdown fences
+- No text before or after the JSON
+- Stop immediately after the closing `}`
+- Detect all visible content including small/faint text"""
 
 
 class VlmDirectAsyncConverter(BaseConverter):
@@ -85,17 +169,31 @@ class VlmDirectAsyncConverter(BaseConverter):
     vlm_direct_api_key: Annotated[str, "API 密钥"] = ""
 
     # 提示词配置
-    vlm_direct_prompt: Annotated[str, "转换提示词"] = DEFAULT_PROMPT
+    vlm_direct_prompt: Annotated[str, "自定义提示词（覆盖模板）"] = ""
+    vlm_direct_prompt_template: Annotated[str, "提示词模板ID"] = "default"
+
+    # JSON输出模式配置（新增）
+    vlm_direct_output_mode: Annotated[str, "输出模式: json/markdown"] = "json"
+    vlm_direct_enable_historical_ligatures: Annotated[bool, "保留历史连字符(æ,œ,ſ)"] = False
+    vlm_direct_enable_marginalia: Annotated[bool, "识别边注"] = False
+    vlm_direct_text_direction: Annotated[str, "文本方向: horizontal/vertical/rtl"] = "horizontal"
+    vlm_direct_document_language: Annotated[str, "文档语言提示"] = ""
+
+    # Markdown格式化配置（新增）
+    vlm_direct_marginal_note_enabled: Annotated[bool, "启用边注显示"] = False
+    vlm_direct_use_markdown_footnotes: Annotated[bool, "使用Markdown原生脚注"] = False
+    vlm_direct_footnote_backlink: Annotated[bool, "添加脚注返回链接"] = False
 
     # 图像处理配置
-    vlm_direct_image_format: Annotated[str, "图像格式: jpeg, png, webp"] = "jpeg"
-    vlm_direct_max_image_dimension: Annotated[int, "图像最大边长（像素）"] = 2048
+    vlm_direct_image_format: Annotated[str, "图像格式: jpeg, png, webp"] = "png"
+    vlm_direct_max_image_dimension: Annotated[int, "图像最大边长（像素，0=不缩放）"] = 0
     vlm_direct_jpeg_quality: Annotated[int, "JPEG 压缩质量 (1-100)"] = 90
 
     # API 调用配置
-    vlm_direct_timeout: Annotated[int, "API 超时时间（秒）"] = 600  # 10分钟，适应慢速API
+    vlm_direct_timeout: Annotated[int, "单次读取超时（秒），120秒内无新数据包则超时"] = 120
     vlm_direct_max_tokens: Annotated[int, "最大输出 token 数（0=不限制）"] = 0
     vlm_direct_max_retries: Annotated[int, "最大重试次数"] = 3
+    vlm_direct_json_safe_max_tokens: Annotated[int, "JSON模式安全最大输出token"] = 4096
 
     # 并发配置（新增）
     vlm_direct_max_concurrent: Annotated[int, "最大并发数"] = 5
@@ -121,6 +219,9 @@ class VlmDirectAsyncConverter(BaseConverter):
     renderer: Annotated[str | None, "渲染器类路径 (如: marker.renderers.markdown.MarkdownRenderer)"] = None
     use_markdown_builder: Annotated[bool, "是否使用MarkdownDocumentBuilder转换为Document对象"] = False
 
+    # 输出格式配置（Phase 3新增）
+    vlm_direct_output_format: Annotated[str, "输出格式: markdown/html/json"] = "markdown"
+
     # 后处理配置
     vlm_direct_disable_postprocess: Annotated[bool, "禁用后处理（信任VLM原始输出）"] = False
 
@@ -133,6 +234,7 @@ class VlmDirectAsyncConverter(BaseConverter):
     vlm_direct_temperature: Annotated[float, "Temperature (0.0-1.0)"] = 0.0
     vlm_direct_top_p: Annotated[float, "Top P (0.0-1.0)"] = 0.1
     vlm_direct_top_k: Annotated[int | None, "Top K"] = None
+    vlm_direct_disable_thinking: Annotated[bool, "Disable thinking/reasoning mode when supported"] = True
 
     def __init__(self, config: Optional[dict] = None):
         super().__init__(config)
@@ -148,6 +250,14 @@ class VlmDirectAsyncConverter(BaseConverter):
 
         self.prompt = config.get("vlm_direct_prompt", self.vlm_direct_prompt)
 
+        # JSON输出模式配置
+        self.output_mode = config.get("vlm_direct_output_mode", "json")
+        self.output_format = config.get("vlm_direct_output_format", "markdown")
+        self.enable_historical_ligatures = config.get("vlm_direct_enable_historical_ligatures", False)
+        self.enable_marginalia = config.get("vlm_direct_enable_marginalia", False)
+        self.text_direction = config.get("vlm_direct_text_direction", "horizontal")
+        self.document_language = config.get("vlm_direct_document_language", "")
+
         self.image_format = config.get("vlm_direct_image_format", self.vlm_direct_image_format)
         self.max_image_dimension = int(config.get("vlm_direct_max_image_dimension", self.vlm_direct_max_image_dimension))
         self.jpeg_quality = int(config.get("vlm_direct_jpeg_quality", self.vlm_direct_jpeg_quality))
@@ -155,8 +265,15 @@ class VlmDirectAsyncConverter(BaseConverter):
         self.timeout = int(config.get("vlm_direct_timeout", self.vlm_direct_timeout))
         self.max_tokens = int(config.get("vlm_direct_max_tokens", self.vlm_direct_max_tokens))
         self.max_retries = int(config.get("vlm_direct_max_retries", self.vlm_direct_max_retries))
+        self.json_safe_max_tokens = int(
+            config.get("vlm_direct_json_safe_max_tokens", self.vlm_direct_json_safe_max_tokens)
+        )
 
         self.max_concurrent = int(config.get("vlm_direct_max_concurrent", self.vlm_direct_max_concurrent))
+
+        # 多格式输出配置（新增）
+        self.final_output_formats = config.get("final_output_formats", ["markdown"])
+        logger.info(f"[VlmDirectAsyncConverter] Output formats: {self.final_output_formats}")
 
         # 后处理配置
         self.disable_postprocess = config.get("vlm_direct_disable_postprocess", self.vlm_direct_disable_postprocess)
@@ -218,69 +335,32 @@ class VlmDirectAsyncConverter(BaseConverter):
         if self.key_pool.get_key_count() > 1:
             logger.info(f"[VlmDirectAsyncConverter] Using {self.key_pool.get_key_count()} API keys with concurrent pool")
 
-        # 初始化提示词模板系统（新增）
-        from aih_contexture.prompts import PromptBuilder, APIParameterAdapter
+        # 初始化提示词模板管理器（保留用于自定义模板/回退）
+        from aih_contexture.prompts.manager import PromptTemplateManager
+        from aih_contexture.prompts.builder import PromptBuilder
 
-        # 检查是否使用旧的 vlm_direct_prompt 参数（向后兼容）
-        # 只有当明确提供了非空的自定义提示词时才使用旧模式
-        if "vlm_direct_prompt" in config and config["vlm_direct_prompt"] and config["vlm_direct_prompt"].strip():
-            # 使用旧的自定义提示词
-            logger.info("[VlmDirectAsyncConverter] Using custom prompt (legacy mode)")
-            self.prompt = config["vlm_direct_prompt"]
-            self.api_params = {}  # 旧模式不使用 API 参数
+        self.template_manager = PromptTemplateManager()
+        self.prompt_builder = PromptBuilder()
+        self.prompt_params = config.get("vlm_direct_prompt_params", self.vlm_direct_prompt_params) or {}
+
+        # 确定最终使用的 prompt
+        custom_prompt = config.get("vlm_direct_prompt", self.vlm_direct_prompt)
+        template_id = config.get("vlm_direct_prompt_template", self.vlm_direct_prompt_template)
+
+        if custom_prompt and custom_prompt.strip():
+            # 优先使用自定义提示词
+            self.prompt = custom_prompt
+            logger.info(f"[VlmDirectAsyncConverter] Using custom prompt")
         else:
-            # 使用新的模板系统
-            if config.get("vlm_direct_prompt_params"):
-                # 自定义参数
-                logger.info("[VlmDirectAsyncConverter] Using custom template parameters")
-                self.prompt_template = PromptBuilder.from_params(
-                    **config["vlm_direct_prompt_params"]
-                )
-            else:
-                # 使用预置模板
-                template_name = config.get("vlm_direct_prompt_template", self.vlm_direct_prompt_template)
-                logger.info(f"[VlmDirectAsyncConverter] Using template: {template_name}")
-                self.prompt_template = PromptBuilder.from_template(template_name)
+            self.prompt = self._build_prompt_from_template(template_id)
+            logger.info(f"[VlmDirectAsyncConverter] Using generated prompt from template: {template_id}")
 
-                # 应用 API 预设
-                preset = config.get("vlm_direct_api_preset", self.vlm_direct_api_preset)
-                if preset and preset != "custom":
-                    preset_params = PromptBuilder.from_preset(preset)
-                    for key, value in preset_params.items():
-                        setattr(self.prompt_template, key, value)
-                    logger.info(f"[VlmDirectAsyncConverter] Applied API preset: {preset}")
-
-            # 覆盖单独指定的 API 参数
-            if "vlm_direct_temperature" in config:
-                self.prompt_template.temperature = config["vlm_direct_temperature"]
-            if "vlm_direct_top_p" in config:
-                self.prompt_template.top_p = config["vlm_direct_top_p"]
-            if "vlm_direct_top_k" in config:
-                self.prompt_template.top_k = config["vlm_direct_top_k"]
-            if "vlm_direct_max_tokens" in config:
-                self.prompt_template.max_tokens = config["vlm_direct_max_tokens"]
-
-            # 构建提示词
-            self.prompt = self.prompt_template.build_prompt()
-
-            # 🔍 调试日志：检查提示词中是否包含页码识别指令
-            if "printed-page" in self.prompt:
-                logger.info(f"[VlmDirectAsyncConverter] ✅ Prompt contains 'printed-page' instruction")
-            else:
-                logger.warning(f"[VlmDirectAsyncConverter] ❌ Prompt does NOT contain 'printed-page' instruction!")
-
-            logger.info(f"[VlmDirectAsyncConverter] Prompt length: {len(self.prompt)} characters")
-
-            # 检测 API 类型
-            self.api_type = APIParameterAdapter.detect_api_type(
-                self.base_url, self.model
-            )
-
-            # 获取适配后的 API 参数
-            self.api_params = self.prompt_template.get_api_params(self.api_type)
-
-            logger.info(f"[VlmDirectAsyncConverter] API Type: {self.api_type}")
-            logger.info(f"[VlmDirectAsyncConverter] API Params: {self.api_params}")
+        # API 参数配置
+        self.api_params = {
+            "temperature": float(config.get("vlm_direct_temperature", 0.0)),
+            "top_p": float(config.get("vlm_direct_top_p", 0.1)),
+        }
+        self.disable_thinking = bool(config.get("vlm_direct_disable_thinking", self.vlm_direct_disable_thinking))
 
         # 渲染器配置（新增）
         self.renderer_path = config.get("renderer", self.renderer)
@@ -299,11 +379,45 @@ class VlmDirectAsyncConverter(BaseConverter):
         else:
             self.markdown_builder = None
 
+        # 初始化多格式存储变量（新增）
+        self._last_json_pages = None      # JSON格式页面
+        self._last_clean_html_pages = None  # HTML格式页面
+        self._last_markdown_pages = None   # Markdown格式页面（带锚点）
+        self._last_page_results = None
+        self._last_json_diagnostics = None
+        self._last_response_metadata = []
+
         logger.info(f"[VlmDirectAsyncConverter] Init: base_url={self.base_url}, model={self.model}")
         logger.info(f"[VlmDirectAsyncConverter] Concurrent: max_concurrent={self.max_concurrent}")
         logger.info(f"[VlmDirectAsyncConverter] Image: format={self.image_format}, max_dim={self.max_image_dimension}")
         if self.use_markdown_builder:
             logger.info(f"[VlmDirectAsyncConverter] Markdown builder enabled, renderer={self.renderer_path}")
+
+    def _build_prompt_from_template(self, template_id: str) -> str:
+        params = dict(self.prompt_params or {})
+        enable_marginalia = params.pop("enable_marginalia", None)
+
+        try:
+            prompt_template = self.prompt_builder.from_template(template_id)
+        except Exception:
+            fallback_prompt = self.template_manager.get_template(template_id)
+            logger.warning(f"[VlmDirectAsyncConverter] Falling back to static template for: {template_id}")
+            return fallback_prompt
+
+        for key, value in params.items():
+            if key == "primary_language" and value == "auto":
+                continue
+            if hasattr(prompt_template, key):
+                setattr(prompt_template, key, value)
+
+        special_features = list(getattr(prompt_template, "special_features", []) or [])
+        if enable_marginalia is True and "marginal_notes" not in special_features:
+            special_features.append("marginal_notes")
+        elif enable_marginalia is False:
+            special_features = [feature for feature in special_features if feature != "marginal_notes"]
+        prompt_template.special_features = special_features
+
+        return prompt_template.build_prompt()
 
     def _clean_page_separators(self, pages: List[str]) -> List[str]:
         """
@@ -332,6 +446,448 @@ class VlmDirectAsyncConverter(BaseConverter):
             cleaned_pages.append(cleaned_page)
 
         return cleaned_pages
+
+    def _apply_noise_patterns(self, text: str) -> str:
+        if not text or not self.config.get("vlm_noise_removal", False):
+            return text
+
+        patterns = self.config.get("vlm_noise_patterns", "") or ""
+        cleaned = text
+        for pattern in [p.strip() for p in str(patterns).splitlines() if p.strip()]:
+            try:
+                cleaned = re.sub(pattern, "", cleaned, flags=re.IGNORECASE | re.MULTILINE)
+            except re.error:
+                logger.warning(f"[VlmDirectAsyncConverter] Invalid noise regex skipped: {pattern}")
+        return cleaned.strip()
+
+    def _filter_page_markup(self, text: str) -> str:
+        if not text:
+            return text
+
+        cleaned = text
+        if self.config.get("vlm_filter_page_header", False):
+            cleaned = re.sub(r"<!--\s*page-header:\s*(.*?)\s*-->", r"\1", cleaned, flags=re.IGNORECASE)
+        if self.config.get("vlm_filter_page_footer", False):
+            cleaned = re.sub(r"<!--\s*page-footer:\s*(.*?)\s*-->", r"\1", cleaned, flags=re.IGNORECASE)
+        return cleaned.strip()
+
+    def _postprocess_markdown_pages(self, pages: List[str]) -> List[str]:
+        processed_pages = []
+        for page in pages:
+            page_text = self._apply_noise_patterns(page)
+            page_text = self._filter_page_markup(page_text)
+            processed_pages.append(page_text)
+        return processed_pages
+
+    def _is_json_mode(self) -> bool:
+        return self.output_mode == "json"
+
+    def _effective_max_tokens(self) -> int:
+        api_max_tokens = None
+        if hasattr(self, "api_params") and self.api_params:
+            api_max_tokens = self.api_params.get("max_tokens")
+            if api_max_tokens is not None:
+                try:
+                    api_max_tokens = int(api_max_tokens)
+                except (TypeError, ValueError):
+                    api_max_tokens = None
+
+        if api_max_tokens and api_max_tokens > 0:
+            return api_max_tokens
+
+        if self.max_tokens > 0:
+            return self.max_tokens
+
+        if self._is_json_mode():
+            return self.json_safe_max_tokens
+
+        return 8192
+
+    def _supports_gemini_native_json_constraints(self) -> bool:
+        base_url_lower = (self.base_url or "").lower()
+        return "generativelanguage.googleapis.com" in base_url_lower
+
+    def _apply_openai_thinking_off(self, payload: dict):
+        if not self.disable_thinking:
+            return
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
+        payload["enable_thinking"] = False
+        payload["thinking"] = {"type": "disabled"}
+
+    def _apply_gemini_thinking_off(self, generation_config: dict):
+        if self.disable_thinking:
+            generation_config["thinkingConfig"] = {"thinkingBudget": 0}
+
+    def _apply_anthropic_thinking_off(self, payload: dict):
+        if self.disable_thinking:
+            payload["thinking"] = {"type": "disabled"}
+
+    def _sanitize_openai_payload_metadata(self, payload: dict, page_num: int) -> dict:
+        metadata = {
+            "page_number": page_num,
+            "provider": "openai",
+            "model": payload.get("model"),
+            "temperature": payload.get("temperature"),
+            "top_p": payload.get("top_p"),
+            "max_tokens": payload.get("max_tokens"),
+            "response_format": payload.get("response_format"),
+            "thinking": payload.get("thinking"),
+            "enable_thinking": payload.get("enable_thinking"),
+            "chat_template_kwargs": payload.get("chat_template_kwargs"),
+        }
+        messages = payload.get("messages") or []
+        if messages:
+            content = messages[0].get("content") if isinstance(messages[0], dict) else None
+            if isinstance(content, list):
+                image_parts = [part for part in content if isinstance(part, dict) and part.get("type") == "image_url"]
+                text_parts = [part for part in content if isinstance(part, dict) and part.get("type") == "text"]
+                metadata["image_part_count"] = len(image_parts)
+                metadata["prompt_chars"] = sum(len(part.get("text") or "") for part in text_parts)
+                if image_parts:
+                    url = ((image_parts[0].get("image_url") or {}).get("url") or "")
+                    metadata["image_data_url_chars"] = len(url)
+                    metadata["image_mime"] = url.split(";", 1)[0].replace("data:", "") if url.startswith("data:") else None
+        return metadata
+
+    def _record_response_metadata(self, metadata: dict):
+        if not isinstance(self._last_response_metadata, list):
+            self._last_response_metadata = []
+        self._last_response_metadata.append(metadata)
+
+    def _finalize_page_output(self, text: str) -> str:
+        text = (text or "").strip()
+        if self._is_json_mode():
+            return text
+        if not self.disable_postprocess:
+            return self._clean_markdown_output(text)
+        return text
+
+    def _log_and_validate_finish_reason(
+        self,
+        provider: str,
+        finish_reason: str,
+        page_num: int,
+        completion_tokens,
+    ) -> bool:
+        valid_reasons = {
+            "openai": {"stop"},
+            "gemini": {"STOP"},
+            "anthropic": {"end_turn", "stop_sequence"},
+        }
+        ok = finish_reason in valid_reasons.get(provider, set())
+
+        if ok:
+            logger.info(
+                f"[{provider}] Page {page_num}: finish_reason={finish_reason}, tokens={completion_tokens}"
+            )
+            return False
+
+        logger.warning(
+            f"[{provider}] Page {page_num}: non-terminal finish_reason={finish_reason}, tokens={completion_tokens}"
+        )
+        if self._is_json_mode():
+            return True
+        return False
+
+    def _is_likely_html_error(self, text: str) -> bool:
+        if not text or not text.strip():
+            return False
+
+        lowered = text.strip().lower()
+        html_markers = [
+            "<!doctype html",
+            "<html",
+            "<head",
+            "<body",
+            "cloudflare",
+            "bad gateway",
+            "502 bad gateway",
+            "error 502",
+            "nginx",
+        ]
+        return any(marker in lowered for marker in html_markers)
+
+    def _build_error_page_text(self, page_num: int, detail: str) -> str:
+        return f"<!-- Error converting page {page_num}: {detail} -->"
+
+    def _json_extraction_error_kind(self, text: str, error: Exception) -> tuple[str, str]:
+        message = str(error)
+        if not text or not text.strip():
+            return "empty_response", message
+        if "No JSON object" in message:
+            return "no_json_produced", message
+        if "Unbalanced JSON" in message:
+            return "malformed_json", message
+        if "No valid JSON" in message:
+            return "malformed_json" if "{" in text else "no_json_produced", message
+        return "malformed_json", message
+
+    def _validate_vlm_json_shape(self, parsed) -> tuple[bool, str, Optional[str]]:
+        if not isinstance(parsed, dict):
+            return False, "invalid_field_types", "top-level JSON must be an object"
+
+        required_keys = {"printed_page_number", "page_width", "page_height", "regions"}
+        missing = sorted(required_keys - set(parsed.keys()))
+        if missing:
+            return False, "missing_required_fields", f"missing required keys: {', '.join(missing)}"
+
+        printed_page = parsed.get("printed_page_number")
+        if printed_page is not None and not isinstance(printed_page, str):
+            return False, "invalid_field_types", "printed_page_number must be string or null"
+
+        if not isinstance(parsed.get("page_width"), (int, float)):
+            return False, "invalid_field_types", "page_width must be numeric"
+        if not isinstance(parsed.get("page_height"), (int, float)):
+            return False, "invalid_field_types", "page_height must be numeric"
+
+        regions = parsed.get("regions")
+        if not isinstance(regions, list):
+            return False, "invalid_field_types", "regions must be a list"
+
+        for idx, region in enumerate(regions):
+            if not isinstance(region, dict):
+                return False, "invalid_field_types", f"regions[{idx}] must be an object"
+            label = region.get("label")
+            if label is not None and not isinstance(label, str):
+                return False, "invalid_field_types", f"regions[{idx}].label must be a string"
+            text = region.get("text")
+            if text is not None and not isinstance(text, str):
+                return False, "invalid_field_types", f"regions[{idx}].text must be a string"
+            bbox = region.get("bbox")
+            if bbox is not None:
+                if not isinstance(bbox, list) or len(bbox) != 4 or not all(isinstance(v, (int, float)) for v in bbox):
+                    return False, "invalid_field_types", f"regions[{idx}].bbox must be a list of 4 numbers"
+            confidence = region.get("confidence")
+            if confidence is not None and not isinstance(confidence, (int, float)):
+                return False, "invalid_field_types", f"regions[{idx}].confidence must be numeric"
+
+        return True, "none", None
+
+    def _classify_page_output(
+        self,
+        page_num: int,
+        raw_text: str,
+        provider: str,
+        *,
+        http_status: Optional[int] = None,
+        finish_reason: Optional[str] = None,
+        truncated: bool = False,
+        error_kind: Optional[str] = None,
+    ) -> PageResult:
+        raw_text = raw_text or ""
+        finalized_text = self._finalize_page_output(raw_text)
+        stripped = finalized_text.strip()
+
+        if http_status is not None and http_status >= 400:
+            detail = error_kind or f"upstream_http ({http_status})"
+            content_kind = "html_error" if self._is_likely_html_error(raw_text) else "unknown"
+            return PageResult(
+                page_num=page_num,
+                ok=False,
+                raw_text=raw_text,
+                cleaned_text=self._build_error_page_text(page_num, detail),
+                content_kind=content_kind,
+                error_kind=error_kind or "upstream_http",
+                http_status=http_status,
+                finish_reason=finish_reason,
+                truncated=truncated,
+                provider=provider,
+                parse_stage="request",
+                parse_detail=detail,
+            )
+
+        if not stripped:
+            detail = error_kind or ("truncated_response" if truncated else "empty_response")
+            return PageResult(
+                page_num=page_num,
+                ok=False,
+                raw_text=raw_text,
+                cleaned_text=self._build_error_page_text(page_num, detail),
+                content_kind="empty",
+                error_kind=detail,
+                http_status=http_status,
+                finish_reason=finish_reason,
+                truncated=truncated,
+                provider=provider,
+                parse_stage="extract",
+                parse_detail=detail,
+            )
+
+        if self._is_likely_html_error(stripped):
+            detail = error_kind or "html_error"
+            return PageResult(
+                page_num=page_num,
+                ok=False,
+                raw_text=raw_text,
+                cleaned_text=self._build_error_page_text(page_num, detail),
+                content_kind="html_error",
+                error_kind=detail,
+                http_status=http_status,
+                finish_reason=finish_reason,
+                truncated=truncated,
+                provider=provider,
+                parse_stage="extract",
+                parse_detail=detail,
+            )
+
+        if self._is_json_mode():
+            try:
+                json_str = self._extract_json_from_output(stripped)
+            except Exception as e:
+                detail, parse_detail = self._json_extraction_error_kind(stripped, e)
+                if truncated:
+                    detail = error_kind or "truncated_response"
+                return PageResult(
+                    page_num=page_num,
+                    ok=False,
+                    raw_text=raw_text,
+                    cleaned_text=self._build_error_page_text(page_num, detail),
+                    content_kind="unknown",
+                    error_kind=detail,
+                    http_status=http_status,
+                    finish_reason=finish_reason,
+                    truncated=truncated,
+                    provider=provider,
+                    parse_stage="extract",
+                    parse_detail=parse_detail,
+                )
+
+            try:
+                parsed = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                detail = error_kind or ("truncated_response" if truncated else "malformed_json")
+                return PageResult(
+                    page_num=page_num,
+                    ok=False,
+                    raw_text=raw_text,
+                    cleaned_text=self._build_error_page_text(page_num, detail),
+                    content_kind="unknown",
+                    error_kind=detail,
+                    http_status=http_status,
+                    finish_reason=finish_reason,
+                    truncated=truncated,
+                    provider=provider,
+                    parse_stage="json_decode",
+                    parse_detail=str(e),
+                    raw_json_text=json_str,
+                )
+
+            valid_shape, shape_error, shape_detail = self._validate_vlm_json_shape(parsed)
+            if not valid_shape:
+                detail = error_kind or ("truncated_response" if truncated else shape_error)
+                parse_stage = "schema_required" if shape_error == "missing_required_fields" else "schema_types"
+                return PageResult(
+                    page_num=page_num,
+                    ok=False,
+                    raw_text=raw_text,
+                    cleaned_text=self._build_error_page_text(page_num, detail),
+                    content_kind="unknown",
+                    error_kind=detail,
+                    http_status=http_status,
+                    finish_reason=finish_reason,
+                    truncated=truncated,
+                    provider=provider,
+                    parse_stage=parse_stage,
+                    parse_detail=shape_detail,
+                    raw_json_text=json_str,
+                )
+
+            detail = "truncated_response" if truncated else "none"
+            return PageResult(
+                page_num=page_num,
+                ok=not truncated,
+                raw_text=raw_text,
+                cleaned_text=json_str,
+                content_kind="json",
+                error_kind=detail,
+                http_status=http_status,
+                finish_reason=finish_reason,
+                truncated=truncated,
+                provider=provider,
+                parse_stage="none" if not truncated else "finish_reason",
+                parse_detail="response did not finish naturally" if truncated else None,
+                raw_json_text=json_str,
+            )
+
+        return PageResult(
+            page_num=page_num,
+            ok=not truncated,
+            raw_text=raw_text,
+            cleaned_text=finalized_text if not truncated else self._build_error_page_text(page_num, "truncated"),
+            content_kind="markdown" if stripped else "empty",
+            error_kind="truncated" if truncated else "none",
+            http_status=http_status,
+            finish_reason=finish_reason,
+            truncated=truncated,
+            provider=provider,
+        )
+
+    def _error_page_result(
+        self,
+        page_num: int,
+        provider: str,
+        error_message: str,
+        *,
+        http_status: Optional[int] = None,
+        finish_reason: Optional[str] = None,
+        truncated: bool = False,
+        raw_text: str = "",
+        content_kind: Optional[str] = None,
+        error_kind: str = "retry_exhausted",
+    ) -> PageResult:
+        return PageResult(
+            page_num=page_num,
+            ok=False,
+            raw_text=raw_text,
+            cleaned_text=self._build_error_page_text(page_num, error_message),
+            content_kind=content_kind or ("html_error" if self._is_likely_html_error(raw_text) else "unknown"),
+            error_kind=error_kind,
+            http_status=http_status,
+            finish_reason=finish_reason,
+            truncated=truncated,
+            provider=provider,
+            parse_stage="request" if error_kind in {"upstream_http", "retry_exhausted"} else "none",
+            parse_detail=str(error_message),
+        )
+
+    def _page_result_diagnostic(self, page_result: PageResult) -> dict:
+        return {
+            "page_number": page_result.page_num,
+            "ok": page_result.ok,
+            "content_kind": page_result.content_kind,
+            "error_kind": page_result.error_kind,
+            "parse_stage": page_result.parse_stage,
+            "parse_detail": page_result.parse_detail,
+            "http_status": page_result.http_status,
+            "finish_reason": page_result.finish_reason,
+            "truncated": page_result.truncated,
+            "provider": page_result.provider,
+            "raw_text_length": len(page_result.raw_text or ""),
+            "json_text_length": len(page_result.raw_json_text or ""),
+        }
+
+    def _build_error_json_page(self, page_num: int, error_message: str, page_result: Optional[PageResult] = None) -> str:
+        error_payload = {
+            "error": str(error_message),
+            "page_number": page_num,
+            "printed_page_number": None,
+            "page_width": 0,
+            "page_height": 0,
+            "regions": [],
+        }
+        if page_result is not None:
+            error_payload["diagnostic"] = self._page_result_diagnostic(page_result)
+        return json.dumps(error_payload, ensure_ascii=False)
+
+    def _validate_json_page_output(self, provider: str, page_num: int, page_text: str) -> None:
+        """JSON 模式下，确保单页输出可提取为有效 JSON 对象。"""
+        if not self._is_json_mode():
+            return
+        result = self._classify_page_output(page_num, page_text, provider)
+        if not result.ok or result.content_kind != "json":
+            raise ValueError(
+                f"{provider} response is not valid JSON on page {page_num}: {result.error_kind}"
+            )
 
     def _truncate_repetition(self, text: str, min_len: int = 50) -> str:
         """检测并截断重复内容"""
@@ -387,10 +943,10 @@ class VlmDirectAsyncConverter(BaseConverter):
             text = match.group(1).strip()
             logger.info(f"[Clean] Extracted from ```markdown ({len(text)} chars)")
         else:
-            # 尝试匹配普通 ``` 代码块
-            match = re.search(r'```\s*(.*?)\s*```', text, re.DOTALL)
+            # 尝试匹配普通 ``` 代码块（含语言标记如 ```json）
+            match = re.search(r'```(\w+)?\s*\n?(.*?)\s*```', text, re.DOTALL)
             if match:
-                text = match.group(1).strip()
+                text = match.group(2).strip()
                 logger.info(f"[Clean] Extracted from ``` ({len(text)} chars)")
 
         # 2. 二次保险：移除残留标记
@@ -455,9 +1011,180 @@ class VlmDirectAsyncConverter(BaseConverter):
 
         return text.strip()
 
+    def _extract_balanced_json_object(self, text: str, start: int) -> str:
+        depth = 0
+        in_string = False
+        escape = False
+
+        for idx in range(start, len(text)):
+            char = text[idx]
+
+            if escape:
+                escape = False
+                continue
+
+            if char == "\\" and in_string:
+                escape = True
+                continue
+
+            if char == '"':
+                in_string = not in_string
+                continue
+
+            if in_string:
+                continue
+
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start : idx + 1]
+
+        raise ValueError("Unbalanced JSON object in model output")
+
+    def _extract_first_json_object(self, text: str) -> str:
+        starts = [idx for idx, ch in enumerate(text) if ch == "{"]
+        if not starts:
+            raise ValueError("No JSON object found in model output")
+
+        for start in starts:
+            try:
+                candidate = self._extract_balanced_json_object(text, start)
+            except ValueError:
+                continue
+
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+
+            if isinstance(parsed, dict):
+                return candidate
+
+        raise ValueError("No valid JSON object found in model output")
+
+    def _extract_json_from_output(self, text: str) -> str:
+        """从VLM输出中提取并验证JSON
+
+        Args:
+            text: VLM原始输出
+
+        Returns:
+            纯JSON字符串
+        """
+        if not text or not text.strip():
+            raise ValueError("Empty model output")
+
+        candidates = []
+        stripped = text.strip()
+
+        match = re.search(r"```(?:json)?\s*\n?(.*?)\s*```", stripped, re.DOTALL)
+        if match:
+            candidates.append(match.group(1).strip())
+
+        candidates.append(stripped)
+
+        for candidate in candidates:
+            if candidate.startswith("json"):
+                candidate = candidate[4:].lstrip()
+
+            try:
+                json.loads(candidate)
+                return candidate
+            except json.JSONDecodeError:
+                pass
+
+            try:
+                extracted = self._extract_first_json_object(candidate)
+                logger.info(f"[Extract] Extracted balanced JSON object ({len(extracted)} chars)")
+                return extracted
+            except ValueError:
+                continue
+
+        raise ValueError("No valid JSON object found in model output")
+
+    def _get_json_format_config(self) -> dict:
+        return {
+            "vlm_direct_marginal_note_enabled": self.config.get("vlm_direct_marginal_note_enabled", False),
+            "vlm_direct_use_markdown_footnotes": self.config.get("vlm_direct_use_markdown_footnotes", False),
+            "vlm_direct_footnote_backlink": self.config.get("vlm_direct_footnote_backlink", False),
+        }
+
+    def _process_json_outputs(self, raw_outputs: List[str | PageResult]) -> tuple[List[str], List[Optional[str]], List[str]]:
+        from aih_contexture.utils.vlm_json_output import parse_json_to_markdown
+
+        json_pages = []
+        markdown_pages = []
+        printed_pages = []
+        diagnostics = []
+        page_results = []
+        format_config = self._get_json_format_config()
+
+        for page_num, raw_output in enumerate(raw_outputs, start=1):
+            page_result = raw_output if isinstance(raw_output, PageResult) else self._classify_page_output(page_num, raw_output, self.api_provider)
+            page_results.append(page_result)
+
+            if page_result.content_kind != "json":
+                logger.error(
+                    f"[VlmDirectAsyncConverter] Page {page_num} has no usable JSON: {page_result.error_kind} ({page_result.parse_detail})"
+                )
+                json_pages.append(self._build_error_json_page(page_num, page_result.error_kind, page_result))
+                markdown_pages.append(f"<!-- Error parsing page {page_num}: {page_result.error_kind} -->")
+                printed_pages.append(None)
+                diagnostics.append(self._page_result_diagnostic(page_result))
+                continue
+
+            json_str = page_result.cleaned_text
+            try:
+                markdown, printed_page = parse_json_to_markdown(json_str, format_config)
+            except Exception as e:
+                logger.error(f"[VlmDirectAsyncConverter] Failed to convert JSON to Markdown for page {page_num}: {e}")
+                failed_result = PageResult(
+                    page_num=page_result.page_num,
+                    ok=False,
+                    raw_text=page_result.raw_text,
+                    cleaned_text=page_result.cleaned_text,
+                    content_kind="json",
+                    error_kind="json_markdown_parse_error",
+                    http_status=page_result.http_status,
+                    finish_reason=page_result.finish_reason,
+                    truncated=page_result.truncated,
+                    provider=page_result.provider,
+                    parse_stage="markdown_conversion",
+                    parse_detail=str(e),
+                    raw_json_text=page_result.raw_json_text or json_str,
+                )
+                json_pages.append(self._build_error_json_page(page_num, str(e), failed_result))
+                markdown_pages.append(f"<!-- Error parsing page {page_num}: json_markdown_parse_error -->")
+                printed_pages.append(None)
+                diagnostics.append(self._page_result_diagnostic(failed_result))
+            else:
+                json_pages.append(json_str)
+                markdown_pages.append(markdown)
+                printed_pages.append(printed_page)
+                diagnostics.append(self._page_result_diagnostic(page_result))
+
+        self._last_json_pages = json_pages
+        self._last_page_results = page_results
+        self._last_json_diagnostics = diagnostics
+        logger.info(f"[VlmDirectAsyncConverter] JSON mode: parsed {len(markdown_pages)} pages")
+        logger.info(f"[VlmDirectAsyncConverter] Stored {len(json_pages)} JSON pages")
+        return markdown_pages, printed_pages, json_pages
+
+    def _resolve_image_mime(self) -> str:
+        fmt = (self.image_format or "png").lower()
+        if fmt in ("jpg", "jpeg"):
+            return "image/jpeg"
+        if fmt == "webp":
+            return "image/webp"
+        return "image/png"
+
     def _resize_if_needed(self, img: Image.Image) -> Image.Image:
         """如果图像超过最大尺寸则缩放"""
         w, h = img.size
+        if self.max_image_dimension <= 0:
+            return img
         if w <= self.max_image_dimension and h <= self.max_image_dimension:
             return img
         scale = min(self.max_image_dimension / w, self.max_image_dimension / h)
@@ -489,7 +1216,7 @@ class VlmDirectAsyncConverter(BaseConverter):
         img: Image.Image,
         page_num: int,
         semaphore: asyncio.Semaphore
-    ) -> tuple[int, str]:
+    ) -> PageResult:
         """异步转换单个页面"""
         async with semaphore:  # 控制并发数
             logger.info(f"[VlmDirectAsyncConverter] Converting page {page_num}...")
@@ -502,17 +1229,35 @@ class VlmDirectAsyncConverter(BaseConverter):
             else:
                 return await self._convert_page_openai(session, img, page_num)
 
+    def _extract_openai_message_text(self, data: dict) -> str:
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                text = part.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+            return "".join(parts)
+        return ""
+
     async def _convert_page_openai(
         self,
         session: aiohttp.ClientSession,
         img: Image.Image,
         page_num: int
-    ) -> tuple[int, str]:
+    ) -> PageResult:
         """使用 OpenAI 兼容 API 转换页面"""
         # 构建请求
         b64_img = self._img_to_base64(img)
-        fmt = (self.image_format or "jpeg").lower()
-        mime = "jpeg" if fmt in ("jpg", "jpeg") else ("png" if fmt == "png" else "webp")
+        mime = self._resolve_image_mime().split("/", 1)[1]
 
         content = [
             {
@@ -525,22 +1270,40 @@ class VlmDirectAsyncConverter(BaseConverter):
             }
         ]
 
+        # 从 api_params 读取参数，fallback 到默认值
+        _temperature = self.api_params.get('temperature', 0.0) if hasattr(self, 'api_params') else 0.0
+        _top_p = self.api_params.get('top_p', 0.1) if hasattr(self, 'api_params') else 0.1
+        _max_tokens = self._effective_max_tokens()
+
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": content}],
-            "temperature": 0.0,  # 最低温度，确保输出稳定
-            "top_p": 0.1,        # 低top_p，减少随机性
+            "temperature": _temperature,
+            "top_p": _top_p,
+            "max_tokens": _max_tokens,
         }
+        self._apply_openai_thinking_off(payload)
 
-        # OCR 任务使用严格参数，防止模型过度脑补
+        # JSON输出模式：强制模型只输出JSON，自然停止
+        if getattr(self, 'output_mode', 'json') == 'json':
+            payload['response_format'] = {"type": "json_object"}
+
+        request_metadata = self._sanitize_openai_payload_metadata(payload, page_num)
+
         if page_num == 1:
-            logger.info(f"[VlmDirectAsyncConverter] Using strict OCR params: temperature=0.0, top_p=0.1")
+            logger.info(f"[VlmDirectAsyncConverter] OpenAI params: temperature={_temperature}, top_p={_top_p}, max_tokens={_max_tokens}, json_mode={payload.get('response_format')}")
 
         # API 调用（带重试和Key Pool）
         last_error = None
+        last_raw_text = ""
+        last_http_status = None
+        last_finish_reason = None
+        last_truncated = False
+        last_error_kind = "retry_exhausted"
         max_retries = self.max_retries
 
         for attempt in range(max_retries + 1):
+            current_key = None
             try:
                 current_key = self.key_pool.acquire()
                 headers = {
@@ -552,62 +1315,123 @@ class VlmDirectAsyncConverter(BaseConverter):
                     f"{self.base_url}/chat/completions",
                     json=payload,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout)
+                    timeout=aiohttp.ClientTimeout(connect=15, sock_read=self.timeout, total=None)
                 ) as response:
                     if response.status == 200:
                         data = await response.json()
-                        markdown = data["choices"][0]["message"]["content"].strip()
+                        page_text = self._extract_openai_message_text(data).strip()
 
-                        # 🔍 检查 finish_reason - 诊断停止原因
                         finish_reason = data["choices"][0].get("finish_reason", "unknown")
                         usage = data.get("usage", {})
+                        self._record_response_metadata({
+                            **request_metadata,
+                            "attempt": attempt + 1,
+                            "http_status": response.status,
+                            "finish_reason": finish_reason,
+                            "usage": usage,
+                            "raw_text_length": len(page_text),
+                        })
                         completion_tokens = usage.get("completion_tokens", "N/A")
+                        truncated = self._log_and_validate_finish_reason(
+                            "openai",
+                            finish_reason,
+                            page_num,
+                            completion_tokens,
+                        )
 
-                        if finish_reason == "length":
-                            logger.warning(f"[VlmDirectAsyncConverter] ⚠️ Page {page_num}: finish_reason=length (hit token limit!), tokens={completion_tokens}")
-                        elif finish_reason == "stop":
-                            logger.info(f"[VlmDirectAsyncConverter] ✓ Page {page_num}: finish_reason=stop (normal), tokens={completion_tokens}")
-                        else:
-                            logger.info(f"[VlmDirectAsyncConverter] Page {page_num}: finish_reason={finish_reason}, tokens={completion_tokens}")
+                        result = self._classify_page_output(
+                            page_num,
+                            page_text,
+                            "openai",
+                            http_status=response.status,
+                            finish_reason=finish_reason,
+                            truncated=truncated,
+                        )
 
-                        # 后处理 - 始终清理（提取代码块、移除思考过程）
-                        if not self.disable_postprocess:
-                            markdown = self._clean_markdown_output(markdown)
+                        if result.ok:
+                            logger.info(f"[VlmDirectAsyncConverter] Page {page_num} converted ({len(result.cleaned_text)} chars)")
+                            self.key_pool.mark_success(current_key)
+                            return result
 
-                        logger.info(f"[VlmDirectAsyncConverter] Page {page_num} converted ({len(markdown)} chars)")
-                        self.key_pool.mark_success(current_key)
-                        return (page_num, markdown)
-                    else:
-                        error_text = await response.text()
-                        raise Exception(f"API error {response.status}: {error_text}")
+                        last_error = ValueError(result.error_kind)
+                        last_raw_text = page_text
+                        last_http_status = response.status
+                        last_finish_reason = finish_reason
+                        last_truncated = truncated
+                        last_error_kind = result.error_kind
+                        logger.warning(
+                            f"[VlmDirectAsyncConverter] Invalid page {page_num}: kind={result.content_kind}, error={result.error_kind}, truncated={result.truncated}"
+                        )
+                        self.key_pool.mark_failure(current_key)
+                        if attempt < max_retries:
+                            await asyncio.sleep(2 * (attempt + 1))
+                            continue
+                        return result
+
+                    error_text = await response.text()
+                    self._record_response_metadata({
+                        **request_metadata,
+                        "attempt": attempt + 1,
+                        "http_status": response.status,
+                        "finish_reason": None,
+                        "error_text_length": len(error_text),
+                    })
+                    last_error = Exception(f"API error {response.status}: {error_text}")
+                    last_raw_text = error_text
+                    last_http_status = response.status
+                    last_finish_reason = None
+                    last_truncated = False
+                    last_error_kind = "upstream_http"
+                    logger.error(f"[VlmDirectAsyncConverter] Error on page {page_num}: {last_error}")
+                    self.key_pool.mark_failure(current_key)
+                    if attempt < max_retries:
+                        await asyncio.sleep(2 * (attempt + 1))
+                        continue
+                    break
 
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 last_error = e
+                last_raw_text = ""
+                last_http_status = None
+                last_finish_reason = None
+                last_truncated = False
+                last_error_kind = "retry_exhausted"
                 logger.warning(f"[VlmDirectAsyncConverter] Retryable error on page {page_num} (attempt {attempt + 1}): {e}")
-                self.key_pool.mark_failure(current_key)
+                if current_key is not None:
+                    self.key_pool.mark_failure(current_key)
                 if attempt < max_retries:
                     await asyncio.sleep(2 * (attempt + 1))
                     continue
 
             except Exception as e:
                 last_error = e
+                last_error_kind = "retry_exhausted"
                 logger.error(f"[VlmDirectAsyncConverter] Error on page {page_num}: {e}")
-                self.key_pool.mark_failure(current_key)
+                if current_key is not None:
+                    self.key_pool.mark_failure(current_key)
                 if attempt < max_retries:
                     await asyncio.sleep(2 * (attempt + 1))
                     continue
                 break
 
-        # 所有重试失败
         logger.error(f"[VlmDirectAsyncConverter] Failed to convert page {page_num}: {last_error}")
-        return (page_num, f"<!-- Error converting page {page_num}: {last_error} -->")
+        return self._error_page_result(
+            page_num,
+            "openai",
+            str(last_error),
+            http_status=last_http_status,
+            finish_reason=last_finish_reason,
+            truncated=last_truncated,
+            raw_text=last_raw_text,
+            error_kind=last_error_kind,
+        )
 
     async def _convert_page_gemini(
         self,
         session: aiohttp.ClientSession,
         img: Image.Image,
         page_num: int
-    ) -> tuple[int, str]:
+    ) -> PageResult:
         """使用 Gemini 原生 API 转换页面
 
         支持多种中继服务格式：
@@ -621,145 +1445,223 @@ class VlmDirectAsyncConverter(BaseConverter):
 
         # 检测 base_url 是否已包含 API 版本路径
         if '/v1beta' in base_url or '/v1/' in base_url:
-            # 中继服务已包含版本路径，直接拼接 models 路径
             url = f"{base_url}/models/{self.model}:generateContent"
         elif base_url.endswith('/gemini') or base_url.endswith('/google'):
-            # 中继服务使用 /gemini 或 /google 后缀
-            # 使用 v1beta 路径（经测试 newcli 等中转服务使用 v1beta）
             url = f"{base_url}/v1beta/models/{self.model}:generateContent"
         else:
-            # 标准格式
             url = f"{base_url}/v1beta/models/{self.model}:generateContent"
 
-        # 构建 Gemini 请求体 - 添加 role: "user" 以兼容更多中继服务
         payload = {
             "contents": [{
                 "role": "user",
                 "parts": [
-                    {"inline_data": {"mime_type": "image/jpeg", "data": b64_img}},
+                    {"inline_data": {"mime_type": self._resolve_image_mime(), "data": b64_img}},
                     {"text": self.prompt}
                 ]
             }]
         }
 
+        api_params = getattr(self, "api_params", {}) or {}
+        generation_config = {}
+        if 'temperature' in api_params:
+            generation_config['temperature'] = api_params['temperature']
+        if 'top_p' in api_params:
+            generation_config['topP'] = api_params['top_p']
+        if 'top_k' in api_params:
+            generation_config['topK'] = api_params['top_k']
+        generation_config['maxOutputTokens'] = self._effective_max_tokens()
+        self._apply_gemini_thinking_off(generation_config)
+
+        if self._is_json_mode() and self._supports_gemini_native_json_constraints():
+            generation_config["responseMimeType"] = "application/json"
+            generation_config["responseSchema"] = GEMINI_JSON_SCHEMA
+        elif self._is_json_mode() and page_num == 1:
+            logger.info("[Gemini] Native JSON constraints disabled for relay/non-official endpoint")
+
+        if generation_config:
+            payload['generationConfig'] = generation_config
+            if page_num == 1:
+                logger.info(f"[Gemini] generationConfig: {generation_config}")
+
+        def extract_result(data, finish_reason, *, http_status=200):
+            parts = data["candidates"][0]["content"]["parts"]
+            text_parts = []
+            thinking_chars = 0
+            for part in parts:
+                if part.get("thought", False):
+                    thinking_chars += len(part.get("text", ""))
+                    continue
+                if "text" in part:
+                    text_parts.append(part["text"])
+
+            if thinking_chars > 0:
+                logger.info(f"[Gemini] Filtered out {thinking_chars} chars of thinking content")
+
+            page_text = "\n".join(text_parts).strip()
+            usage = data.get("usageMetadata", {})
+            completion_tokens = usage.get("candidatesTokenCount", "N/A")
+            truncated = self._log_and_validate_finish_reason(
+                "gemini",
+                finish_reason,
+                page_num,
+                completion_tokens,
+            )
+            result = self._classify_page_output(
+                page_num,
+                page_text,
+                "gemini",
+                http_status=http_status,
+                finish_reason=finish_reason,
+                truncated=truncated,
+            )
+            return result, page_text, truncated
+
         last_error = None
+        last_raw_text = ""
+        last_http_status = None
+        last_finish_reason = None
+        last_truncated = False
+        last_error_kind = "retry_exhausted"
+
         for attempt in range(self.max_retries + 1):
+            current_key = None
             try:
                 current_key = self.key_pool.acquire()
 
-                # 尝试多种认证方式
-                # 方式1: x-goog-api-key 头部（推荐用于中继服务）
                 headers = {
                     "Content-Type": "application/json",
-                    "x-goog-api-key": current_key
+                    "Authorization": f"Bearer {current_key}"
                 }
 
                 if page_num == 1 and attempt == 0:
                     logger.info(f"[Gemini] URL: {url}")
-                    logger.info(f"[Gemini] Using x-goog-api-key header auth")
+                    logger.info(f"[Gemini] Using Authorization Bearer auth")
 
                 async with session.post(
                     url,
                     json=payload,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout)
+                    timeout=aiohttp.ClientTimeout(connect=15, sock_read=self.timeout, total=None)
                 ) as response:
                     if response.status == 200:
                         data = await response.json()
-                        # 提取 Gemini 响应 - 过滤掉 thinking 内容
-                        parts = data["candidates"][0]["content"]["parts"]
-                        text_parts = []
-                        thinking_chars = 0
-                        for part in parts:
-                            # 跳过 thinking 内容（thought: true 标识）
-                            if part.get("thought", False):
-                                thinking_chars += len(part.get("text", ""))
-                                continue
-                            if "text" in part:
-                                text_parts.append(part["text"])
-
-                        if thinking_chars > 0:
-                            logger.info(f"[Gemini] Filtered out {thinking_chars} chars of thinking content")
-
-                        markdown = "\n".join(text_parts).strip()
-
-                        # 🔍 检查 finishReason - 诊断停止原因
                         finish_reason = data["candidates"][0].get("finishReason", "unknown")
-                        usage = data.get("usageMetadata", {})
-                        completion_tokens = usage.get("candidatesTokenCount", "N/A")
+                        result, page_text, truncated = extract_result(data, finish_reason, http_status=response.status)
 
-                        if finish_reason == "MAX_TOKENS":
-                            logger.warning(f"[Gemini] ⚠️ Page {page_num}: finishReason=MAX_TOKENS (hit token limit!), tokens={completion_tokens}")
-                        elif finish_reason == "STOP":
-                            logger.info(f"[Gemini] ✓ Page {page_num}: finishReason=STOP (normal), tokens={completion_tokens}")
-                        else:
-                            logger.info(f"[Gemini] Page {page_num}: finishReason={finish_reason}, tokens={completion_tokens}")
+                        if result.ok:
+                            logger.info(f"[Gemini] Page {page_num} converted ({len(result.cleaned_text)} chars)")
+                            self.key_pool.mark_success(current_key)
+                            return result
 
-                        # 🆕 输出后处理 - 始终清理（提取代码块、移除思考过程）
-                        if not self.disable_postprocess:
-                            markdown = self._clean_markdown_output(markdown)
-                            logger.info(f"[Gemini] Page {page_num} cleaned ({len(markdown)} chars)")
+                        last_error = ValueError(result.error_kind)
+                        last_raw_text = page_text
+                        last_http_status = response.status
+                        last_finish_reason = finish_reason
+                        last_truncated = truncated
+                        last_error_kind = result.error_kind
+                        logger.warning(
+                            f"[Gemini] Invalid page {page_num}: kind={result.content_kind}, error={result.error_kind}, truncated={result.truncated}"
+                        )
+                        self.key_pool.mark_failure(current_key)
+                        if attempt < self.max_retries:
+                            await asyncio.sleep(2 * (attempt + 1))
+                            continue
+                        return result
 
-                        logger.info(f"[Gemini] Page {page_num} converted ({len(markdown)} chars)")
-                        self.key_pool.mark_success(current_key)
-                        return (page_num, markdown)
-                    elif response.status in (401, 403):
-                        # 认证失败，尝试查询参数方式
+                    if response.status in (401, 403):
                         error_text = await response.text()
                         logger.warning(f"[Gemini] Header auth failed ({response.status}), trying query param...")
 
-                        # 方式2: 查询参数
                         headers_simple = {"Content-Type": "application/json"}
                         async with session.post(
                             f"{url}?key={current_key}",
                             json=payload,
                             headers=headers_simple,
-                            timeout=aiohttp.ClientTimeout(total=self.timeout)
+                            timeout=aiohttp.ClientTimeout(connect=15, sock_read=self.timeout, total=None)
                         ) as response2:
                             if response2.status == 200:
                                 data = await response2.json()
-                                # 提取 Gemini 响应 - 过滤掉 thinking 内容
-                                parts = data["candidates"][0]["content"]["parts"]
-                                text_parts = []
-                                for part in parts:
-                                    if part.get("thought", False):
-                                        continue
-                                    if "text" in part:
-                                        text_parts.append(part["text"])
-                                markdown = "\n".join(text_parts).strip()
+                                finish_reason = data["candidates"][0].get("finishReason", "unknown")
+                                result, page_text, truncated = extract_result(data, finish_reason, http_status=response2.status)
 
-                                # 🆕 输出后处理 - 始终清理
-                                if not self.disable_postprocess:
-                                    markdown = self._clean_markdown_output(markdown)
+                                if result.ok:
+                                    logger.info(f"[Gemini] Page {page_num} converted with query param auth ({len(result.cleaned_text)} chars)")
+                                    self.key_pool.mark_success(current_key)
+                                    return result
 
-                                logger.info(f"[Gemini] Page {page_num} converted with query param auth ({len(markdown)} chars)")
-                                self.key_pool.mark_success(current_key)
-                                return (page_num, markdown)
-                            else:
-                                error_text2 = await response2.text()
-                                raise Exception(f"Gemini API error {response2.status}: {error_text2}")
-                    else:
-                        error_text = await response.text()
-                        raise Exception(f"Gemini API error {response.status}: {error_text}")
+                                last_error = ValueError(result.error_kind)
+                                last_raw_text = page_text
+                                last_http_status = response2.status
+                                last_finish_reason = finish_reason
+                                last_truncated = truncated
+                                last_error_kind = result.error_kind
+                                logger.warning(
+                                    f"[Gemini] Invalid page {page_num} with query param auth: kind={result.content_kind}, error={result.error_kind}, truncated={result.truncated}"
+                                )
+                                self.key_pool.mark_failure(current_key)
+                                if attempt < self.max_retries:
+                                    await asyncio.sleep(2 * (attempt + 1))
+                                    continue
+                                return result
+
+                            error_text2 = await response2.text()
+                            last_error = Exception(f"Gemini API error {response2.status}: {error_text2}")
+                            last_raw_text = error_text2
+                            last_http_status = response2.status
+                            last_finish_reason = None
+                            last_truncated = False
+                            last_error_kind = "upstream_http"
+                            logger.warning(f"[Gemini] Error on page {page_num} (attempt {attempt + 1}): {last_error}")
+                            self.key_pool.mark_failure(current_key)
+                            if attempt < self.max_retries:
+                                await asyncio.sleep(2 * (attempt + 1))
+                                continue
+                            break
+
+                    error_text = await response.text()
+                    last_error = Exception(f"Gemini API error {response.status}: {error_text}")
+                    last_raw_text = error_text
+                    last_http_status = response.status
+                    last_finish_reason = None
+                    last_truncated = False
+                    last_error_kind = "upstream_http"
+                    logger.warning(f"[Gemini] Error on page {page_num} (attempt {attempt + 1}): {last_error}")
+                    self.key_pool.mark_failure(current_key)
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(2 * (attempt + 1))
+                        continue
+                    break
 
             except Exception as e:
                 last_error = e
+                if isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError)):
+                    last_error_kind = "retry_exhausted"
                 logger.warning(f"[Gemini] Error on page {page_num} (attempt {attempt + 1}): {e}")
-                self.key_pool.mark_failure(current_key)
+                if current_key is not None:
+                    self.key_pool.mark_failure(current_key)
                 if attempt < self.max_retries:
                     await asyncio.sleep(2 * (attempt + 1))
                     continue
                 break
 
         logger.error(f"[Gemini] Failed to convert page {page_num}: {last_error}")
-        return (page_num, f"<!-- Error converting page {page_num}: {last_error} -->")
+        return self._error_page_result(
+            page_num,
+            "gemini",
+            str(last_error),
+            http_status=last_http_status,
+            finish_reason=last_finish_reason,
+            truncated=last_truncated,
+            raw_text=last_raw_text,
+            error_kind=last_error_kind,
+        )
 
     async def _convert_page_anthropic(
         self,
         session: aiohttp.ClientSession,
         img: Image.Image,
         page_num: int
-    ) -> tuple[int, str]:
+    ) -> PageResult:
         """使用 Anthropic Claude 原生 API 转换页面"""
         b64_img = self._img_to_base64(img)
 
@@ -768,9 +1670,10 @@ class VlmDirectAsyncConverter(BaseConverter):
         url = f"{base_url}/v1/messages"
 
         # 构建 Anthropic 请求体
+        anthropic_max_tokens = self.max_tokens if self.max_tokens > 0 else 4096
         payload = {
             "model": self.model,
-            "max_tokens": self.max_tokens,
+            "max_tokens": anthropic_max_tokens,
             "messages": [{
                 "role": "user",
                 "content": [
@@ -778,7 +1681,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                         "type": "image",
                         "source": {
                             "type": "base64",
-                            "media_type": "image/jpeg",
+                            "media_type": self._resolve_image_mime(),
                             "data": b64_img
                         }
                     },
@@ -789,8 +1692,8 @@ class VlmDirectAsyncConverter(BaseConverter):
                 ]
             }]
         }
+        self._apply_anthropic_thinking_off(payload)
 
-        # 添加 API 参数
         if hasattr(self, 'api_params') and self.api_params:
             if 'temperature' in self.api_params:
                 payload['temperature'] = self.api_params['temperature']
@@ -798,7 +1701,14 @@ class VlmDirectAsyncConverter(BaseConverter):
                 payload['top_p'] = self.api_params['top_p']
 
         last_error = None
+        last_raw_text = ""
+        last_http_status = None
+        last_finish_reason = None
+        last_truncated = False
+        last_error_kind = "retry_exhausted"
+
         for attempt in range(self.max_retries + 1):
+            current_key = None
             try:
                 current_key = self.key_pool.acquire()
                 headers = {
@@ -815,42 +1725,94 @@ class VlmDirectAsyncConverter(BaseConverter):
                     url,
                     json=payload,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=self.timeout)
+                    timeout=aiohttp.ClientTimeout(connect=15, sock_read=self.timeout, total=None)
                 ) as response:
                     if response.status == 200:
                         data = await response.json()
-                        # 提取 Anthropic 响应
-                        markdown = data["content"][0]["text"].strip()
+                        page_text = data["content"][0]["text"].strip()
+                        stop_reason = data.get("stop_reason", "unknown")
+                        usage = data.get("usage", {})
+                        completion_tokens = usage.get("output_tokens", "N/A")
+                        truncated = self._log_and_validate_finish_reason(
+                            "anthropic",
+                            stop_reason,
+                            page_num,
+                            completion_tokens,
+                        )
 
-                        # 输出后处理 - 始终清理
-                        if not self.disable_postprocess:
-                            markdown = self._clean_markdown_output(markdown)
+                        result = self._classify_page_output(
+                            page_num,
+                            page_text,
+                            "anthropic",
+                            http_status=response.status,
+                            finish_reason=stop_reason,
+                            truncated=truncated,
+                        )
 
-                        logger.info(f"[Anthropic] Page {page_num} converted ({len(markdown)} chars)")
-                        self.key_pool.mark_success(current_key)
-                        return (page_num, markdown)
-                    else:
-                        error_text = await response.text()
-                        raise Exception(f"Anthropic API error {response.status}: {error_text}")
+                        if result.ok:
+                            logger.info(f"[Anthropic] Page {page_num} converted ({len(result.cleaned_text)} chars)")
+                            self.key_pool.mark_success(current_key)
+                            return result
+
+                        last_error = ValueError(result.error_kind)
+                        last_raw_text = page_text
+                        last_http_status = response.status
+                        last_finish_reason = stop_reason
+                        last_truncated = truncated
+                        last_error_kind = result.error_kind
+                        logger.warning(
+                            f"[Anthropic] Invalid page {page_num}: kind={result.content_kind}, error={result.error_kind}, truncated={result.truncated}"
+                        )
+                        self.key_pool.mark_failure(current_key)
+                        if attempt < self.max_retries:
+                            await asyncio.sleep(2 * (attempt + 1))
+                            continue
+                        return result
+
+                    error_text = await response.text()
+                    last_error = Exception(f"Anthropic API error {response.status}: {error_text}")
+                    last_raw_text = error_text
+                    last_http_status = response.status
+                    last_finish_reason = None
+                    last_truncated = False
+                    last_error_kind = "upstream_http"
+                    logger.warning(f"[Anthropic] Error on page {page_num} (attempt {attempt + 1}): {last_error}")
+                    self.key_pool.mark_failure(current_key)
+                    if attempt < self.max_retries:
+                        await asyncio.sleep(2 * (attempt + 1))
+                        continue
+                    break
 
             except Exception as e:
                 last_error = e
+                if isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError)):
+                    last_error_kind = "retry_exhausted"
                 logger.warning(f"[Anthropic] Error on page {page_num} (attempt {attempt + 1}): {e}")
-                self.key_pool.mark_failure(current_key)
+                if current_key is not None:
+                    self.key_pool.mark_failure(current_key)
                 if attempt < self.max_retries:
                     await asyncio.sleep(2 * (attempt + 1))
                     continue
                 break
 
         logger.error(f"[Anthropic] Failed to convert page {page_num}: {last_error}")
-        return (page_num, f"<!-- Error converting page {page_num}: {last_error} -->")
+        return self._error_page_result(
+            page_num,
+            "anthropic",
+            str(last_error),
+            http_status=last_http_status,
+            finish_reason=last_finish_reason,
+            truncated=last_truncated,
+            raw_text=last_raw_text,
+            error_kind=last_error_kind,
+        )
 
     async def _convert_page_async_no_semaphore(
         self,
         session: aiohttp.ClientSession,
         img: Image.Image,
         page_num: int
-    ) -> tuple[int, str]:
+    ) -> PageResult:
         """异步转换单个页面（无信号量版本，用于严格批次模式）
 
         根据 api_provider 选择不同的 API 格式。
@@ -865,62 +1827,114 @@ class VlmDirectAsyncConverter(BaseConverter):
         else:
             return await self._convert_page_openai(session, img, page_num)
 
-    async def _convert_all_pages_async(
+    def _uses_strict_batch_page_scheduling(self) -> bool:
+        if self.api_provider != "openai_compatible":
+            return False
+        base_url_lower = (self.base_url or "").lower()
+        local_markers = ("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal", "lmstudio", ":1234", ":12345")
+        return any(marker in base_url_lower for marker in local_markers)
+
+    def _normalize_page_result(self, page_num: int, result) -> PageResult:
+        if isinstance(result, Exception):
+            logger.error(f"[VLM] Page {page_num} raised exception: {result}")
+            return self._error_page_result(page_num, self.api_provider, str(result))
+
+        if isinstance(result, PageResult):
+            logger.info(
+                f"[DEBUG] Page result: page={result.page_num}, ok={result.ok}, kind={result.content_kind}, error={result.error_kind}, len={len(result.cleaned_text)}"
+            )
+            return result
+
+        logger.warning(f"[VLM] Page {page_num} returned unexpected result type: {type(result)}")
+        return self._error_page_result(
+            page_num,
+            self.api_provider,
+            f"unexpected result type: {type(result).__name__}"
+        )
+
+    async def _convert_all_pages_strict_batches_async(
         self,
         images: List[Image.Image],
-        global_semaphore: Optional[asyncio.Semaphore] = None
-    ) -> List[str]:
-        """异步转换所有页面（严格批次模式）
-
-        LM Studio 优化：一批全部完成后才送下一批，避免 promote 阶段导致的性能下降。
-
-        Args:
-            images: 页面图像列表
-            global_semaphore: 全局信号量（已弃用，保留兼容性）
-        """
-        all_results = []
-        concurrency = self.max_concurrent
+    ) -> List[PageResult]:
+        concurrency = max(1, self.max_concurrent)
         total_pages = len(images)
+        all_results: List[PageResult] = []
 
         async with aiohttp.ClientSession() as session:
-            # 将所有页面分成小批次，每批 = 并发数
             for batch_start in range(0, total_pages, concurrency):
                 batch_end = min(batch_start + concurrency, total_pages)
                 batch_images = images[batch_start:batch_end]
 
-                logger.info(f"[VLM] Processing batch {batch_start//concurrency + 1}: pages {batch_start+1}-{batch_end}")
+                logger.info(f"[VLM][LM Studio] Processing batch {batch_start//concurrency + 1}: pages {batch_start+1}-{batch_end}")
 
-                # 创建当前批次的所有任务
                 tasks = [
                     self._convert_page_async_no_semaphore(session, img, batch_start + idx + 1)
                     for idx, img in enumerate(batch_images)
                 ]
-
-                # 等待当前批次全部完成
                 batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                # 🔍 DEBUG: 检查批次结果
-                for i, result in enumerate(batch_results):
-                    if isinstance(result, Exception):
-                        logger.error(f"[DEBUG] Batch result {i}: EXCEPTION - {result}")
-                    elif isinstance(result, tuple) and len(result) == 2:
-                        page_num, content = result
-                        logger.info(f"[DEBUG] Batch result {i}: page={page_num}, len={len(content)}")
-                    else:
-                        logger.warning(f"[DEBUG] Batch result {i}: UNEXPECTED - {type(result)}")
+                for idx, result in enumerate(batch_results):
+                    page_num = batch_start + idx + 1
+                    all_results.append(self._normalize_page_result(page_num, result))
 
-                all_results.extend(batch_results)
+                logger.info(f"[VLM][LM Studio] Batch completed: {len(batch_results)} pages")
 
-                logger.info(f"[VLM] Batch completed: {len(batch_results)} pages")
+        all_results.sort(key=lambda x: x.page_num)
+        valid_results = [result for result in all_results if result.ok]
+        logger.info(f"[DEBUG] Total results: {len(all_results)}, Valid results: {len(valid_results)}")
+        return all_results
 
-            # 按页码排序
-            all_results.sort(key=lambda x: x[0] if isinstance(x, tuple) else 0)
+    async def _convert_all_pages_sliding_window_async(
+        self,
+        images: List[Image.Image],
+        global_semaphore: Optional[asyncio.Semaphore] = None,
+    ) -> List[PageResult]:
+        concurrency = max(1, self.max_concurrent)
+        total_pages = len(images)
+        results: List[Optional[PageResult]] = [None] * total_pages
+        local_semaphore = asyncio.Semaphore(concurrency)
 
-            # 🔍 DEBUG: 检查过滤前后的结果数量
-            valid_results = [(page_num, markdown) for page_num, markdown in all_results if isinstance(page_num, int)]
-            logger.info(f"[DEBUG] Total results: {len(all_results)}, Valid results: {len(valid_results)}")
+        async def run_page(session: aiohttp.ClientSession, idx: int, img: Image.Image):
+            page_num = idx + 1
+            semaphore = global_semaphore or local_semaphore
+            async with semaphore:
+                try:
+                    result = await self._convert_page_async_no_semaphore(session, img, page_num)
+                except Exception as e:
+                    result = e
+            results[idx] = self._normalize_page_result(page_num, result)
 
-            return [markdown for page_num, markdown in valid_results]
+        async with aiohttp.ClientSession() as session:
+            logger.info(f"[VLM] Processing {total_pages} pages with sliding-window concurrency={concurrency}")
+            tasks = [
+                asyncio.create_task(run_page(session, idx, img))
+                for idx, img in enumerate(images)
+            ]
+
+            for task in asyncio.as_completed(tasks):
+                await task
+
+        ordered_results = [
+            result if result is not None else self._error_page_result(
+                idx + 1,
+                self.api_provider,
+                "missing page result"
+            )
+            for idx, result in enumerate(results)
+        ]
+        valid_results = [result for result in ordered_results if result.ok]
+        logger.info(f"[DEBUG] Total results: {len(ordered_results)}, Valid results: {len(valid_results)}")
+        return ordered_results
+
+    async def _convert_all_pages_async(
+        self,
+        images: List[Image.Image],
+        global_semaphore: Optional[asyncio.Semaphore] = None
+    ) -> List[PageResult]:
+        """异步转换所有页面。"""
+        if self._uses_strict_batch_page_scheduling():
+            return await self._convert_all_pages_strict_batches_async(images)
+        return await self._convert_all_pages_sliding_window_async(images, global_semaphore)
 
     def __call__(self, filepath: str, global_semaphore: Optional[asyncio.Semaphore] = None):
         """
@@ -955,19 +1969,27 @@ class VlmDirectAsyncConverter(BaseConverter):
 
         # 3. 异步并发转换（传递全局信号量）
         start_time = time.time()
-        markdown_pages = asyncio.run(self._convert_all_pages_async(images, global_semaphore))
+        raw_outputs = asyncio.run(self._convert_all_pages_async(images, global_semaphore))
         elapsed_time = time.time() - start_time
 
-        # 🔍 DEBUG: 检查 API 返回的原始内容
-        logger.info(f"[DEBUG] After API call: {len(markdown_pages)} pages")
+        # 3.5 根据输出模式处理（JSON或Markdown）
+        if self.output_mode == "json":
+            markdown_pages, printed_pages, _ = self._process_json_outputs(raw_outputs)
+        else:
+            # Markdown模式（向后兼容）
+            markdown_pages = [result.cleaned_text for result in raw_outputs]
+            printed_pages = None
+            logger.info(f"[VlmDirectAsyncConverter] Markdown mode: {len(markdown_pages)} pages")
+
+        # 🔍 DEBUG: 检查处理后的内容
+        logger.info(f"[DEBUG] After processing: {len(markdown_pages)} pages")
         for i, page in enumerate(markdown_pages):
-            logger.info(f"[DEBUG] Page {i+1} raw length: {len(page)} chars")
+            logger.info(f"[DEBUG] Page {i+1} length: {len(page)} chars")
             if len(page) < 200:
                 logger.info(f"[DEBUG] Page {i+1} content: {repr(page[:500])}")
 
-        # 4. 提取印刷页码（如果启用）
-        printed_pages = None
-        if self.printed_page_extractor:
+        # 4. 提取印刷页码（如果启用且JSON模式未提供）
+        if self.printed_page_extractor and printed_pages is None:
             logger.info(f"[VlmDirectAsyncConverter] Extracting printed pages...")
             markdown_pages, printed_pages = self.printed_page_extractor.extract_batch(markdown_pages)
             found_count = sum(1 for p in printed_pages if p is not None)
@@ -979,6 +2001,7 @@ class VlmDirectAsyncConverter(BaseConverter):
         # 5. 清理页面分隔符（避免嵌套）
         logger.info(f"[VlmDirectAsyncConverter] Cleaning page separators...")
         markdown_pages = self._clean_page_separators(markdown_pages)
+        markdown_pages = self._postprocess_markdown_pages(markdown_pages)
         # 🔍 DEBUG
         for i, page in enumerate(markdown_pages):
             logger.info(f"[DEBUG] After clean, Page {i+1}: {len(page)} chars")
@@ -987,6 +2010,10 @@ class VlmDirectAsyncConverter(BaseConverter):
         if self.page_anchor_plugin.enabled:
             logger.info(f"[VlmDirectAsyncConverter] Adding page anchors...")
             markdown_pages = self.page_anchor_plugin.process_pages(markdown_pages, printed_pages)
+
+        # 存储Markdown格式（新增）
+        self._last_markdown_pages = markdown_pages
+        logger.info(f"[VlmDirectAsyncConverter] Stored {len(markdown_pages)} Markdown pages")
 
         # 7. 拼接所有页面
         full_markdown = self.page_separator.join(markdown_pages)
@@ -1001,6 +2028,12 @@ class VlmDirectAsyncConverter(BaseConverter):
         logger.info(f"[VlmDirectAsyncConverter] Conversion complete in {elapsed_time:.1f}s")
         logger.info(f"[VlmDirectAsyncConverter] Total: {len(full_markdown)} chars")
         logger.info(f"[VlmDirectAsyncConverter] Speed: {len(images) / elapsed_time:.2f} pages/sec")
+
+        # 生成HTML格式（新增）
+        if "html" in self.final_output_formats:
+            from aih_contexture.utils.vlm_json_output import markdown_to_html
+            self._last_clean_html_pages = [markdown_to_html(page) for page in self._last_markdown_pages]
+            logger.info(f"[VlmDirectAsyncConverter] Generated {len(self._last_clean_html_pages)} HTML pages")
 
         # 8. 如果启用了渲染器,转换为Document并渲染
         if self.use_markdown_builder and self.markdown_builder:
@@ -1018,7 +2051,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                 logger.info(f"[VlmDirectAsyncConverter] Returning Document object")
                 return document
 
-        # 9. 默认行为: 返回Markdown字符串
+        # 9. 返回主格式（markdown）
         return full_markdown
 
     async def convert_async(self, filepath: str, global_semaphore: Optional[asyncio.Semaphore] = None):
@@ -1053,8 +2086,14 @@ class VlmDirectAsyncConverter(BaseConverter):
 
         # 3. 异步并发转换
         start_time = time.time()
-        markdown_pages = await self._convert_all_pages_async(images, global_semaphore)
+        raw_outputs = await self._convert_all_pages_async(images, global_semaphore)
         elapsed_time = time.time() - start_time
+
+        if self.output_mode == "json":
+            markdown_pages, printed_pages, _ = self._process_json_outputs(raw_outputs)
+        else:
+            markdown_pages = [result.cleaned_text for result in raw_outputs]
+            printed_pages = None
 
         # 4. 后处理（与同步版本相同）
         logger.info(f"[DEBUG] After API call: {len(markdown_pages)} pages")
@@ -1063,9 +2102,8 @@ class VlmDirectAsyncConverter(BaseConverter):
             if len(page) < 200:
                 logger.info(f"[DEBUG] Page {i+1} content: {repr(page[:500])}")
 
-        # 提取印刷页码
-        printed_pages = None
-        if self.printed_page_extractor:
+        # 提取印刷页码（仅在非JSON模式下使用）
+        if self.printed_page_extractor and printed_pages is None:
             logger.info(f"[VlmDirectAsyncConverter] Extracting printed pages...")
             markdown_pages, printed_pages = self.printed_page_extractor.extract_batch(markdown_pages)
             found_count = sum(1 for p in printed_pages if p is not None)
@@ -1074,11 +2112,20 @@ class VlmDirectAsyncConverter(BaseConverter):
         # 清理页面分隔符
         logger.info(f"[VlmDirectAsyncConverter] Cleaning page separators...")
         markdown_pages = self._clean_page_separators(markdown_pages)
+        markdown_pages = self._postprocess_markdown_pages(markdown_pages)
 
         # 添加页码锚点
         if self.page_anchor_plugin.enabled:
             logger.info(f"[VlmDirectAsyncConverter] Adding page anchors...")
             markdown_pages = self.page_anchor_plugin.process_pages(markdown_pages, printed_pages)
+
+        self._last_markdown_pages = markdown_pages
+        logger.info(f"[VlmDirectAsyncConverter] Stored {len(markdown_pages)} Markdown pages")
+
+        if "html" in self.final_output_formats:
+            from aih_contexture.utils.vlm_json_output import markdown_to_html
+            self._last_clean_html_pages = [markdown_to_html(page) for page in self._last_markdown_pages]
+            logger.info(f"[VlmDirectAsyncConverter] Generated {len(self._last_clean_html_pages)} HTML pages")
 
         # 拼接所有页面
         full_markdown = self.page_separator.join(markdown_pages)

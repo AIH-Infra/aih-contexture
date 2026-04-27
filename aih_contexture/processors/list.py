@@ -1,9 +1,12 @@
 from typing import Annotated, List, Tuple
 
+from aih_contexture.logger import get_logger
 from aih_contexture.processors import BaseProcessor
 from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.blocks import ListItem
 from aih_contexture.schema.document import Document
+
+logger = get_logger()
 
 
 class ListProcessor(BaseProcessor):
@@ -24,10 +27,17 @@ class ListProcessor(BaseProcessor):
         super().__init__(config)
 
     def __call__(self, document: Document):
-        self.list_group_continuation(document)
-        self.list_group_indentation(document)
+        continuation_count = self.list_group_continuation(document)
+        reparented_items, nested_items = self.list_group_indentation(document)
+        logger.info(
+            "[ListProcessor] completed: continuations=%s nested_items=%s reparented_items=%s",
+            continuation_count,
+            nested_items,
+            reparented_items,
+        )
 
     def list_group_continuation(self, document: Document):
+        continuation_count = 0
         for page in document.pages:
             for block in page.contained_blocks(document, self.block_types):
                 next_block = document.get_next_block(block, self.ignored_block_types)
@@ -53,8 +63,14 @@ class ListProcessor(BaseProcessor):
                         (next_block.polygon.y_start < next_page.polygon.height // 2)
 
                 block.has_continuation = column_break or (page_break and next_block_in_first_quadrant)
+                if block.has_continuation:
+                    continuation_count += 1
+
+        return continuation_count
 
     def list_group_indentation(self, document: Document):
+        reparented_items = 0
+        nested_items = 0
         for page in document.pages:
             for block in page.contained_blocks(document, self.block_types):
                 if block.structure is None:
@@ -77,6 +93,7 @@ class ListProcessor(BaseProcessor):
                         list_item_block.list_indent_level = stack[-1].list_indent_level
                         if list_item_block.polygon.x_start > stack[-1].polygon.x_start + (self.min_x_indent * page.polygon.width):
                             list_item_block.list_indent_level += 1
+                            nested_items += 1
 
                     next_list_item_block = block.get_next_block(page, list_item_block)
                     if next_list_item_block is not None and next_list_item_block.polygon.x_start > list_item_block.polygon.x_end:
@@ -97,4 +114,7 @@ class ListProcessor(BaseProcessor):
                         current_parent.polygon = current_parent.polygon.merge([list_item_block.polygon])
 
                         block.remove_structure_items([list_item_id])
+                        reparented_items += 1
                     stack.append(list_item_block)
+
+        return reparented_items, nested_items

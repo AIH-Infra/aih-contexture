@@ -24,15 +24,85 @@ class ModelCrashError(Exception):
 
 import PIL
 from PIL import Image
-import openai
+import aiohttp
 
 from aih_contexture.logger import get_logger
-from aih_contexture.services import BaseService
+from aih_contexture.services.ocr_base import BaseOcrService
 
 logger = get_logger()
 
 
-class OcrChandraService(BaseService):
+V1_LAYOUT_PROMPT = """OCR this image to HTML, arranged as layout blocks. Each layout block should be a div with the data-bbox attribute representing the bounding box of the block in [x0, y0, x1, y1] format. Bboxes are normalized 0-1024. The data-label attribute is the label for the block.
+
+Use the following labels:
+- Caption
+- Footnote
+- Equation-Block
+- List-Group
+- Page-Header
+- Page-Footer
+- Image
+- Section-Header
+- Table
+- Text
+- Complex-Block
+- Code-Block
+- Form
+- Table-Of-Contents
+- Figure
+
+Only use these tags ['math', 'br', 'i', 'b', 'u', 'del', 'sup', 'sub', 'table', 'tr', 'td', 'p', 'th', 'div', 'pre', 'h1', 'h2', 'h3', 'h4', 'h5', 'ul', 'ol', 'li', 'input', 'a', 'span', 'img', 'hr', 'tbody', 'small', 'caption', 'strong', 'thead', 'big', 'code'], and these attributes ['class', 'colspan', 'rowspan', 'display', 'checked', 'type', 'border', 'value', 'style', 'href', 'alt', 'align'].
+
+Guidelines:
+* Inline math: Surround math with <math>...</math> tags. Math expressions should be rendered in KaTeX-compatible LaTeX. Use display for block math.
+* Tables: Use colspan and rowspan attributes to match table structure.
+* Formatting: Maintain consistent formatting with the image, including spacing, indentation, subscripts/superscripts, and special characters.
+* Images: Include a description of any images in the alt attribute of an <img> tag. Do not fill out the src property.
+* Forms: Mark checkboxes and radio buttons properly.
+* Text: join lines together properly into paragraphs using <p>...</p> tags. Use <br> tags for line breaks within paragraphs, but only when absolutely necessary to maintain meaning.
+* Use the simplest possible HTML structure that accurately represents the content of the block.
+* Make sure the text is accurate and easy for a human to read and interpret. Reading order should be correct and natural."""
+
+
+V2_LAYOUT_PROMPT = """OCR this image to HTML, arranged as layout blocks. Each layout block should be a div with the data-bbox attribute representing the bounding box of the block in x0 y0 x1 y1 format. Bboxes are normalized 0-1000. The data-label attribute is the label for the block.
+
+Use the following labels:
+- Caption
+- Footnote
+- Equation-Block
+- List-Group
+- Page-Header
+- Page-Footer
+- Image
+- Section-Header
+- Table
+- Text
+- Complex-Block
+- Code-Block
+- Form
+- Table-Of-Contents
+- Figure
+- Chemical-Block
+- Diagram
+- Bibliography
+- Blank-Page
+
+Only use these tags ['math', 'br', 'i', 'b', 'u', 'del', 'sup', 'sub', 'table', 'tr', 'td', 'p', 'th', 'div', 'pre', 'h1', 'h2', 'h3', 'h4', 'h5', 'ul', 'ol', 'li', 'input', 'a', 'span', 'img', 'hr', 'tbody', 'small', 'caption', 'strong', 'thead', 'big', 'code', 'chem'], and these attributes ['class', 'colspan', 'rowspan', 'display', 'checked', 'type', 'border', 'value', 'style', 'href', 'alt', 'align', 'data-bbox', 'data-label'].
+
+Guidelines:
+* Inline math: Surround math with <math>...</math> tags. Math expressions should be rendered in KaTeX-compatible LaTeX. Use display for block math.
+* Tables: Use colspan and rowspan attributes to match table structure.
+* Formatting: Maintain consistent formatting with the image, including spacing, indentation, subscripts/superscripts, and special characters.
+* Images: Include a description of any images in the alt attribute of an <img> tag. Do not fill out the src property. Describe in detail inside the div tag. Also convert charts to high fidelity data, and convert diagrams to mermaid.
+* Forms: Mark checkboxes and radio buttons properly.
+* Text: join lines together properly into paragraphs using <p>...</p> tags. Use <br> tags for line breaks within paragraphs, but only when absolutely necessary to maintain meaning.
+* Chemistry: Use <chem>...</chem> tags for chemical formulas with reactive SMILES.
+* Lists: Preserve indents and proper list markers.
+* Use the simplest possible HTML structure that accurately represents the content of the block.
+* Make sure the text is accurate and easy for a human to read and interpret. Reading order should be correct and natural."""
+
+
+class OcrChandraService(BaseOcrService):
     """
     Chandra OCR 服务
 
@@ -67,6 +137,10 @@ class OcrChandraService(BaseService):
         int, "Timeout for OCR API calls (seconds)"
     ] = 120
 
+    ocr_api_style: Annotated[
+        str, "Protocol style: 'openai' or 'lmstudio-native'"
+    ] = "lmstudio-native"
+
     # 异常检测配置
     max_consecutive_failures: Annotated[
         int, "Maximum consecutive abnormal outputs before stopping"
@@ -86,8 +160,9 @@ class OcrChandraService(BaseService):
                 - ocr_timeout: 超时时间
                 - max_retries: 最大重试次数
         """
-        super().__init__()
+        super().__init__(config or {})
         self._consecutive_failures = 0  # 连续异常计数器
+        self.chandra_version = "1.0"
 
         # 从配置字典设置属性
         if config:
@@ -105,10 +180,65 @@ class OcrChandraService(BaseService):
                 self.ocr_temperature = config["ocr_temperature"]
             if "ocr_timeout" in config:
                 self.ocr_timeout = config["ocr_timeout"]
+            if "ocr_api_style" in config:
+                self.ocr_api_style = str(config["ocr_api_style"]).strip().lower()
+            if "chandra_version" in config:
+                self.chandra_version = str(config["chandra_version"]).strip()
             if "max_retries" in config:
                 self.max_retries = config["max_retries"]
             if "max_consecutive_failures" in config:
                 self.max_consecutive_failures = config["max_consecutive_failures"]
+
+        if self.ocr_api_style not in ("openai", "lmstudio-native"):
+            logger.warning(f"Unknown ocr_api_style={self.ocr_api_style}, fallback to lmstudio-native")
+            self.ocr_api_style = "lmstudio-native"
+
+    def get_backend_name(self) -> str:
+        """获取后端名称"""
+        return "chandra"
+
+    def _get_profile(self) -> Dict[str, Any]:
+        """获取当前 Chandra 版本 profile。"""
+        if self.chandra_version == "2.0":
+            return {
+                "version": "2.0",
+                "prompt_profile": "v2_ocr_layout",
+                "prompt": V2_LAYOUT_PROMPT,
+                "bbox_scale": 1000,
+                "sampling_profile": "official_v2",
+                "preprocess_profile": "official_v2",
+                "image_transport": "PNG",
+                "top_p": 0.1,
+                "repeat_penalty": 1.05,
+                "max_tokens": max(self.ocr_max_tokens, 12384),
+            }
+
+        return {
+            "version": "1.0",
+            "prompt_profile": "v1_layout",
+            "prompt": V1_LAYOUT_PROMPT,
+            "bbox_scale": 1024,
+            "sampling_profile": "legacy",
+            "preprocess_profile": "legacy",
+            "image_transport": "PNG",
+            "top_p": 0.1,
+            "repeat_penalty": 1.1,
+            "max_tokens": self.ocr_max_tokens,
+        }
+
+    def get_runtime_profile(self) -> Dict[str, Any]:
+        """返回当前 service 的运行时 profile 元数据。"""
+        profile = self._get_profile()
+        return {
+            "backend": "chandra",
+            "api_style": self.ocr_api_style,
+            "chandra_version": profile["version"],
+            "bbox_scale": profile["bbox_scale"],
+            "preprocess_profile": profile["preprocess_profile"],
+            "sampling_profile": profile["sampling_profile"],
+            "image_transport": profile["image_transport"],
+            "prompt_profile": profile["prompt_profile"],
+        }
 
     def _is_abnormal_output(self, result: str) -> bool:
         """
@@ -155,33 +285,7 @@ class OcrChandraService(BaseService):
         """
         构建 OCR prompt (使用 Chandra 官方推荐的 ocr_layout 模式)
         """
-        prompt = """OCR this image to HTML, arranged as layout blocks. Each layout block should be a div with the data-bbox attribute representing the bounding box of the block in [x0, y0, x1, y1] format. Bboxes are normalized 0-1024. The data-label attribute is the label for the block.
-
-Use the following labels:
-- Caption
-- Footnote
-- Equation-Block
-- List-Group
-- Page-Header
-- Page-Footer
-- Image
-- Section-Header
-- Table
-- Text
-- Complex-Block
-- Code-Block
-- Form
-- Table-Of-Contents
-- Figure
-
-Only use these tags [math, br, i, b, u, del, sup, sub, table, tr, td, p, th, div, pre, h1, h2, h3, h4, h5, ul, ol, li, input, a, span, img, hr, tbody, small, caption, strong, thead, big, code], and these attributes [class, colspan, rowspan, display, checked, type, border, value, style, href, alt, align].
-
-Guidelines:
-* Tables: Use <table>, <tr>, <td>, <th> tags with colspan and rowspan attributes to match table structure.
-* Inline math: Surround math with <math>...</math> tags in KaTeX-compatible LaTeX.
-* Text: Join lines into paragraphs using <p>...</p> tags.
-* Use the simplest possible HTML structure that accurately represents the content."""
-
+        prompt = self._get_profile()["prompt"]
         logger.info(f"[DEBUG] 使用官方 ocr_layout 提示词 (长度: {len(prompt)} 字符)")
         return prompt
 
@@ -212,43 +316,58 @@ Guidelines:
 
         return base64_str
 
-    def _build_request_payload(self, img_base64: str) -> Dict[str, Any]:
-        """
-        构建 API 请求 payload (OpenAI Chat Completions 格式)
-
-        Args:
-            img_base64: base64 编码的图像
-
-        Returns:
-            请求 payload 字典
-        """
+    def _build_request_payload(
+        self,
+        img_base64: str,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """根据协议风格构建请求 payload。"""
         prompt = self._build_prompt()
+        profile = self._get_profile()
+        if temperature is None:
+            temperature = self.ocr_temperature
+        if top_p is None:
+            top_p = profile["top_p"]
 
-        # OpenAI Chat Completions 格式（按照 Chandra 官方示例）
-        # 重要：图片在前，文本在后！
-        payload = {
-            "model": self.ocr_model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{img_base64}"
+        if self.ocr_api_style == "lmstudio-native":
+            payload = {
+                "model": self.ocr_model,
+                "input": [
+                    {"type": "text", "content": prompt},
+                    {"type": "image", "data_url": f"data:image/png;base64,{img_base64}"},
+                ],
+                "temperature": temperature,
+                "top_p": top_p,
+                "max_output_tokens": profile["max_tokens"],
+                "repeat_penalty": profile["repeat_penalty"],
+            }
+        else:
+            payload = {
+                "model": self.ocr_model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{img_base64}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": prompt
                             }
-                        },
-                        {
-                            "type": "text",
-                            "text": prompt
-                        }
-                    ]
-                }
-            ],
-            "max_tokens": self.ocr_max_tokens,
-            "temperature": self.ocr_temperature,
-            "top_p": 0.1
-        }
+                        ]
+                    }
+                ],
+                "max_tokens": profile["max_tokens"],
+                "temperature": temperature,
+                "top_p": top_p,
+                "repetition_penalty": profile["repeat_penalty"],
+                "stop": ["</div></div></div>"],
+            }
 
         return payload
 
@@ -282,6 +401,68 @@ Guidelines:
         """
         return content.strip()
 
+    def _extract_openai_text(self, body: Dict[str, Any]) -> str:
+        choices = body.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+        message = choices[0].get("message", {})
+        content = message.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+        reasoning = message.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning.strip():
+            return reasoning
+        return ""
+
+    def _extract_lmstudio_native_text(self, body: Dict[str, Any]) -> str:
+        candidates = [
+            body.get("content"),
+            body.get("output_text"),
+            body.get("text"),
+            body.get("response"),
+        ]
+        for item in candidates:
+            if isinstance(item, str) and item.strip():
+                return item
+
+        output = body.get("output")
+        if isinstance(output, list):
+            preferred = []
+            fallback = []
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+                bucket = preferred if item.get("type") in {"text", "content", "message"} else fallback
+                for key in ("text", "content"):
+                    value = item.get(key)
+                    if isinstance(value, str) and value.strip():
+                        bucket.append(value)
+                content = item.get("content")
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict):
+                            value = part.get("text")
+                            if isinstance(value, str) and value.strip():
+                                bucket.append(value)
+            if preferred:
+                return "".join(preferred)
+            if fallback:
+                return "".join(fallback)
+
+        prediction = body.get("prediction")
+        if isinstance(prediction, dict):
+            for key in ("text", "content"):
+                value = prediction.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value
+
+        return ""
+
+    def _extract_response_text(self, body: Dict[str, Any]) -> str:
+        if self.ocr_api_style == "lmstudio-native":
+            return self._extract_lmstudio_native_text(body)
+        return self._extract_openai_text(body)
+
     def process_page(self, img: PIL.Image.Image) -> Dict[str, Any] | str:
         """
         同步处理单页图像（使用 OpenAI 客户端）
@@ -292,61 +473,44 @@ Guidelines:
         Returns:
             OCR 结果 (HTML string)
         """
-        # 1. 图像转 base64
+        import urllib.request
+
         img_base64 = self._img_to_base64(img)
-        prompt = self._build_prompt()
+        headers = self._build_headers()
 
-        # 2. 创建 OpenAI 客户端
-        client = openai.OpenAI(
-            base_url=self.ocr_endpoint.replace("/chat/completions", ""),
-            api_key=self.ocr_api_key or "default-key"
-        )
+        logger.info(f"[DEBUG] 使用同步 HTTP 请求发送 OCR（api_style={self.ocr_api_style}）")
 
-        # 3. 构建消息内容（与 VLM Direct 一致）
-        content = [
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{img_base64}"}
-            },
-            {
-                "type": "text",
-                "text": prompt
-            }
-        ]
-
-        logger.info(f"[DEBUG] 使用 OpenAI 客户端发送请求")
-
-        # 4. 发送请求（带重试）
         for attempt in range(self.max_retries):
             try:
-                resp = client.chat.completions.create(
-                    model=self.ocr_model,
-                    messages=[{"role": "user", "content": content}],
-                    timeout=self.ocr_timeout,
-                    max_tokens=self.ocr_max_tokens,
-                    temperature=self.ocr_temperature,
-                    top_p=0.1,
-                    extra_body={
-                        "repetition_penalty": 1.1,  # 防止重复生成
-                        "stop": ["</div></div></div>"]  # 防止无限嵌套
-                    }
+                profile = self._get_profile()
+                attempt_temperature = self.ocr_temperature
+                attempt_top_p = profile["top_p"]
+                if profile["sampling_profile"] == "official_v2" and attempt > 0:
+                    attempt_temperature = min(self.ocr_temperature + 0.2 * attempt, 0.8)
+                    attempt_top_p = 0.95
+
+                payload = self._build_request_payload(
+                    img_base64,
+                    temperature=attempt_temperature,
+                    top_p=attempt_top_p,
+                )
+                data = json.dumps(payload).encode("utf-8")
+                req = urllib.request.Request(
+                    self.ocr_endpoint,
+                    data=data,
+                    headers=headers,
                 )
 
-                # 检测 token 数为 0（模型崩溃的早期信号）
-                if hasattr(resp, 'usage') and resp.usage:
-                    total_tokens = getattr(resp.usage, 'total_tokens', -1)
-                    if total_tokens == 0:
-                        logger.warning(f"[异常检测] usage.total_tokens = 0，模型可能已崩溃")
+                with urllib.request.urlopen(req, timeout=self.ocr_timeout) as resp:
+                    body = json.load(resp)
 
-                result = (resp.choices[0].message.content or "").strip()
+                result = self._extract_response_text(body).strip()
                 logger.info(f"[DEBUG] 返回内容长度: {len(result)} 字符")
                 logger.info(f"[DEBUG] 返回内容前200字符: {result[:200]}")
 
-                # 异常输出检测
                 if self._is_abnormal_output(result):
                     self._consecutive_failures += 1
                     logger.warning(f"[异常检测] 检测到异常输出（连续第 {self._consecutive_failures} 次）")
-
                     if self._consecutive_failures >= self.max_consecutive_failures:
                         error_msg = (
                             f"⚠️ 检测到连续 {self._consecutive_failures} 次异常输出！\n"
@@ -358,7 +522,6 @@ Guidelines:
                     self._consecutive_failures = 0
 
                 return self._parse_response(result)
-
             except Exception as e:
                 logger.warning(f"OCR request failed (attempt {attempt + 1}/{self.max_retries}): {e}")
                 if attempt < self.max_retries - 1:
@@ -385,53 +548,38 @@ Guidelines:
         """
         import asyncio
 
-        # 1. 图像转 base64
         img_base64 = self._img_to_base64(img)
-        prompt = self._build_prompt()
+        headers = self._build_headers()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
 
-        # 2. 创建 OpenAI 异步客户端
-        client = openai.AsyncOpenAI(
-            base_url=self.ocr_endpoint.replace("/chat/completions", ""),
-            api_key=api_key or self.ocr_api_key or "default-key"
-        )
+        logger.info(f"[DEBUG] 使用 aiohttp 发送 OCR（api_style={self.ocr_api_style}）")
 
-        # 3. 构建消息内容
-        content = [
-            {
-                "type": "image_url",
-                "image_url": {"url": f"data:image/png;base64,{img_base64}"}
-            },
-            {
-                "type": "text",
-                "text": prompt
-            }
-        ]
-
-        logger.info(f"[DEBUG] 使用 OpenAI 异步客户端发送请求")
-
-        # 4. 发送请求（带重试）
         for attempt in range(self.max_retries):
             try:
-                resp = await client.chat.completions.create(
-                    model=self.ocr_model,
-                    messages=[{"role": "user", "content": content}],
-                    timeout=self.ocr_timeout,
-                    max_tokens=self.ocr_max_tokens,
-                    temperature=self.ocr_temperature,
-                    top_p=0.1,
-                    extra_body={
-                        "repetition_penalty": 1.1,  # 防止重复生成
-                        "stop": ["</div></div></div>"]  # 防止无限嵌套
-                    }
+                profile = self._get_profile()
+                attempt_temperature = self.ocr_temperature
+                attempt_top_p = profile["top_p"]
+                if profile["sampling_profile"] == "official_v2" and attempt > 0:
+                    attempt_temperature = min(self.ocr_temperature + 0.2 * attempt, 0.8)
+                    attempt_top_p = 0.95
+
+                payload = self._build_request_payload(
+                    img_base64,
+                    temperature=attempt_temperature,
+                    top_p=attempt_top_p,
                 )
+                timeout = aiohttp.ClientTimeout(total=self.ocr_timeout)
+                async with session.post(
+                    self.ocr_endpoint,
+                    json=payload,
+                    headers=headers,
+                    timeout=timeout,
+                ) as response:
+                    response.raise_for_status()
+                    body = await response.json()
 
-                # 检测 token 数为 0（模型崩溃的早期信号）
-                if hasattr(resp, 'usage') and resp.usage:
-                    total_tokens = getattr(resp.usage, 'total_tokens', -1)
-                    if total_tokens == 0:
-                        logger.warning(f"[异常检测] usage.total_tokens = 0，模型可能已崩溃")
-
-                result = (resp.choices[0].message.content or "").strip()
+                result = self._extract_response_text(body).strip()
                 logger.info(f"[DEBUG] 返回内容长度: {len(result)} 字符")
                 logger.info(f"[DEBUG] 返回内容前200字符: {result[:200]}")
 

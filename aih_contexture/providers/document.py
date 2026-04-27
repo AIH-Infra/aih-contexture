@@ -7,6 +7,7 @@ from io import BytesIO
 from PIL import Image
 from aih_contexture.logger import get_logger
 
+from aih_contexture.providers import raise_missing_format_dependency
 from aih_contexture.providers.pdf import PdfProvider
 
 logger = get_logger()
@@ -69,8 +70,11 @@ class DocumentProvider(PdfProvider):
             os.remove(self.temp_pdf_path)
 
     def convert_docx_to_pdf(self, filepath: str):
-        from weasyprint import CSS, HTML
-        import mammoth
+        try:
+            from weasyprint import CSS, HTML
+            import mammoth
+        except ModuleNotFoundError as exc:
+            raise_missing_format_dependency("DOCX", ["mammoth", "weasyprint"], exc)
 
         with open(filepath, "rb") as docx_file:
             # we convert the docx to HTML

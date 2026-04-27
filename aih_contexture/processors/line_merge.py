@@ -1,11 +1,14 @@
 from typing import Annotated, List
 
+from aih_contexture.logger import get_logger
 from aih_contexture.processors import BaseProcessor
 from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.blocks import Block
 from aih_contexture.schema.document import Document
 from aih_contexture.schema.text import Line
 from aih_contexture.util import matrix_intersection_area
+
+logger = get_logger()
 
 
 class LineMergeProcessor(BaseProcessor):
@@ -42,6 +45,9 @@ class LineMergeProcessor(BaseProcessor):
         super().__init__(config)
 
     def merge_lines(self, lines: List[Line], block: Block):
+        merged_group_count = 0
+        merged_line_count = 0
+        original_line_count = len(lines)
         lines = [l for l in lines if l.polygon.width * 5 > l.polygon.height]  # Skip vertical lines
         line_bboxes = [l.polygon.expand(self.block_expand_threshold, 0).bbox for l in lines]  # Expand horizontally
         intersections = matrix_intersection_area(line_bboxes, line_bboxes)
@@ -91,6 +97,7 @@ class LineMergeProcessor(BaseProcessor):
             merges.append(merge)
 
         merges = [m for m in merges if len(m) > 1]
+        merged_group_count = len(merges)
         merged = set()
         for merge in merges:
             merge = [m for m in merge if m not in merged]
@@ -105,6 +112,7 @@ class LineMergeProcessor(BaseProcessor):
                 block.structure.remove(other_line.id)
                 other_line.removed = True  # Mark line as removed
                 merged.add(idx)
+                merged_line_count += 1
 
             # It is probably math if we are merging provider lines like this
             if not line.formats:
@@ -112,19 +120,45 @@ class LineMergeProcessor(BaseProcessor):
             elif "math" not in line.formats:
                 line.formats.append("math")
 
+        return {
+            "original_line_count": original_line_count,
+            "candidate_line_count": len(lines),
+            "merged_group_count": merged_group_count,
+            "merged_line_count": merged_line_count,
+        }
 
     def __call__(self, document: Document):
-        # Merging lines only needed for inline math
         if not self.use_llm:
+            logger.info("[LineMergeProcessor] skipped: use_llm=%s", self.use_llm)
             return
+
+        processed_blocks = 0
+        candidate_lines = 0
+        original_lines = 0
+        merged_groups = 0
+        merged_lines = 0
 
         for page in document.pages:
             for block in page.contained_blocks(document, self.block_types):
                 if block.structure is None:
                     continue
 
-                if not len(block.structure) >= 2:  # Skip single lines
+                if not len(block.structure) >= 2:
                     continue
 
                 lines = block.contained_blocks(document, (BlockTypes.Line,))
-                self.merge_lines(lines, block)
+                stats = self.merge_lines(lines, block)
+                processed_blocks += 1
+                original_lines += stats["original_line_count"]
+                candidate_lines += stats["candidate_line_count"]
+                merged_groups += stats["merged_group_count"]
+                merged_lines += stats["merged_line_count"]
+
+        logger.info(
+            "[LineMergeProcessor] completed: processed_blocks=%s original_lines=%s candidate_lines=%s merged_groups=%s merged_lines=%s",
+            processed_blocks,
+            original_lines,
+            candidate_lines,
+            merged_groups,
+            merged_lines,
+        )

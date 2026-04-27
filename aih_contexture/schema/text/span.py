@@ -1,6 +1,6 @@
 import html
 import re
-from typing import List, Literal, Optional
+from typing import ClassVar, List, Literal, Optional
 
 from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.blocks import Block
@@ -42,6 +42,10 @@ class Span(Block):
     has_subscript: bool = False
     url: Optional[str] = None
     html: Optional[str] = None
+
+    FOOTNOTE_MARKER_PATTERN: ClassVar[re.Pattern[str]] = re.compile(
+        r"^(?:\d{1,3}|[A-Za-z]{1,3}|[IVXLCDMivxlcdm]{1,4}|[*†‡§¶#]+)(?:[)\].-])?$"
+    )
 
     @property
     def bold(self):
@@ -106,8 +110,11 @@ class Span(Block):
         )  # Remove hyphenated line breaks from the middle of the span
         text = html.escape(text)
         text = cleanup_text(text)
+        suppress_superscript = self._should_suppress_superscript(
+            text, document, parent_structure, block_config
+        )
 
-        if self.has_superscript:
+        if self.has_superscript and not suppress_superscript:
             text = re.sub(r"^([0-9\W]+)(.*)", r"<sup>\1</sup>\2", text)
 
             # Handle full block superscript
@@ -133,7 +140,7 @@ class Span(Block):
             text = f"<mark>{text}</mark>"
         elif self.subscript:
             text = f"<sub>{text}</sub>"
-        elif self.superscript:
+        elif self.superscript and not suppress_superscript:
             text = f"<sup>{text}</sup>"
         elif self.underline:
             text = f"<u>{text}</u>"
@@ -144,3 +151,74 @@ class Span(Block):
 
         text = unwrap_math(text)
         return text
+
+    def _should_suppress_superscript(self, text: str, document, parent_structure, block_config) -> bool:
+        if block_config is None:
+            return False
+
+        if not (self.has_superscript or self.superscript):
+            return False
+
+        policy = block_config.get("superscript_policy", "auto")
+        if policy == "auto":
+            policy = "preserve_all" if block_config.get("footnote_enabled", True) else "suppress_footnote_like"
+
+        if policy == "preserve_all":
+            return False
+
+        if policy == "suppress_all":
+            return not self.math
+
+        if policy != "suppress_footnote_like":
+            return False
+
+        marker = html.unescape(text).strip()
+        if not marker:
+            return False
+
+        if self.math:
+            return False
+
+        if self.FOOTNOTE_MARKER_PATTERN.fullmatch(marker):
+            return True
+
+        if self._looks_like_embedded_ocr_noise(document, parent_structure, marker):
+            return True
+
+        return False
+
+    def _looks_like_embedded_ocr_noise(self, document, parent_structure, marker: str) -> bool:
+        if not parent_structure or document is None:
+            return False
+
+        try:
+            structure_idx = parent_structure.index(self.id)
+        except ValueError:
+            return False
+
+        prev_text = self._get_neighbor_span_text(document, parent_structure, structure_idx, -1)
+        next_text = self._get_neighbor_span_text(document, parent_structure, structure_idx, 1)
+        prev_char = self._extract_edge_alnum(prev_text, from_end=True)
+        next_char = self._extract_edge_alnum(next_text, from_end=False)
+
+        if len(marker) == 1 and marker.isalpha():
+            if prev_char and next_char and prev_char.isalpha() and next_char.isalpha():
+                return True
+
+        return False
+
+    def _get_neighbor_span_text(self, document, parent_structure, structure_idx: int, step: int) -> str:
+        idx = structure_idx + step
+        while 0 <= idx < len(parent_structure):
+            neighbor = document.get_block(parent_structure[idx])
+            if neighbor and getattr(neighbor, "block_type", None) == BlockTypes.Span:
+                return getattr(neighbor, "text", "") or ""
+            idx += step
+        return ""
+
+    def _extract_edge_alnum(self, text: str, from_end: bool) -> str:
+        chars = reversed(text) if from_end else text
+        for char in chars:
+            if char.isalnum():
+                return char
+        return ""

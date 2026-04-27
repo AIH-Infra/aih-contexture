@@ -1,6 +1,7 @@
 import os
 import tempfile
 
+from aih_contexture.providers import raise_missing_format_dependency
 from aih_contexture.providers.pdf import PdfProvider
 
 
@@ -24,7 +25,10 @@ class HTMLProvider(PdfProvider):
             os.remove(self.temp_pdf_path)
 
     def convert_html_to_pdf(self, filepath: str):
-        from weasyprint import HTML
+        try:
+            from weasyprint import HTML
+        except ModuleNotFoundError as exc:
+            raise_missing_format_dependency("HTML", ["weasyprint"], exc)
 
         font_css = self.get_font_css()
         HTML(filename=filepath, encoding="utf-8").write_pdf(

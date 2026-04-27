@@ -12,15 +12,6 @@ echo "  面向人文学科的文献结构化提取平台"
 echo "══════════════════════════════════════════"
 echo ""
 
-# 释放端口 6006（清理残留进程）
-if command -v lsof &> /dev/null; then
-    PID=$(lsof -ti:6006 2>/dev/null)
-    if [ -n "$PID" ]; then
-        echo "[信息] 正在释放端口 6006 (PID: $PID)..."
-        kill -9 $PID 2>/dev/null
-    fi
-fi
-
 # 检查虚拟环境
 if [ ! -f ".venv/bin/activate" ]; then
     echo "[错误] 未找到虚拟环境，请先运行 ./install.sh"
@@ -30,10 +21,18 @@ fi
 # 激活虚拟环境
 source .venv/bin/activate
 
+# 基础健康检查
+if ! python -c "import streamlit, aih_contexture" >/dev/null 2>&1; then
+    echo "[错误] 当前虚拟环境不完整，缺少 Streamlit 或项目依赖。"
+    echo "请重新运行 ./install.sh 后再启动。"
+    exit 1
+fi
+
 # 启动应用
 echo "正在启动 Web 界面..."
 echo ""
-echo "访问地址: http://localhost:6006"
+echo "默认从 8501 开始自动选择可用端口"
+echo "将监听所有本地网口，并在启动后显示本机/局域网访问地址"
 echo "按 Ctrl+C 停止服务"
 echo ""
 

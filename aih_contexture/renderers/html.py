@@ -1,4 +1,5 @@
 import textwrap
+from html import escape
 
 from PIL import Image
 from typing import Annotated, Tuple
@@ -111,19 +112,31 @@ class HTMLRenderer(BaseRenderer):
             elif ref_block_id.block_type in self.page_blocks:
                 images.update(sub_images)
                 if self.paginate_output:
-                    # 获取 printed page number (如果有)
-                    # 注意：page_id 是全局 PDF 页码（如批次2的50-99），
-                    # 但 document.pages 列表索引是局部的（0-49），
-                    # 所以必须按 page_id 属性查找，不能用列表索引。
                     printed_page_num = ""
+                    page_header_text = ""
+                    page_footer_text = ""
                     try:
                         page = next((p for p in document.pages if p.page_id == ref_block_id.page_id), None)
-                        if page and hasattr(page, "_internal_metadata") and "printed_page_number" in page._internal_metadata:
-                            printed_page_num = page._internal_metadata["printed_page_number"]
+                        if page and hasattr(page, "_internal_metadata"):
+                            metadata = page._internal_metadata
+                            if "printed_page_number" in metadata:
+                                printed_page_num = str(metadata["printed_page_number"])
+                            if self.emit_page_header_comment and "page_header_text" in metadata:
+                                page_header_text = str(metadata["page_header_text"])
+                            if self.emit_page_footer_comment and "page_footer_text" in metadata:
+                                page_footer_text = str(metadata["page_footer_text"])
                     except (IndexError, AttributeError):
                         pass
 
-                    content = f"<div class='page' data-page-id='{ref_block_id.page_id}' data-printed-page='{printed_page_num}'>{content}</div>"
+                    header_attr = escape(page_header_text, quote=True)
+                    footer_attr = escape(page_footer_text, quote=True)
+                    printed_attr = escape(printed_page_num, quote=True)
+                    content = (
+                        f"<div class='page' data-page-id='{ref_block_id.page_id}' "
+                        f"data-printed-page='{printed_attr}' "
+                        f"data-page-header='{header_attr}' "
+                        f"data-page-footer='{footer_attr}'>{content}</div>"
+                    )
                 element = BeautifulSoup(f"{content}", "html.parser")
                 ref.replace_with(self.insert_block_id(element, ref_block_id))
             else:

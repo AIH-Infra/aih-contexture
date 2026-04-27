@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "aih-contexture"
-version = "0.1.0"
+version = "0.3.0"
 description = "Weaving Data from History - 面向人文学科的文献结构化提取平台"
 authors = ["Güriedrich & Baireinhold <aih-infra@example.com>"]
 readme = "README.md"
@@ -35,29 +35,40 @@ markdown2 = "^2.5.2"
 filetype = "^1.2.0"
 google-genai = "^1.0.0"
 anthropic = "^0.46.0"
-pre-commit = "^4.2.0"
 scikit-learn = "^1.6.1"
+openai = "^1.65.2"
+PyYAML = "^6.0.3"
+numpy = "^2.3.0"
+pypdf = "^6.6.0"
+pypdfium2 = "^4.30.0"
+PyMuPDF = "^1.26.0"
+opencv-python-headless = "^4.11.0"
+beautifulsoup4 = "^4.14.0"
+requests = "^2.32.0"
+aiohttp = "^3.13.0"
+streamlit = "^1.53.0"
+streamlit-ace = "*"
+fastapi = "^0.115.4"
+uvicorn = "^0.32.0"
+python-multipart = "^0.0.16"
+psutil = "^7.2.0"
+huggingface-hub = "^0.20.0"
+lxml = "^5.3.0"
 
-# Optional dependencies for documents
+# Optional dependencies for extended document formats
 mammoth = {version = "^1.9.0", optional = true}
 openpyxl = {version = "^3.1.5", optional = true}
 python-pptx = {version = "^1.0.2", optional = true}
 ebooklib = {version = "^0.18", optional = true}
 weasyprint = {version = "^63.1", optional = true}
-openai = "^1.65.2"
 
 [tool.poetry.group.dev.dependencies]
 jupyter = "^1.0.0"
 datasets = "^2.21.0"
-streamlit = "^1.37.1"
-fastapi = "^0.115.4"
-uvicorn = "^0.32.0"
-python-multipart = "^0.0.16"
 pytest = "^8.3.3"
 pytest-mock = "^3.14.0"
 apted = "1.0.3"
 distance = "0.1.3"
-lxml = "5.3.0"
 tabulate = "^0.9.0"
 latex2mathml = "^3.77.0"
 playwright = "^1.49.1"

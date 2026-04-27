@@ -4,6 +4,7 @@ import tempfile
 import traceback
 
 from aih_contexture.logger import get_logger
+from aih_contexture.providers import raise_missing_format_dependency
 from aih_contexture.providers.pdf import PdfProvider
 
 logger = get_logger()
@@ -62,9 +63,12 @@ class PowerPointProvider(PdfProvider):
             os.remove(self.temp_pdf_path)
 
     def convert_pptx_to_pdf(self, filepath):
-        from weasyprint import CSS, HTML
-        from pptx import Presentation
-        from pptx.enum.shapes import MSO_SHAPE_TYPE
+        try:
+            from weasyprint import CSS, HTML
+            from pptx import Presentation
+            from pptx.enum.shapes import MSO_SHAPE_TYPE
+        except ModuleNotFoundError as exc:
+            raise_missing_format_dependency("PPTX", ["python-pptx", "weasyprint"], exc)
 
         pptx = Presentation(filepath)
 

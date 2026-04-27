@@ -241,7 +241,7 @@ Pipeline 分为两个阶段：先做**布局检测**（识别页面中的文本�
 
 ### 方式一：一键安装（推荐）
 
-项目提供了自动化安装脚本，会自动创建虚拟环境、检测硬件、安装 PyTorch 和所有依赖。
+项目提供了自动化安装脚本，会自动创建虚拟环境、检测硬件、安装 PyTorch，并安装默认依赖集合（主 PDF/image 流程 + 官方 GUI/server 入口）。
 
 **Windows：**
 
@@ -262,18 +262,30 @@ chmod +x install.command start.command install.sh start.sh
 
 ### 方式二：pip 安装
 
+默认安装（主 PDF/image 流程 + 官方 GUI/server 入口）：
+
 ```bash
 pip install aih-contexture
 ```
 
-安装后通过 Python 代码调用：
+如需 DOCX / XLSX / PPTX / EPUB / HTML 等扩展格式支持，请安装扩展依赖：
 
-```python
-from aih_contexture import convert_single_pdf
-
-result = convert_single_pdf("document.pdf")
-print(result.markdown)
+```bash
+pip install "aih-contexture[full]"
 ```
+
+安装后建议通过项目当前稳定维护的入口使用：
+
+```bash
+contexture_gui
+contexture_server
+contexture_single --help
+```
+
+其中：
+- `contexture_gui`：启动 Streamlit Web 界面
+- `contexture_server`：启动 API 服务
+- `contexture_single`：命令行单文件转换入口
 
 ### 启动应用
 
@@ -283,7 +295,9 @@ print(result.markdown)
 
 **macOS：** 双击 `start.command`（或在终端中运行 `./start.sh`）
 
-启动后浏览器会自动打开，访问地址为 `http://localhost:6006`。如果端口被占用，会自动尝试 6007、6008 等后续端口。
+启动后浏览器会自动打开。应用会从 `8501` 开始自动选择可用端口，并在终端中显示实际访问地址。
+
+> 默认安装优先保证主 PDF/image 流程以及官方 GUI/server 入口可用；若需 DOCX / XLSX / PPTX / EPUB / HTML 等扩展格式支持，请安装 `aih-contexture[full]` 或补充对应依赖。首次使用 Pipeline / Surya 时也会联网下载模型并写入本地缓存，因此首次运行可能明显更慢。
 
 ---
 

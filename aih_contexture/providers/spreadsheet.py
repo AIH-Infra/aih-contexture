@@ -1,6 +1,7 @@
 import os
 import tempfile
 
+from aih_contexture.providers import raise_missing_format_dependency
 from aih_contexture.providers.pdf import PdfProvider
 
 css = '''
@@ -48,8 +49,11 @@ class SpreadSheetProvider(PdfProvider):
             os.remove(self.temp_pdf_path)
 
     def convert_xlsx_to_pdf(self, filepath: str):
-        from weasyprint import CSS, HTML
-        from openpyxl import load_workbook
+        try:
+            from weasyprint import CSS, HTML
+            from openpyxl import load_workbook
+        except ModuleNotFoundError as exc:
+            raise_missing_format_dependency("XLSX", ["openpyxl", "weasyprint"], exc)
 
         html = ""
         workbook = load_workbook(filepath)

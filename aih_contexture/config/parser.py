@@ -79,7 +79,7 @@ class ConfigParser:
             "--llm_service",
             type=str,
             default=None,
-            help="LLM service to use - should be full import path, like marker.services.gemini.GoogleGeminiService",
+            help="LLM service to use - should be full import path, like aih_contexture.services.gemini.GoogleGeminiService",
         )(fn)
         return fn
 
@@ -99,7 +99,7 @@ class ConfigParser:
                     config["debug_json"] = True
                     config["debug_data_folder"] = output_dir
                 case "page_range":
-                    config["page_range"] = parse_range_str(v)
+                    config["page_range"] = v if isinstance(v, list) else parse_range_str(v)
                 case "config_json":
                     with open(v, "r", encoding="utf-8") as f:
                         config.update(json.load(f))
@@ -123,7 +123,7 @@ class ConfigParser:
 
         service_cls = self.cli_options.get("llm_service", None)
         if service_cls is None:
-            service_cls = "marker.services.gemini.GoogleGeminiService"
+            service_cls = "aih_contexture.services.gemini.GoogleGeminiService"
         return service_cls
 
     def get_renderer(self):

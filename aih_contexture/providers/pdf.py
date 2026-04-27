@@ -4,6 +4,8 @@ import logging
 import re
 from typing import Annotated, Dict, List, Optional, Set
 
+from aih_contexture.logger import get_logger
+
 import pypdfium2 as pdfium
 import pypdfium2.raw as pdfium_c
 from ftfy import fix_text
@@ -24,6 +26,7 @@ from aih_contexture.schema.text.span import Span
 
 # Ignore pypdfium2 warning about form flattening
 logging.getLogger("pypdfium2").setLevel(logging.ERROR)
+logger = get_logger()
 
 
 class PdfProvider(BaseProvider):
@@ -85,6 +88,8 @@ class PdfProvider(BaseProvider):
         super().__init__(filepath, config)
 
         self.filepath = filepath
+        print(f"[PdfProvider] __init__ start: filepath={filepath}")
+        logger.info("[PdfProvider] __init__ start: filepath=%s", filepath)
 
         with self.get_doc() as doc:
             self.page_count = len(doc)
@@ -103,14 +108,19 @@ class PdfProvider(BaseProvider):
             if self.force_ocr:
                 # Manually assign page bboxes, since we can't get them from pdftext
                 self.page_bboxes = {i: doc[i].get_bbox() for i in self.page_range}
-            else:
-                self.page_lines = self.pdftext_extraction(doc)
+
+        if not self.force_ocr:
+            self.page_lines = self.pdftext_extraction()
 
     @contextlib.contextmanager
     def get_doc(self):
         doc = None
         try:
+            print(f"[PdfProvider] Opening PdfDocument: {self.filepath}")
+            logger.info("[PdfProvider] Opening PdfDocument: %s", self.filepath)
             doc = pdfium.PdfDocument(self.filepath)
+            print(f"[PdfProvider] PdfDocument opened: pages={len(doc)}")
+            logger.info("[PdfProvider] PdfDocument opened: pages=%s", len(doc))
 
             # Must be called on the parent pdf, before retrieving pages to render correctly
             if self.flatten_pdf:
@@ -199,17 +209,26 @@ class PdfProvider(BaseProvider):
             text = text.replace(space, " ")
         return text
 
-    def pdftext_extraction(self, doc: PdfDocument) -> ProviderPageLines:
+    def pdftext_extraction(self) -> ProviderPageLines:
         page_lines: ProviderPageLines = {}
+        print(f"[PdfProvider] Starting dictionary_output: filepath={self.filepath} page_range={list(self.page_range)} workers={self.pdftext_workers}")
+        logger.info(
+            "[PdfProvider] Starting dictionary_output: filepath=%s page_range=%s workers=%s",
+            self.filepath,
+            list(self.page_range),
+            self.pdftext_workers,
+        )
         page_char_blocks = dictionary_output(
             self.filepath,
             page_range=self.page_range,
             keep_chars=self.keep_chars,
             workers=self.pdftext_workers,
-            flatten_pdf=self.flatten_pdf,
+            flatten_pdf=False,
             quote_loosebox=False,
             disable_links=self.disable_links,
         )
+        print(f"[PdfProvider] dictionary_output completed: pages={len(page_char_blocks)}")
+        logger.info("[PdfProvider] dictionary_output completed: pages=%s", len(page_char_blocks))
         self.page_bboxes = {
             i: [0, 0, page["width"], page["height"]]
             for i, page in zip(self.page_range, page_char_blocks)
@@ -219,87 +238,88 @@ class PdfProvider(BaseProvider):
         LineClass: Line = get_block_class(BlockTypes.Line)
         CharClass: Char = get_block_class(BlockTypes.Char)
 
-        for page in page_char_blocks:
-            page_id = page["page"]
-            lines: List[ProviderOutput] = []
-            if not self.check_page(page_id, doc):
-                continue
+        with self.get_doc() as doc:
+            for page in page_char_blocks:
+                page_id = page["page"]
+                lines: List[ProviderOutput] = []
+                if not self.check_page(page_id, doc):
+                    continue
 
-            for block in page["blocks"]:
-                for line in block["lines"]:
-                    spans: List[Span] = []
-                    chars: List[List[Char]] = []
-                    for span in line["spans"]:
-                        if not span["text"]:
-                            continue
-                        font_formats = self.font_flags_to_format(
-                            span["font"]["flags"]
-                        ).union(self.font_names_to_format(span["font"]["name"]))
-                        font_name = span["font"]["name"] or "Unknown"
-                        font_weight = span["font"]["weight"] or 0
-                        font_size = span["font"]["size"] or 0
+                for block in page["blocks"]:
+                    for line in block["lines"]:
+                        spans: List[Span] = []
+                        chars: List[List[Char]] = []
+                        for span in line["spans"]:
+                            if not span["text"]:
+                                continue
+                            font_formats = self.font_flags_to_format(
+                                span["font"]["flags"]
+                            ).union(self.font_names_to_format(span["font"]["name"]))
+                            font_name = span["font"]["name"] or "Unknown"
+                            font_weight = span["font"]["weight"] or 0
+                            font_size = span["font"]["size"] or 0
+                            polygon = PolygonBox.from_bbox(
+                                span["bbox"], ensure_nonzero_area=True
+                            )
+                            superscript = span.get("superscript", False)
+                            subscript = span.get("subscript", False)
+                            text = self.normalize_spaces(fix_text(span["text"]))
+                            if superscript or subscript:
+                                text = text.strip()
+
+                            spans.append(
+                                SpanClass(
+                                    polygon=polygon,
+                                    text=text,
+                                    font=font_name,
+                                    font_weight=font_weight,
+                                    font_size=font_size,
+                                    minimum_position=span["char_start_idx"],
+                                    maximum_position=span["char_end_idx"],
+                                    formats=list(font_formats),
+                                    page_id=page_id,
+                                    text_extraction_method="pdftext",
+                                    url=span.get("url"),
+                                    has_superscript=superscript,
+                                    has_subscript=subscript,
+                                )
+                            )
+
+                            if self.keep_chars:
+                                span_chars = [
+                                    CharClass(
+                                        text=c["char"],
+                                        polygon=PolygonBox.from_bbox(
+                                            c["bbox"], ensure_nonzero_area=True
+                                        ),
+                                        idx=c["char_idx"],
+                                    )
+                                    for c in span["chars"]
+                                ]
+                                chars.append(span_chars)
+                            else:
+                                chars.append([])
+
                         polygon = PolygonBox.from_bbox(
-                            span["bbox"], ensure_nonzero_area=True
+                            line["bbox"], ensure_nonzero_area=True
                         )
-                        superscript = span.get("superscript", False)
-                        subscript = span.get("subscript", False)
-                        text = self.normalize_spaces(fix_text(span["text"]))
-                        if superscript or subscript:
-                            text = text.strip()
 
-                        spans.append(
-                            SpanClass(
-                                polygon=polygon,
-                                text=text,
-                                font=font_name,
-                                font_weight=font_weight,
-                                font_size=font_size,
-                                minimum_position=span["char_start_idx"],
-                                maximum_position=span["char_end_idx"],
-                                formats=list(font_formats),
-                                page_id=page_id,
-                                text_extraction_method="pdftext",
-                                url=span.get("url"),
-                                has_superscript=superscript,
-                                has_subscript=subscript,
+                        assert len(spans) == len(chars), (
+                            f"Spans and chars length mismatch on page {page_id}: {len(spans)} spans, {len(chars)} chars"
+                        )
+                        lines.append(
+                            ProviderOutput(
+                                line=LineClass(polygon=polygon, page_id=page_id),
+                                spans=spans,
+                                chars=chars,
                             )
                         )
+                if self.check_line_spans(lines):
+                    page_lines[page_id] = lines
 
-                        if self.keep_chars:
-                            span_chars = [
-                                CharClass(
-                                    text=c["char"],
-                                    polygon=PolygonBox.from_bbox(
-                                        c["bbox"], ensure_nonzero_area=True
-                                    ),
-                                    idx=c["char_idx"],
-                                )
-                                for c in span["chars"]
-                            ]
-                            chars.append(span_chars)
-                        else:
-                            chars.append([])
-
-                    polygon = PolygonBox.from_bbox(
-                        line["bbox"], ensure_nonzero_area=True
-                    )
-
-                    assert len(spans) == len(chars), (
-                        f"Spans and chars length mismatch on page {page_id}: {len(spans)} spans, {len(chars)} chars"
-                    )
-                    lines.append(
-                        ProviderOutput(
-                            line=LineClass(polygon=polygon, page_id=page_id),
-                            spans=spans,
-                            chars=chars,
-                        )
-                    )
-            if self.check_line_spans(lines):
-                page_lines[page_id] = lines
-
-            self.page_refs[page_id] = []
-            if page_refs := page.get("refs", None):
-                self.page_refs[page_id] = page_refs
+                self.page_refs[page_id] = []
+                if page_refs := page.get("refs", None):
+                    self.page_refs[page_id] = page_refs
 
         return page_lines
 

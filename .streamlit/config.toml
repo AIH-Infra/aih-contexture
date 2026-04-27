@@ -1,6 +1,7 @@
 [server]
-port = 6006
-maxUploadSize = 500
+address = "localhost"
+port = 8501
+maxUploadSize = 1024
 
 [theme]
 base = "light"
@@ -10,6 +11,7 @@ secondaryBackgroundColor = "#F0F2F6"
 textColor = "#262730"
 
 [browser]
+serverAddress = "localhost"
 gatherUsageStats = false
 
 [client]

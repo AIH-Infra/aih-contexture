@@ -399,17 +399,27 @@ class OpenAIService(BaseService):
                     resp = client.chat.completions.create(**kwargs)
                     raw_text = _normalize_text(resp.choices[0].message.content or "")
 
-                    # 解析为 lines
+                    # 解析响应
                     if not raw_text:
                         last_result = {"lines": []}
                     elif mode == "text":
                         last_result = self._normalize_lines_from_any(raw_text)
                     else:
                         data = self._extract_json_any(raw_text)
-                        last_result = self._normalize_lines_from_any(data)
+                        if data is None:
+                            last_result = {
+                                "lines": [],
+                                "_raw_text": raw_text,
+                                "_json_parse_failed": True,
+                            }
+                        else:
+                            # json 模式下优先保留原始结构，供上层按 response_schema / 业务契约自行解析。
+                            # 不能在这里一律压平成 lines，否则会把 {corrected_pages, analysis}
+                            # 这类结构化结果错误地变成 {"lines": []}。
+                            last_result = data
 
-                    # 质量判定：可疑则进入下一阶段（hard prompt）再试
-                    if _is_suspicious(raw_text):
+                    # 质量判定：json 模式不做 OCR 文本型的 suspicious 检测，避免把合法/半合法 JSON 误伤。
+                    if mode == "text" and _is_suspicious(raw_text):
                         logger.warning(
                             "[OpenAIService] Suspicious output; stage=%d/%d hard=%s",
                             stage_idx + 1,

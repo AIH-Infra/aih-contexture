@@ -177,5 +177,3 @@ cython_debug/
 .idea/
 
 .vscode/
-.claude/
-output/

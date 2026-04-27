@@ -1,6 +1,14 @@
 from copy import deepcopy
 from typing import List, Optional, Dict
 
+
+def raise_missing_format_dependency(format_name: str, packages: list[str], exc: ModuleNotFoundError) -> None:
+    package_text = ", ".join(packages)
+    raise RuntimeError(
+        f"{format_name} support requires optional dependencies: {package_text}. "
+        'Install with `pip install "aih-contexture[full]"` or install the missing packages manually.'
+    ) from exc
+
 from PIL import Image
 from pydantic import BaseModel
 

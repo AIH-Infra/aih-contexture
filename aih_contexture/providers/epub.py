@@ -2,8 +2,7 @@ import base64
 import os
 import tempfile
 
-from bs4 import BeautifulSoup
-
+from aih_contexture.providers import raise_missing_format_dependency
 from aih_contexture.providers.pdf import PdfProvider
 
 css = '''
@@ -64,9 +63,13 @@ class EpubProvider(PdfProvider):
             os.remove(self.temp_pdf_path)
 
     def convert_epub_to_pdf(self, filepath):
-        from weasyprint import CSS, HTML
-        from ebooklib import epub
-        import ebooklib
+        try:
+            from bs4 import BeautifulSoup
+            from weasyprint import CSS, HTML
+            from ebooklib import epub
+            import ebooklib
+        except ModuleNotFoundError as exc:
+            raise_missing_format_dependency("EPUB", ["ebooklib", "weasyprint", "beautifulsoup4"], exc)
 
         ebook = epub.read_epub(filepath)
 

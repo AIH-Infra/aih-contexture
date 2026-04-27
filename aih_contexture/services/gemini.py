@@ -3,8 +3,10 @@ import time
 import traceback
 from io import BytesIO
 from typing import List, Annotated
+import base64
 
 import PIL
+import requests
 from google import genai
 from google.genai import types
 from google.genai.errors import APIError
@@ -188,15 +190,91 @@ class GoogleGeminiService(BaseGeminiService):
     def get_google_client(self, timeout: int, api_key: str = None):
         """Get Google client with optional API key override and custom base URL."""
         key = api_key if api_key is not None else self.gemini_api_key
+        http_options = {"timeout": timeout * 1000}
+        return genai.Client(api_key=key, http_options=http_options)
 
-        http_options = {"timeout": timeout * 1000}  # Convert to milliseconds
+    def _call_via_http(self, prompt: str, image_parts_raw, response_schema: type[BaseModel],
+                       api_key: str, timeout: int, config: dict):
+        """直接 HTTP 调用中转代理（newcli 等），绕过 google-genai SDK。"""
+        url = f"{self.base_url.rstrip('/')}/v1beta/models/{self.gemini_model_name}:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }
 
-        # 支持自定义中转接口
-        if self.base_url:
-            http_options["api_endpoint"] = self.base_url
-            logger.debug(f"[GoogleGeminiService] Using endpoint: {self.base_url}")
+        # 构建 contents
+        parts = []
+        for img in (image_parts_raw or []):
+            buf = BytesIO()
+            img.save(buf, format="WEBP")
+            parts.append({"inline_data": {"mime_type": "image/webp",
+                                           "data": base64.b64encode(buf.getvalue()).decode()}})
+        parts.append({"text": prompt})
 
-        return genai.Client(
-            api_key=key,
-            http_options=http_options,
-        )
+        generation_config = {"temperature": config.get("temperature", 0),
+                              "response_mime_type": "application/json"}
+        if config.get("max_output_tokens"):
+            generation_config["maxOutputTokens"] = config["max_output_tokens"]
+
+        payload = {
+            "contents": [{"parts": parts}],
+            "generationConfig": generation_config,
+        }
+
+        resp = requests.post(url, json=payload, headers=headers, timeout=timeout)
+        resp.raise_for_status()
+        data = resp.json()
+        text = data["candidates"][0]["content"]["parts"][0]["text"]
+        total_tokens = data.get("usageMetadata", {}).get("totalTokenCount", 0)
+        return json.loads(text), total_tokens
+
+    def __call__(self, prompt, image, block, response_schema, max_retries=None, timeout=None):
+        if not self.base_url:
+            return super().__call__(prompt, image, block, response_schema, max_retries, timeout)
+
+        if max_retries is None:
+            max_retries = self.max_retries
+        if timeout is None:
+            timeout = self.timeout
+        if hasattr(self, 'key_rotator') and self.key_rotator.get_key_count() > 1:
+            max_retries = max(max_retries, self.key_rotator.get_key_count())
+
+        # 原始图片列表（PIL），传给 _call_via_http 自行编码
+        images = image if isinstance(image, list) else ([image] if image else [])
+
+        total_tries = max_retries + 1
+        temperature = 0
+        for tries in range(1, total_tries + 1):
+            current_key = self.key_rotator.get_current_key() if hasattr(self, 'key_rotator') else self.gemini_api_key
+            config = {"temperature": temperature, "max_output_tokens": self.max_output_tokens}
+            try:
+                result, total_tokens = self._call_via_http(prompt, images, response_schema, current_key, timeout, config)
+                if block:
+                    block.update_metadata(llm_tokens_used=total_tokens, llm_request_count=1)
+                if hasattr(self, 'key_rotator'):
+                    self.key_rotator.mark_success()
+                return result
+            except requests.HTTPError as e:
+                status = e.response.status_code if e.response is not None else 0
+                logger.error(f"[GoogleGeminiService] HTTP {status}: {e}")
+                if status in [429, 503] and tries < total_tries:
+                    if hasattr(self, 'key_rotator'):
+                        self.key_rotator.mark_failure_and_rotate()
+                    time.sleep(tries * self.retry_wait_time)
+                    continue
+                break
+            except (json.JSONDecodeError, KeyError) as e:
+                temperature = 0.2
+                if tries < total_tries:
+                    logger.warning(f"[GoogleGeminiService] Parse error: {e}, retrying...")
+                    continue
+                break
+            except Exception as e:
+                logger.error(f"[GoogleGeminiService] Exception: {e}")
+                traceback.print_exc()
+                if hasattr(self, 'key_rotator') and tries < total_tries:
+                    self.key_rotator.mark_failure_and_rotate()
+                    time.sleep(2)
+                    continue
+                break
+        return {}

@@ -73,25 +73,32 @@ class CalamariOcrService(BaseService):
         except Exception:
             return False
 
-    def ocr_page(self, images: List[Image.Image]) -> List[str]:
+    def ocr_page(self, images: List[Image.Image], global_start_index: int = 0) -> List[str]:
         """
         🔑 核心方法：整页所有行作为一个批次发送
-        
+
         - 不按 batch_size 拆分
         - 保证返回顺序与输入顺序一致
         - 支持降级到 sequential 模式
+
+        Args:
+            images: 行图片列表
+            global_start_index: 全局起始索引（用于多页批处理）
         """
         if not images:
             return []
 
         if self.calamari_sequential_mode:
-            logger.info(f"[CalamariOcrService] Using sequential mode for {len(images)} images (page)")
+            logger.info(f"[CalamariOcrService] Using sequential mode for {len(images)} images")
             return self._ocr_sequential(images)
 
-        logger.info(f"[CalamariOcrService] Using batch mode for {len(images)} images (whole page)")
-        
-        # 直接发送整页，不拆分
-        return self._ocr_batch_single(images, global_start_index=0)
+        logger.info(
+            f"[CalamariOcrService] Using batch mode for {len(images)} images, "
+            f"global_start_index={global_start_index}"
+        )
+
+        # 直接发送，使用全局索引
+        return self._ocr_batch_single(images, global_start_index=global_start_index)
 
     def ocr_batch(self, images: List[Image.Image]) -> List[str]:
         """

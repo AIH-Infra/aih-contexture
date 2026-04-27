@@ -88,7 +88,7 @@ class PageAnchorPlugin:
         Args:
             page_index: 0-based 页序
             content: 页面内容
-            printed_page_id: 印刷页码（可选，优先级最高）
+            printed_page_id: 印刷页码（可选）
 
         Returns:
             添加了锚点和页码标签的页面内容
@@ -96,11 +96,17 @@ class PageAnchorPlugin:
         if not self.enabled:
             return content
 
-        # 生成 {n} 锚点（用于定位）
-        anchor = self.formatter.format(page_index, printed_page_id)
+        # 生成双重页码锚点
+        anchors = []
 
-        # 生成 <!-- Page: X --> 标签（用于显示）
-        # 优先级：printed_page_id > custom_id_injector > 无
+        # PDF物理页码（始终添加）
+        pdf_anchor = self.formatter.format(page_index)
+        anchors.append(pdf_anchor)
+
+        # 印刷页码不再作为锚点输出，仅通过 <!-- Page: X --> 注释显示
+        anchor_str = " ".join(anchors)
+
+        # 生成 <!-- Page: X --> 标签（用于显示，保留兼容性）
         display_id = printed_page_id
         if not display_id and self.custom_id_injector:
             display_id = self.custom_id_injector.get_custom_id(page_index)
@@ -108,13 +114,12 @@ class PageAnchorPlugin:
         page_tag = f"<!-- Page: {display_id} -->\n" if display_id else ""
 
         # 根据位置插入锚点和标签
-        # 调整顺序：{n} -> 分页符 -> <!-- Page: X -->
         if self.position == "before":
-            return f"{anchor}{self.separator}{self.page_separator}{self.separator}{page_tag}{content}"
+            return f"{anchor_str}{self.separator}{page_tag}{content}"
         elif self.position == "after":
-            return f"{content}{self.separator}{self.page_separator}{self.separator}{page_tag}{anchor}"
+            return f"{content}{self.separator}{page_tag}{anchor_str}"
         elif self.position == "both":
-            return f"{anchor}{self.separator}{self.page_separator}{self.separator}{page_tag}{content}{self.separator}{self.page_separator}{self.separator}{page_tag}{anchor}"
+            return f"{anchor_str}{self.separator}{page_tag}{content}{self.separator}{page_tag}{anchor_str}"
         else:
             return content
 
@@ -198,6 +203,9 @@ class PrintedPageExtractor:
                     # SC 编号统一转大写
                     if page_num.upper().startswith('SC'):
                         page_num = page_num.upper()
+                    # 验证页码有效性
+                    if not self._is_valid_page_number(page_num):
+                        continue
                     if self.remove_from_content:
                         content = self.re.sub(
                             pattern, '', content, count=1, flags=self.re.IGNORECASE
@@ -207,6 +215,37 @@ class PrintedPageExtractor:
                 continue
 
         return content, None
+
+    def _is_valid_page_number(self, text: str) -> bool:
+        """验证页码是否合理，过滤明显错误"""
+        text = text.strip()
+        if not text:
+            return False
+
+        # 阿拉伯数字: 1-999（过滤年份）
+        if text.isdigit():
+            num = int(text)
+            # 过滤前导零（00, 01, 03）和年份（>999）
+            if text.startswith('0') or num == 0 or num > 999:
+                return False
+            return True
+
+        # 罗马数字: 1-6位，只允许 IVXLCDM
+        # 单字母只允许 I, V, X（过滤 M, L, C, D 等 OCR 错误）
+        if self.re.match(r'^[IVXLCDM]{1,6}$', text, self.re.IGNORECASE):
+            if len(text) == 1 and text.upper() not in ['I', 'V', 'X']:
+                return False
+            return True
+
+        # 中文页码（允许）
+        if self.re.search(r'[一二三四五六七八九十百千零〇頁葉页叶]', text):
+            return True
+
+        # SC 编号等特殊格式（包含字母+数字）
+        if self.re.match(r'^[A-Z]{1,3}[-\s]?\d{1,4}$', text, self.re.IGNORECASE):
+            return True
+
+        return False
 
     def extract_batch(self, contents: list) -> tuple[list, list]:
         """

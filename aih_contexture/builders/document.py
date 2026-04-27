@@ -27,6 +27,10 @@ class DocumentBuilder(BaseBuilder):
         bool,
         "Disable OCR processing.",
     ] = False
+    build_highres_images: Annotated[
+        bool,
+        "Pre-render high-resolution page images for OCR and highres-dependent processors.",
+    ] = True
 
     def __call__(self, provider: PdfProvider, layout_builder: LayoutBuilder, line_builder: LineBuilder, ocr_builder: OcrBuilder):
         document = self.build_document(provider)
@@ -39,7 +43,11 @@ class DocumentBuilder(BaseBuilder):
     def build_document(self, provider: PdfProvider):
         PageGroupClass: PageGroup = get_block_class(BlockTypes.Page)
         lowres_images = provider.get_images(provider.page_range, self.lowres_image_dpi)
-        highres_images = provider.get_images(provider.page_range, self.highres_image_dpi)
+        highres_images = (
+            provider.get_images(provider.page_range, self.highres_image_dpi)
+            if self.build_highres_images
+            else [None] * len(provider.page_range)
+        )
         initial_pages = [
             PageGroupClass(
                 page_id=p,
