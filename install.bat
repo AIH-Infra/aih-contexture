@@ -1,6 +1,13 @@
 @echo off
 chcp 65001 >nul
 setlocal enabledelayedexpansion
+cd /d "%~dp0"
+
+:: Avoid inherited pip settings that can force stale local caches or hash checks.
+set "PIP_NO_INDEX="
+set "PIP_REQUIRE_HASHES="
+set "PIP_FIND_LINKS="
+set "PIP_CACHE_DIR="
 
 :: ============================================
 ::   AIH-Contexture Environment Setup (Windows)
@@ -8,15 +15,15 @@ setlocal enabledelayedexpansion
 
 echo.
 echo ============================================================
-echo    AIH-Contexture 环境安装向导
-echo    面向人文学科的文献结构化提取平台
+echo    AIH-Contexture Environment Setup
+echo    Literature structure extraction platform
 echo ============================================================
 echo.
-echo    安装说明:
-echo    - GPU 版 (NVIDIA): 需下载约 3~4 GB，预计 15~30 分钟
-echo    - CPU 版:          需下载约 1~1.5 GB，预计 10~20 分钟
-echo    - 实际耗时取决于网络速度，请保持网络畅通
-echo    - 安装过程中请勿关闭此窗口，耐心等待即可
+echo    Notes:
+echo    - GPU build (NVIDIA): downloads about 3-4 GB, usually 15-30 minutes
+echo    - CPU build:          downloads about 1-1.5 GB, usually 10-20 minutes
+echo    - Actual time depends on your network speed
+echo    - Keep this window open until setup finishes
 echo.
 echo ============================================================
 echo.
@@ -107,19 +114,62 @@ echo.
 :: ============================================
 echo [2/5] Creating virtual environment...
 
-if exist .venv (
+set VENV_OK=0
+if exist ".venv\Scripts\python.exe" if exist ".venv\Scripts\activate.bat" set VENV_OK=1
+
+if exist ".venv\" (
     echo [Info] Found existing .venv
-    set /p RECREATE="Recreate? (y/N): "
+    set RECREATE=
+    if "!VENV_OK!"=="0" (
+        echo [Warning] Existing .venv is incomplete or broken.
+        set /p RECREATE="Remove this .venv and recreate it? (y/N): "
+    ) else (
+        set /p RECREATE="Recreate? (y/N): "
+    )
     if /i "!RECREATE!"=="y" (
         echo Removing old environment...
         rmdir /s /q .venv
+        if exist ".venv\" (
+            echo [Error] Failed to remove old .venv
+            echo Please close any terminal or editor using .venv, then run install.bat again.
+            pause
+            exit /b 1
+        )
         !PYTHON_CMD! -m venv .venv
+        if !errorlevel! neq 0 (
+            echo.
+            echo [Error] Failed to create virtual environment
+            echo Python venv/ensurepip failed. Try repairing or reinstalling Python, then run install.bat again.
+            echo Selected Python: !PYTHON_CMD!
+            pause
+            exit /b 1
+        )
+    ) else if "!VENV_OK!"=="0" (
+        echo.
+        echo [Error] Existing .venv is incomplete or broken
+        echo Please rerun install.bat and choose y to recreate it, or remove .venv manually after checking it.
+        pause
+        exit /b 1
     )
 ) else (
     !PYTHON_CMD! -m venv .venv
+    if !errorlevel! neq 0 (
+        echo.
+        echo [Error] Failed to create virtual environment
+        echo Python venv/ensurepip failed. Try repairing or reinstalling Python, then run install.bat again.
+        echo Selected Python: !PYTHON_CMD!
+        pause
+        exit /b 1
+    )
 )
 
-if not exist .venv\Scripts\activate.bat (
+if not exist ".venv\Scripts\python.exe" (
+    echo [Error] Failed to create virtual environment Python
+    pause
+    exit /b 1
+)
+
+if not exist ".venv\Scripts\activate.bat" (
     echo [Error] Failed to create virtual environment
     pause
     exit /b 1
@@ -130,7 +180,14 @@ echo.
 
 :: Activate
 call .venv\Scripts\activate.bat
-python -m pip install --upgrade pip -q
+".venv\Scripts\python.exe" -m pip install --upgrade pip -q --no-cache-dir
+if !errorlevel! neq 0 (
+    echo.
+    echo [Error] Failed to upgrade pip
+    echo Please check your Python installation and network connection
+    pause
+    exit /b 1
+)
 
 :: ============================================
 :: Step 3: Hardware Detection
@@ -173,23 +230,23 @@ if %HAS_NVIDIA%==1 (
 
     if "!CUDA_CHOICE!"=="1" (
         echo Installing PyTorch with CUDA 12.6...
-        pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+        ".venv\Scripts\python.exe" -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu126
     ) else if "!CUDA_CHOICE!"=="2" (
         echo Installing PyTorch with CUDA 12.8...
-        pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+        ".venv\Scripts\python.exe" -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu128
     ) else if "!CUDA_CHOICE!"=="3" (
         echo Installing PyTorch with CUDA 13.0...
-        pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+        ".venv\Scripts\python.exe" -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu130
     ) else (
         echo Installing PyTorch CPU version...
-        pip install torch torchvision
+        ".venv\Scripts\python.exe" -m pip install --no-cache-dir torch torchvision
     )
 ) else (
     echo Installing PyTorch CPU version...
-    pip install torch torchvision
+    ".venv\Scripts\python.exe" -m pip install --no-cache-dir torch torchvision
 )
 
-if %errorlevel% neq 0 (
+if !errorlevel! neq 0 (
     echo.
     echo [Error] PyTorch installation failed
     echo Please check your network connection
@@ -206,9 +263,9 @@ echo.
 echo [5/5] Installing dependencies...
 echo.
 
-pip install -r requirements.txt
+".venv\Scripts\python.exe" -m pip install --no-cache-dir -r requirements.txt
 
-if %errorlevel% neq 0 (
+if !errorlevel! neq 0 (
     echo.
     echo [Error] Dependencies installation failed
     pause
@@ -217,13 +274,13 @@ if %errorlevel% neq 0 (
 
 echo.
 echo ============================================================
-echo    安装完成！
+echo    Setup complete!
 echo ============================================================
 echo.
-echo    启动方式: 双击 start.bat 或在命令行运行 start.bat
-echo    启动后将从 8501 开始自动选择可用端口，并显示实际访问地址
-echo    默认安装保证主流程可用；扩展文档格式可能仍需额外依赖
-echo    首次使用 Pipeline / Surya 时会联网下载模型，首次可能较慢
+echo    Start: double-click start.bat, or run start.bat in a terminal
+echo    The app will choose an available port starting from 8501
+echo    The default install covers the main PDF/image workflow
+echo    First Pipeline / Surya use may download models and take longer
 echo.
 echo ============================================================
 echo.
