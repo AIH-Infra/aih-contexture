@@ -1,51 +1,52 @@
 @echo off
 chcp 65001 >nul
+setlocal
 
-:: AIH-Contexture 启动脚本 (Windows)
+:: AIH-Contexture start script (Windows)
 
-:: 切换到脚本所在目录
+:: Switch to the script directory
 cd /d "%~dp0"
 
 echo.
 echo ==========================================
-echo   AIH-Contexture 启动中...
-echo   面向人文学科的文献结构化提取平台
+echo   Starting AIH-Contexture...
+echo   Literature structure extraction platform
 echo ==========================================
 echo.
 
-:: 检查虚拟环境
-if not exist .venv\Scripts\python.exe (
-    echo [错误] 未找到虚拟环境 Python
-    echo 请先运行 install.bat 安装
+:: Check virtual environment
+if not exist ".venv\Scripts\python.exe" (
+    echo [Error] Virtual environment Python not found
+    echo Please run install.bat first
     pause
     exit /b 1
 )
 
-:: 激活虚拟环境
+:: Activate virtual environment
 call .venv\Scripts\activate.bat
 
-:: 基础健康检查
-.venv\Scripts\python.exe -c "import streamlit, aih_contexture" >nul 2>nul
+:: Basic health check
+".venv\Scripts\python.exe" -c "import streamlit, aih_contexture" >nul 2>nul
 if %errorlevel% neq 0 (
-    echo [错误] 当前虚拟环境不完整，缺少 Streamlit 或项目依赖。
-    echo 请重新运行 install.bat 后再启动。
+    echo [Error] The virtual environment is incomplete
+    echo Missing Streamlit or project dependencies. Please run install.bat again.
     pause
     exit /b 1
 )
 
-:: 设置模型缓存目录
-set HF_HOME=%~dp0.cache\huggingface
-set TRANSFORMERS_CACHE=%~dp0.cache\huggingface
-set TORCH_HOME=%~dp0.cache\torch
+:: Set model cache directories
+set "HF_HOME=%~dp0.cache\huggingface"
+set "TRANSFORMERS_CACHE=%~dp0.cache\huggingface"
+set "TORCH_HOME=%~dp0.cache\torch"
 
-:: 启动应用
-echo 正在启动 Web 界面...
+:: Start application
+echo Starting the web UI...
 echo.
-echo 默认从 8501 开始自动选择可用端口
-echo 将监听所有本地网口，并在启动后显示本机/局域网访问地址
-echo 按 Ctrl+C 停止服务
+echo The app will choose an available port starting from 8501
+echo It will listen on local network interfaces and print access URLs
+echo Press Ctrl+C to stop
 echo.
 
-.venv\Scripts\python.exe contexture_app.py
+".venv\Scripts\python.exe" contexture_app.py
 
 pause
