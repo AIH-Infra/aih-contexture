@@ -8,7 +8,8 @@
 set -e
 
 # 切换到脚本所在目录
-cd "$(dirname "$0")"
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+cd "$SCRIPT_DIR"
 
 # 镜像源配置
 MIRROR_URL="https://pypi.tuna.tsinghua.edu.cn/simple"
@@ -17,12 +18,12 @@ USE_MIRROR=0
 # pip安装函数：失败自动切换镜像
 pip_install() {
     if [ $USE_MIRROR -eq 1 ]; then
-        pip install "$@" -i "$MIRROR_URL"
+        "$VENV_PYTHON" -m pip install "$@" -i "$MIRROR_URL"
     else
-        if ! pip install "$@" 2>/dev/null; then
+        if ! "$VENV_PYTHON" -m pip install "$@" 2>/dev/null; then
             echo "[提示] 官方源连接失败，切换到清华镜像..."
             USE_MIRROR=1
-            pip install "$@" -i "$MIRROR_URL"
+            "$VENV_PYTHON" -m pip install "$@" -i "$MIRROR_URL"
         fi
     fi
 }
@@ -106,16 +107,29 @@ echo "[2/5] 创建虚拟环境..."
 
 if [ -d ".venv" ]; then
     echo "[提示] 检测到已有虚拟环境 .venv"
-    read -p "是否重新创建? (y/N): " RECREATE
+    if [ ! -x ".venv/bin/python" ] || [ ! -f ".venv/bin/activate" ]; then
+        echo "[警告] 当前 .venv 不完整或已损坏。"
+        read -r -p "是否移除本目录中的 .venv 并重新创建? (y/N): " RECREATE
+    else
+        read -r -p "是否移除本目录中的 .venv 并重新创建? (y/N): " RECREATE
+    fi
     if [ "$RECREATE" = "y" ] || [ "$RECREATE" = "Y" ]; then
         rm -rf .venv
+        if [ -d ".venv" ]; then
+            echo "[错误] 无法移除旧的 .venv。请关闭占用它的终端或编辑器后重试。"
+            exit 1
+        fi
         $PYTHON_CMD -m venv .venv
+    elif [ ! -x ".venv/bin/python" ] || [ ! -f ".venv/bin/activate" ]; then
+        echo "[错误] 当前 .venv 不完整或已损坏。"
+        echo "请重新运行安装脚本并选择 y 重建，或检查后手动移除 .venv。"
+        exit 1
     fi
 else
     $PYTHON_CMD -m venv .venv
 fi
 
-if [ ! -f ".venv/bin/activate" ]; then
+if [ ! -x ".venv/bin/python" ] || [ ! -f ".venv/bin/activate" ]; then
     echo "[错误] 虚拟环境创建失败"
     exit 1
 fi
@@ -125,6 +139,7 @@ echo ""
 
 # 激活虚拟环境
 source .venv/bin/activate
+VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python"
 
 # 升级 pip
 echo "升级 pip..."
@@ -188,6 +203,31 @@ echo "[5/5] 安装项目依赖..."
 echo ""
 
 pip_install -r requirements.txt
+
+echo ""
+echo "[可选] 检测 Tesseract OCR..."
+if command -v tesseract >/dev/null 2>&1; then
+    echo "[Found] $(command -v tesseract)"
+    tesseract --version | head -n 1 || true
+else
+    echo "[提示] 未发现 Tesseract。Tesseract OCR 后端是可选项，主安装不受影响。"
+    if [ $IS_MAC -eq 1 ]; then
+        if command -v brew >/dev/null 2>&1; then
+            read -r -p "是否尝试通过 Homebrew 安装 Tesseract? (y/N): " INSTALL_TESS
+            if [ "$INSTALL_TESS" = "y" ] || [ "$INSTALL_TESS" = "Y" ]; then
+                brew install tesseract || true
+            fi
+        else
+            echo "macOS 可安装 Homebrew 后运行: brew install tesseract"
+        fi
+    else
+        echo "Linux 常见安装命令:"
+        echo "  Ubuntu/Debian: sudo apt install tesseract-ocr"
+        echo "  Fedora:        sudo dnf install tesseract"
+        echo "  Arch:          sudo pacman -S tesseract"
+    fi
+    echo "也可以设置 CONTEXTURE_TESSERACT_CMD 指向 tesseract 可执行文件。"
+fi
 
 echo ""
 echo "╔════════════════════════════════════════════════════════════════════╗"
