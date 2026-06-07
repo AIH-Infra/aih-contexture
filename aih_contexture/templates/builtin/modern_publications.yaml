@@ -1,0 +1,58 @@
+# 现代出版物模板
+# 针对现代书籍、期刊、论文等的默认配置
+
+name: "Modern Publications"
+scenario: "modern_publications"
+description: "针对现代出版物的默认配置，适用于大多数当代文档"
+version: "1.0"
+author: "Marker Community"
+tags:
+  - "modern"
+  - "books"
+  - "journals"
+  - "papers"
+  - "default"
+
+layout:
+  layout_backend: "surya"
+  reading_direction: "ltr"
+  column_layout: "auto"
+  expected_block_types:
+    - "Text"
+    - "SectionHeader"
+    - "ListItem"
+    - "Table"
+    - "Figure"
+    - "Equation"
+    - "Code"
+    - "Caption"
+    - "Footnote"
+  expand_block_types:
+    - "Picture"
+    - "Figure"
+    - "ComplexRegion"
+  max_expand_frac: 0.05
+
+ocr:
+  ocr_backend: "surya"
+  language_hints: []
+  force_ocr: false  # 现代 PDF 通常有文本层
+  ocr_batch_size: 32
+
+page_numbering:
+  enabled: true
+  format: "arabic"
+  use_printed_page_number: false
+  printed_number_location: "footer"
+
+metadata:
+  document_type: "modern"
+  typical_content:
+    - "academic papers"
+    - "textbooks"
+    - "journals"
+    - "reports"
+  features:
+    - "good quality scans"
+    - "embedded text layer"
+    - "structured content"

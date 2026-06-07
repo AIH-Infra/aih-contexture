@@ -1,0 +1,55 @@
+# 中国古籍模板
+# 针对传统中国古籍的优化配置
+
+name: "Chinese Ancient Books"
+scenario: "chinese_ancient_books"
+description: "针对中国古籍的优化配置，支持竖排文字、古典页码格式"
+version: "1.0"
+author: "Marker Community"
+tags:
+  - "chinese"
+  - "ancient"
+  - "classical"
+  - "vertical"
+
+layout:
+  layout_backend: "surya"  # 后续强版面识别将通过 MinerU/Paddle layout adapter 接入
+  reading_direction: "ttb"  # 从上到下（竖排）
+  column_layout: "single"
+  expected_block_types:
+    - "Text"
+    - "SectionHeader"
+    - "Footnote"
+    - "PageHeader"
+    - "PageFooter"
+  expand_block_types:
+    - "Picture"
+    - "Figure"
+  max_expand_frac: 0.03
+
+ocr:
+  ocr_backend: "surya"  # 可切换为 calamari + gt4histocr 模型
+  language_hints:
+    - "zh-classical"
+    - "zh"
+  force_ocr: false
+  ocr_batch_size: 24
+
+page_numbering:
+  enabled: true
+  format: "chinese"
+  use_printed_page_number: true
+  printed_number_location: "center"
+  leaf_notation: true  # 使用叶记法
+  custom_pattern: "第?[一二三四五六七八九十百千]+[頁葉页叶]?"
+  volume_prefix: null  # 可设置为 "卷" 等
+
+metadata:
+  culture: "chinese"
+  era: "ancient"
+  text_direction: "vertical"
+  typical_formats:
+    - "线装书"
+    - "刻本"
+    - "抄本"
+    - "石印本"

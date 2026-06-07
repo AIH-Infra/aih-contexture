@@ -1,0 +1,61 @@
+# AIH-Contexture 默认安装依赖
+# Python 3.10-3.12 (推荐 3.12，不支持 3.13+)
+# 注意：PyTorch 由安装脚本根据硬件自动安装
+# 默认安装保证主 PDF/image 流程与官方 GUI/server 入口可用
+# DOCX / XLSX / PPTX / EPUB / HTML 等扩展格式依赖不在此文件中
+
+# 核心基础
+Pillow>=10.4.0,<11
+pydantic>=2.12.0
+pydantic-settings>=2.12.0
+python-dotenv>=1.2.0
+tqdm>=4.67.0
+click>=8.3.0
+regex>=2024.11.0
+ftfy>=6.3.0
+rapidfuzz>=3.14.0
+filetype>=1.2.0
+PyYAML>=6.0.3
+
+# 数值计算
+numpy>=2.3.0
+scikit-learn>=1.8.0
+
+# PDF & 文档处理
+pypdf>=6.6.0
+pypdfium2>=4.30.0
+PyMuPDF>=1.26.0
+pdftext>=0.6.3,<0.7.0
+
+# OCR 图像处理
+opencv-python-headless>=4.11.0
+
+# HTML & Markdown
+markdownify>=1.1.0
+markdown2>=2.5.4
+beautifulsoup4>=4.14.0
+lxml>=4.9.0
+
+# LLM API
+openai>=1.109.0
+google-genai>=1.60.0
+anthropic>=0.46.0
+
+# 网络请求
+requests>=2.32.0
+aiohttp>=3.13.0
+
+# Web UI & Server
+streamlit>=1.53.0
+streamlit-ace
+fastapi>=0.115.4
+uvicorn>=0.32.0
+python-multipart>=0.0.16
+
+# 系统工具
+psutil>=7.2.0
+
+# 深度学习相关（torch 安装后）
+transformers>=4.57.0,<5.0.0
+huggingface-hub>=0.20.0
+surya-ocr>=0.17.0

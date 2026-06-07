@@ -1,0 +1,105 @@
+[tool.poetry]
+name = "aih-contexture"
+version = "0.5.0"
+description = "Weaving Data from History - 面向人文学科的文献结构化提取平台"
+authors = ["Güriedrich & Baireinhold <aih-infra@example.com>"]
+readme = "README.md"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/AIH-Infra/aih-contexture"
+keywords = ["pdf", "markdown", "ocr", "humanities", "digital-humanities", "historical-documents"]
+packages = [
+    {include = "aih_contexture"}
+]
+include = [
+    "aih_contexture/scripts/*.sh",
+    "aih_contexture/scripts/*.html",
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+Pillow = "^10.1.0"
+pydantic = "^2.4.2"
+pydantic-settings = "^2.0.3"
+transformers = "^4.45.2"
+python-dotenv = "^1.0.0"
+torch = "^2.7.0"
+tqdm = "^4.66.1"
+ftfy = "^6.1.1"
+rapidfuzz = "^3.8.1"
+surya-ocr = "^0.17.0"
+regex = "^2024.4.28"
+pdftext = "~0.6.3"
+markdownify = "^1.1.0"
+click = "^8.2.0"
+markdown2 = "^2.5.2"
+filetype = "^1.2.0"
+google-genai = "^1.0.0"
+anthropic = "^0.46.0"
+scikit-learn = "^1.6.1"
+openai = "^1.65.2"
+PyYAML = "^6.0.3"
+numpy = "^2.3.0"
+pypdf = "^6.6.0"
+pypdfium2 = "^4.30.0"
+PyMuPDF = "^1.26.0"
+opencv-python-headless = "^4.11.0"
+beautifulsoup4 = "^4.14.0"
+requests = "^2.32.0"
+aiohttp = "^3.13.0"
+streamlit = "^1.53.0"
+streamlit-ace = "*"
+fastapi = "^0.115.4"
+uvicorn = "^0.32.0"
+python-multipart = "^0.0.16"
+psutil = "^7.2.0"
+huggingface-hub = "^0.20.0"
+lxml = "^5.3.0"
+
+# Optional dependencies for extended document formats
+mammoth = {version = "^1.9.0", optional = true}
+openpyxl = {version = "^3.1.5", optional = true}
+python-pptx = {version = "^1.0.2", optional = true}
+ebooklib = {version = "^0.18", optional = true}
+weasyprint = {version = "^63.1", optional = true}
+
+[tool.poetry.group.dev.dependencies]
+jupyter = "^1.0.0"
+datasets = "^2.21.0"
+pytest = "^8.3.3"
+pytest-mock = "^3.14.0"
+apted = "1.0.3"
+distance = "0.1.3"
+tabulate = "^0.9.0"
+latex2mathml = "^3.77.0"
+playwright = "^1.49.1"
+
+[tool.poetry.extras]
+full = ["mammoth", "openpyxl", "python-pptx", "ebooklib", "weasyprint"]
+
+[tool.poetry.scripts]
+contexture = "aih_contexture.scripts.convert:convert_cli"
+contexture_single = "aih_contexture.scripts.convert_single:convert_single_cli"
+contexture_chunk = "aih_contexture.scripts.chunk_convert:chunk_convert_cli"
+contexture_gui = "aih_contexture.scripts.run_streamlit_app:streamlit_app_cli"
+contexture_extract = "aih_contexture.scripts.run_streamlit_app:extraction_app_cli"
+contexture_server = "aih_contexture.scripts.server:server_cli"
+contexture_middle = "aih_contexture.scripts.middle:middle_cli"
+contexture_import_document = "aih_contexture.scripts.import_external_document:import_external_document_cli"
+contexture_import_vlm_json = "aih_contexture.scripts.import_vlm_json:import_vlm_json_cli"
+contexture_import_ocr_direct = "aih_contexture.scripts.import_ocr_direct:import_ocr_direct_cli"
+contexture_import_layout = "aih_contexture.scripts.import_external_layout:import_external_layout_cli"
+contexture_import_ocr = "aih_contexture.scripts.import_external_ocr:import_external_ocr_cli"
+contexture_paddle_ocr = "aih_contexture.scripts.paddle_ocr:paddle_ocr_cli"
+contexture_paddle_sidecar = "aih_contexture.scripts.paddle_sidecar:paddle_sidecar_cli"
+contexture_paddle_structure = "aih_contexture.scripts.paddle_structure:paddle_structure_cli"
+contexture_backends = "aih_contexture.scripts.backends:backends_cli"
+contexture_doctor = "aih_contexture.scripts.doctor:doctor_cli"
+contexture_eval_layout = "aih_contexture.scripts.evaluate_layout:evaluate_layout_cli"
+contexture_eval_markdown = "aih_contexture.scripts.evaluate_markdown:evaluate_markdown_cli"
+contexture_download_layout_smoke = "aih_contexture.scripts.download_layout_smoke:download_layout_smoke_cli"
+contexture_visualize_layout = "aih_contexture.scripts.visualize_layout:visualize_layout_cli"
+contexture_compare_layout = "aih_contexture.scripts.compare_layout:compare_layout_cli"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

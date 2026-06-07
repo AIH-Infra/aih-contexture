@@ -1,0 +1,53 @@
+# 德语哥特体/黑体字模板
+# 针对德语 Fraktur/Gothic 字体文档的优化配置
+
+name: "German Gothic Print"
+scenario: "german_gothic_print"
+description: "针对德语哥特体（Fraktur）字体文档的优化配置，适用于历史德语文献"
+version: "1.0"
+author: "Marker Community"
+tags:
+  - "german"
+  - "gothic"
+  - "fraktur"
+  - "historical"
+  - "blackletter"
+
+layout:
+  layout_backend: "surya"
+  reading_direction: "ltr"
+  column_layout: "auto"
+  expected_block_types:
+    - "Text"
+    - "SectionHeader"
+    - "Footnote"
+    - "Caption"
+  expand_block_types:
+    - "Picture"
+    - "Figure"
+  max_expand_frac: 0.05
+
+ocr:
+  ocr_backend: "calamari"  # Calamari 对哥特体有专门的模型
+  calamari_base_url: "http://localhost:11800"
+  calamari_model: "gt4histocr"  # German Text 4 Historical OCR
+  calamari_sequential_mode: false
+  language_hints:
+    - "de-frak"
+    - "de"
+  force_ocr: true  # 哥特体 PDF 的文本层通常不可靠
+  ocr_batch_size: 32
+
+page_numbering:
+  enabled: true
+  format: "arabic"
+  use_printed_page_number: false
+  printed_number_location: "footer"
+
+metadata:
+  culture: "german"
+  era: "historical"
+  font_type: "fraktur"
+  typical_eras:
+    - "15th-20th century"
+  notes: "Fraktur was the standard German typeface until 1941"
