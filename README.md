@@ -2,7 +2,7 @@
 
 **经纬万卷，结构古今 · Weaving Data from History**
 
-> 将文献转化为可被学术引用的数字材料——面向人文学科研究者的文献结构化基础设施
+> 面向人文学科的文献结构化基础设施：把 PDF、图像和已有 Markdown 转换为可追溯、可校阅、可进入知识库的学术材料。
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
@@ -11,225 +11,118 @@
 
 ## 项目定位
 
-**經緯·Contexture** 是 [AIH-Infra（人文学科人工智能基础设施）](https://github.com/AIH-Infra) 的材料线基座。它不是任何现有项目的分支，而是一个面向不同问题域的独立项目。
+**經緯·Contexture** 是 [AIH-Infra（人文学科人工智能基础设施）](https://github.com/AIH-Infra) 的材料线基座。
 
-现有的文档处理工具（Marker、MinerU、Docling、olmOCR 等）都在回答同一个问题：**"如何更准确地把文档变成文本？"** 它们竞争的是精度、速度、格式覆盖。
+普通文档解析工具通常回答的是：
 
-Contexture 回答的是一个不同的问题：**"如何让数字化的文献能够被学术引用？"**
+> 如何更准确地把文档转换为文本？
 
-如果数字化材料不能被准确引用，它就不能进入学术流通；不能进入学术流通，数字化就失去了对人文学科的意义。
+Contexture 关注的是另一个问题：
 
-在人文学科中，**可追溯性**是学术伦理的基石：
+> 如何让数字化文献重新具备学术引用、证据追溯和人工校阅的条件？
 
-- 每一条引用必须能够返回原书的那一页
-- 每一个判断必须能够被他人检验与反驳
-- 每一份材料必须保留其版本与来源信息
+在人文学科中，文本不是孤立字符串。它总是依附于版本、页码、版式、脚注、边注、行内注、图表、手写批注和引用传统。Contexture 的目标不是替代所有底层 OCR 或 VLM 模型，而是在这些模型之上提供一层面向学术规范的结构化框架。
 
-Contexture 将这一学术传统转化为技术规范，通过**页码锚点系统**确保 AI 时代的知识生产依然可以被追溯、被验证、被传承。
+核心输出链路：
 
-### 0.5 层框架
-
-Contexture 既不做底层模型（那是 Surya/Chandra/Gemini 的事），也不做最终的学术应用（那是 RAG/知识图谱的事），而是在两者之间提供一个**约束于人文学术规范之下的开源框架**。底层引擎是可替换的插槽，而无论走哪条路径，页码锚点、边注处理器、行内注处理器都一致地工作。
-
-```
-┌─────────────────────────────────────────────────┐
-│  上层应用（规划中）                                │
-│  朴素 RAG → Graph RAG → Agent RAG               │
-├─────────────────────────────────────────────────┤
-│  0.5 层：經緯·Contexture                         │
-│  页码锚点 · 边注识别 · 行内注 · 模板 · 配置共享   │
-├─────────────────────────────────────────────────┤
-│  底层引擎（可替换）                                │
-│  Surya · Chandra · Gemini · Claude · Calamari    │
-│  MinerU/Paddle layout adapters · 未来自研模型     │
-└─────────────────────────────────────────────────┘
+```text
+PDF / Image / Markdown
+  -> Pipeline / VLM / Postprocess
+  -> Middle JSON
+  -> Scholarly Markdown / HTML / JSON / Chunks
+  -> RAG / 知识库 / 证据导出
 ```
 
 ---
 
-## 核心创新
+## 与 Datalab Marker 的关系
 
-### 1. 页码锚点系统——学术伦理的技术实现
+Contexture 的早期 pipeline 模式以 [Datalab Marker](https://github.com/VikParuchuri/marker) 为重要学习参照和 GPL-3.0 继承基座。项目保留了早期 git 历史，因此 GitHub contributors 中会包含 Marker 原始历史中的参与者；这是对开源来源和贡献历史的保留，而不是将这些贡献者声明为当前 AIH-Infra 架构设计的作者。
 
-所有其他项目（Marker、MinerU、Docling、olmOCR）在转换文档时**主动丢弃页码信息**。对工程文档无所谓，但对人文学科是致命的：学者引用"《论语注疏》卷一，第三叶"，如果数字化后无法定位"第三叶"，这份数字化材料就退出了学术流通。
+更准确地说：
 
-Contexture 的解决方案是双重标记系统：
+- **历史上**：Contexture 的 0.1 阶段从 Marker 的 PDF -> Markdown pipeline、处理器链和 Surya 生态中学习并继承了基础形态。
+- **法律与开源合规上**：本项目继续使用 GPL-3.0-or-later，并在 `NOTICE` 中保留 Datalab / Marker / Surya / PDFText 等来源声明。
+- **在架构上**：Contexture 一开始便不是 Marker 的简单封装或改名版本，而是围绕人文学科可追溯性重构出的独立框架。
+
+相对于最初的 pipeline 基座，当前版本已经形成了几项关键扩展：
+
+- Pipeline 模式完成后端解耦，Layout、OCR、VLM 能力可通过 registry/catalog 诊断和配置。
+- 新增 **VLM 泛化模式**，支持通过 OpenAI-compatible、Gemini、Claude 等服务进行整页理解。
+- 新增 **VLM 特化模式**，支持 Chandra、Churro、PaddleOCR-VL、MinerU-VL 等专用文档模型路径。
+- 新增 **Middle JSON** 作为跨后端、跨模式的事实层。
+- 新增 **Scholarly Markdown**，面向人工校阅和学术引用。
+- 新增双重页码锚点、边注、行内注、古典引用系统等人文学科专用处理能力。
+
+因此，Contexture 对 Marker 的关系可以概括为：
+
+> Marker 是早期 pipeline 的重要开源基座与学习来源；Contexture 是在保留来源承认和 GPL 继承的前提下，面向人文学术可追溯性发展出的独立项目。
+
+---
+
+## 核心能力
+
+### 1. 双重页码锚点
+
+Contexture 将页码视为学术证据链的一部分，而不是排版噪声。
 
 ```markdown
-{0}                          ← 机器锚点（PDF 物理页索引，程序定位用）
+{192}
 
 ---
-<!-- Page: XXI -->  
-<!-- Page: 155 -->  
-<!-- Page: 卷一·叶三 -->     ← 人类可读标记（印刷页码，学者引用用）
+<!-- Page: 170 -->
 
-正文内容...
+正文内容……
 ```
 
-技术实现由三个组件构成：
-- **PageAnchorFormatter**：生成 `{n}` 格式锚点，包装格式可配置
-- **PrintedPageExtractor**：从 VLM 输出中按正则优先级提取印刷页码，支持阿拉伯/罗马/中文数字
-- **PageAnchorPlugin**：统一注入逻辑，三种转换模式共享同一实例，确保输出格式一致
+- `{192}`：PDF 机器页码，用于程序定位原始物理页。
+- `<!-- Page: 170 -->`：印刷页码，用于人类引用书籍实际页码。
 
-机器锚点与人类标记分离：`{n}` 用于程序定位（RAG 检索时回溯原文位置），`<!-- Page -->` 用于人类阅读。同一份输出既能被下游程序消费，又能被学者直接阅读引用。
+这使下游 RAG、知识库和证据导出能够从回答追溯回原始文献页。
 
-**本功能已通过系统验证和优化**
+### 2. Middle JSON 事实层
 
-### 2. 边注处理器——跨文明引用系统的首次技术识别
+Middle JSON 是 Contexture 的中间表示和系统契约。它把不同来源的文档解析结果统一为页面、块、span、bbox、provenance、printed page 等结构。
 
-目前所有文档处理工具中独有的功能。算法基于位置判断 + 内容模式匹配 + 字体大小验证的三重规则，识别七种边注类型：
+当前支持的典型块类型包括：
 
-| 类型 | 识别规则 | 学术背景 |
+- 基础文本：`Text`, `SectionHeader`, `ListItem`, `Code`
+- 页面结构：`PageHeader`, `PageFooter`, `PageNumber`
+- 学术注释：`Footnote`, `MarginalNote`, `InlineAnnotation`, `Reference`
+- 视觉元素：`Figure`, `Picture`, `ImageDescription`, `Caption`
+- 结构化内容：`Table`, `Equation`, `Form`, `TableOfContents`
+- 特殊区域：`Handwriting`, `ComplexRegion`
+
+### 3. 多模式转换架构
+
+| 模式 | 核心思路 | 适合场景 |
 |------|----------|----------|
-| 版心叶码 | 版心中线 + 含"卷/叶/第/页" | 中国古籍版心刻印的卷次叶码 |
-| 鱼尾装饰 | 版心中线 + 短文本 + 非字母数字 | 中国古籍版心的鱼尾纹饰 |
-| Stephanus 编码 | `^\d{3,4}[a-e]\d*$` | 1578 年柏拉图全集标准引用系统，沿用至今 |
-| Bekker 编码 | `^\d{4}[ab]\d+$` | 1831 年亚里士多德全集标准引用系统 |
-| 行号 | 边栏 + 纯数字 + ≤4字符 | 批判版文本的行号标记 |
-| 书耳 | 上边栏 + <20字符 | 页眉短标题 |
-| 眉批 | 上边栏 + 20-100字符 | 页面上方的批注文字 |
+| Pipeline | Layout -> OCR -> Processor -> Renderer | 结构清晰、需要可审计流程的 PDF/图片 |
+| VLM 泛化 | 整页图像交给通用视觉语言模型理解 | 复杂版面、混合内容、无需本地 GPU 的场景 |
+| VLM 特化 | 使用专用文档 VLM 或 OCR-VL 模型 | 历史文献、复杂结构、特定模型擅长的文档类型 |
+| Markdown 后处理 | 修复已有 Markdown 或 Middle JSON | 已有转换结果，只需页码、结构或格式修复 |
 
-Stephanus 编码和 Bekker 编码的识别尤其值得注意：这两套编码系统分别是柏拉图研究和亚里士多德研究延续了数百年的标准定位体系。Contexture 是第一个在 OCR 后处理中识别这些编码系统的工具。
+### 4. 可替换后端
 
-**注意：**目前为实验性功能，需要特定模型支持，尚未大范围验证和优化
+Contexture 不把自己绑定到某一个底层模型。Layout、OCR、VLM 后端由能力目录、registry 和诊断机制管理。
 
-### 3. 行内注处理器——古籍排版微观结构的首次形式化
+| 类别 | 当前/可选后端示例 |
+|------|-------------------|
+| Layout | Surya, VLM Layout, External Layout Sidecar, MinerU, PaddleOCR Layout |
+| OCR | Surya, VLM OCR, Calamari, PaddleOCR, PaddleOCR-VL, Tesseract |
+| VLM | OpenAI-compatible, Gemini, Claude, Chandra, Churro, PaddleOCR-VL, MinerU-VL |
 
-中日古籍中大量存在"正文中嵌入小字注释"的排版形式，所有通用 OCR 工具都无法正确处理。算法采用四重并行判断（字体比例、格式标记、括号包裹、多行高度），细分为五种类型：
+### 5. 人文学科专用结构
 
-| 类型 | 判断条件 | 学术背景 |
-|------|----------|----------|
-| 括号注 | 括号包裹 | 现代学术注释的通用形式 |
-| 双行小字 | 同块字体差异>30% | 中国古籍正文行间的双行小字注 |
-| 夹注 | font_ratio<0.7 且 len<30 | 日本古籍正文中插入的短注 |
-| 割注 | font_ratio<0.7 且 30≤len<100 | 日本古籍正文中插入的长注 |
-| 其他小字注 | 不满足以上条件的小字文本 | 兜底分类 |
+Contexture 提供或规划了面向人文学科材料的结构识别：
 
-夹注与割注的区分（以 30 字符为界）反映了日本古典文献学的专业分类。这种粒度的处理在整个文档处理领域是前所未有的。
+- 印刷页码、罗马数字页码、中文叶码
+- 脚注、边注、行内小字注
+- Stephanus / Bekker 等古典研究引用系统
+- 版心叶码、书耳、眉批等古籍版式元素
+- 面向 RAG 的 chunk 输出与页码元数据
 
-**注意：**目前为实验性功能，需要特定模型支持，尚未大范围验证和优化
-
-### 4. 四主线架构——容纳一切底层技术的框架
-
-| 模式 | 底层引擎 | 适用场景 |
-|------|----------|----------|
-| Pipeline | Surya / Calamari / VLM；后续 MinerU/Paddle layout adapter | 现代出版物，需精细控制，可审计 |
-| VLM 泛化 | Gemini / Claude / OpenAI / 自定义 | 批量处理，速度优先，通用兜底 |
-| VLM 特化 | Chandra / Churro / OLMoCR | 历史文献，手写/复杂版式 |
-| Markdown 后处理 | 规则修复 / 可选 LLM | 已有 Markdown 的页码和结构修复 |
-
-底层引擎是可替换的插槽。今天用 Surya，明天可以换成自研的 layout 模型；今天用 Chandra，明天可以接入更好的特化 VLM。框架本身不被任何一个底层技术绑定。
-
-VLM 泛化模式完全绕过本地模型，直接将页面图像发给云端 VLM。这意味着即使没有 GPU，只要有 API key，就能处理文献。对于资源有限的个体研究者，这是关键的可及性设计。
-
----
-
-## 使用指南
-
-Contexture 面向人文学科研究者和研究小团队，提供三种处理模式，覆盖从标准化书籍到复杂历史文献的各类场景。
-
-### 四条处理主线总览
-
-| 模式 | 核心思路 | 适合场景 | 成本 | 速度 |
-|------|---------|---------|------|------|
-| Pipeline（流水线） | 布局检测 + OCR 分步处理 | 结构清晰、版式规范的书籍文档，可对每个环节进行高精度的标准化控制 | 低（可纯本地部署） | 快 |
-| VLM 泛化 | 大模型整页理解 + 页码锚点系统 + Markdown语法约束 | 当 Pipeline 和特化模式均无法良好处理时的通用兜底方案；复杂版面、混合内容、非标准排版 | 中（需调用云端API） | 中 |
-| VLM 特化 | 经过指令微调/二次训练的中小参数VLM逐页处理 | 特定领域文档，模型在该领域训练数据充分时精度极高；超出训练领域会产生严重幻觉 | 低-中（推荐本地部署） | 中 |
-| Markdown 后处理 | 对已有 Markdown 做页码/结构修复 | 已经有转换结果，只需修复页码或做保守清理 | 低 | 快 |
-
-### Pipeline 模式
-
-Pipeline 分为两个阶段：先做**布局检测**（识别页面中的文本块、表格、图片等区域），再对识别出的区域做 **OCR 文字提取**。两个阶段的后端可独立选择。
-
-#### 第一阶段：布局检测后端
-
-| 后端 | 特点 | 适合文档类型 | 备注 |
-|------|------|-------------|------|
-| Surya | 通用、快速、本地运行 | 现代排版的学术论文、书籍 | 默认选项，需本地GPU加速 |
-| VLM | 用大模型做布局分析，语义理解力强 | 复杂版面（多栏、图文混排、非标准布局） | 需API |
-| MinerU/Paddle adapter | 规划中的强版面识别后端 | 表格密集、图表多、复杂历史文献 | 进入 backend registry 后接入 |
-
-#### 第二阶段：OCR 后端（五选一）
-
-| 后端 | 特点 | 适合文档类型 |
-|------|------|-------------|
-| 无 | 跳过OCR，直接提取PDF内嵌文字层 | 拥有良好内嵌文字的PDF：Google Books扫描件（附带文本层）、有原生文本层的现代PDF、经专业OCR软件处理后已附加文本层的清晰出版物 |
-| Surya | 现代OCR，速度快 | 现代印刷体文档。需本地GPU加速 |
-| Calamari | 专攻欧洲历史字体 | 哥特体(Fraktur)、19世纪古体印刷、拉丁古体。需本地TensorFlow深度学习环境支持 |
-| VLM | 用大模型做OCR，三种粒度可选（见下表） | 手写体混排、复杂版面中的文字 |
-| Tesseract | 传统OCR，可调PSM/OEM | 简单排版、快速批量处理（后续集成） |
-
-#### Pipeline VLM-OCR 的三种处理粒度
-
-| 粒度 | 说明 | 适合场景 |
-|------|------|---------|
-| Tile（切块） | 逐个文本块送入模型 | 精确控制，适合规整排版 |
-| Merge（合并） | 合并相邻文本块后处理 | 减少API调用，适合段落密集文档 |
-| Full Page（整页） | 整页图像直接送入模型 | 版面复杂、切块反而丢失上下文时 |
-
-### VLM 泛化模式
-
-不经过布局检测，由大模型直接理解整页内容并输出结构化 Markdown。输出经过页码锚点系统和 Markdown 语法体系的约束，并非简单的"丢给模型就完事"。适合作为其他两种模式无法良好覆盖时的通用兜底方案。
-
-#### 文档模板（四个预设 + 自定义）
-
-| 模板 | 适合文档 |
-|------|---------|
-| 现代出版物 | 学术论文、现代书籍、报告 |
-| 中文古籍 | 竖排文本、繁体字、线装书 |
-| 德文哥特印刷 | Fraktur字体、历史拼写、19世纪德文文献 |
-| 档案文献 | 手写批注、印章、混合手写/印刷 |
-| 自定义 | 以上都不匹配时，手动配置文字方向、语言、年代等 |
-
-#### 推荐模型（经实测验证）
-
-| 模型 | 推荐等级 | 说明 |
-|------|---------|------|
-| Gemini 3 Pro | ★★★★★ | 综合表现最优 |
-| Gemini 3 Flash | ★★★★ | 性价比高，速度更快 |
-| Qwen VL-Max | ★★★ | 中文场景表现良好 |
-| Qwen VL 小参数系列 | ★★-★★★ | 在特定领域可达验收级别，成本最低 |
-
-#### API 提供商（三选一）
-
-| 提供商 | 说明 |
-|--------|------|
-| OpenAI兼容 | 任何兼容OpenAI接口的服务（含本地LM Studio） |
-| Gemini | Google Gemini 系列模型，支持原生调用及中转模式 |
-| Anthropic | Claude 系列模型，支持原生调用及中转模式 |
-
-### VLM 特化模式
-
-采用经过指令集微调和二次训练的中小参数VLM，推荐通过 LM Studio 等工具本地部署。
-
-**关键限制**：模型效果严格依赖其训练领域。在训练数据覆盖的文档类型上精度极高，但超出适用范围会产生严重幻觉，输出不可信。选用前务必确认模型的训练领域与目标文档匹配。
-
-#### 可用模型
-
-以下模型均为千万级参数VL模型经指令集微调和后训练产生的特化VLM：
-
-| 模型 | 训练领域 | 适合文档 | 状态 |
-|------|---------|---------|------|
-| Chandra OCR | 多语种印刷体OCR | 清晰印刷文档、多语种混排、英文手写 | 已集成 |
-| Churro | 特化OCR | 特定领域文档 | 下一版本正式集成 |
-| OLMoCR | 特化OCR | 通用领域文档 | 下一版本正式集成 |
-
-#### 批处理策略（三选一）
-
-| 策略 | 说明 | 适合场景 |
-|------|------|---------|
-| 自动 | 根据页数自动决定 | 一般情况 |
-| 单批次 | 所有页面一次性并发 | 页数少、本地GPU算力充裕 |
-| 分批次 | 分组处理，批间休息 | 页数多、显存有限 |
-
-### 跨模式通用功能
-
-| 功能 | 说明 |
-|------|------|
-| **页码锚点系统** | 核心基础设施。为每页注入结构化锚点（`{1}` `{2}` ...），支持印刷页码识别（阿拉伯数字/罗马数字/中文数字）、自定义编号映射。锚点贯穿全部三种模式，是后续引用定位、区间提取、学术引用的基础 |
-| 页码范围 | 只处理指定页（如第5-20页），三个模式均支持，节省时间和API成本 |
-| 输出格式 | Markdown / JSON / HTML / Chunk（RAG分块） |
-| **配置导入/导出** | 所有模式的配置面板均支持导入和导出，方便保存成功经验、团队间交流分享最佳实践配置 |
+部分边注、行内注和古典引用识别仍属于实验性能力，效果依赖底层模型和文档质量。
 
 ---
 
@@ -237,170 +130,200 @@ Pipeline 分为两个阶段：先做**布局检测**（识别页面中的文本�
 
 ### 环境要求
 
-- Python 3.10 / 3.11 / 3.12（推荐 3.12）
-- Windows 10/11 或 macOS（Intel / Apple Silicon 均可）
-- 如需使用 Pipeline 模式的本地 OCR/布局检测，建议配备 NVIDIA GPU
+- Python 3.10+
+- Windows / macOS / Linux
+- Pipeline 本地模型推荐 CUDA GPU；VLM 泛化模式可只使用 API key
+- 推荐内存 16 GB+
 
-### 方式一：一键安装（推荐）
+### 一键安装
 
-项目提供了自动化安装脚本，会自动创建虚拟环境、检测硬件、安装 PyTorch，并安装默认依赖集合（主 PDF/image 流程 + 官方 GUI/server 入口）。
+Windows：
 
-**Windows：**
-
-双击 `install.bat`，按提示等待安装完成。
-
-**macOS：**
-
-首次使用前，需要在终端中赋予脚本执行权限（只需执行一次，之后永久生效）：
-
-```bash
-# 在终端中进入项目目录，然后执行：
-chmod +x install.command start.command install.sh start.sh
+```powershell
+.\install.bat
 ```
 
-之后双击 `install.command` 即可开始安装。
+macOS / Linux：
 
-> 如果双击后系统提示"无法打开，因为无法验证开发者"，请前往「系统设置 → 隐私与安全性」，点击「仍要打开」。
+```bash
+chmod +x install.sh start.sh
+./install.sh
+```
 
-### 方式二：pip 安装
+macOS 也可以使用：
 
-默认安装（主 PDF/image 流程 + 官方 GUI/server 入口）：
+```bash
+chmod +x install.command start.command
+./install.command
+```
+
+### pip 安装
 
 ```bash
 pip install aih-contexture
 ```
 
-如需 DOCX / XLSX / PPTX / EPUB / HTML 等扩展格式支持，请安装扩展依赖：
+如需 DOCX / XLSX / PPTX / EPUB / HTML 等扩展格式支持：
 
 ```bash
 pip install "aih-contexture[full]"
 ```
 
-安装后建议通过项目当前稳定维护的入口使用：
+### 启动 GUI
 
 ```bash
 contexture_gui
+```
+
+或在源码目录中运行：
+
+```bash
+python contexture_app.py
+```
+
+### 启动 API 服务
+
+```bash
 contexture_server
-contexture_single --help
 ```
 
-其中：
-- `contexture_gui`：启动 Streamlit Web 界面
-- `contexture_server`：启动 API 服务
-- `contexture_single`：命令行单文件转换入口
+### 单文件转换
 
-### 启动应用
+```bash
+contexture_single input.pdf --output_dir output
+```
 
-安装完成后，启动 Web 界面：
+### 后端诊断
 
-**Windows：** 双击 `start.bat`
-
-**macOS：** 双击 `start.command`（或在终端中运行 `./start.sh`）
-
-启动后浏览器会自动打开。应用会从 `8501` 开始自动选择可用端口，并在终端中显示实际访问地址。
-
-> 默认安装优先保证主 PDF/image 流程以及官方 GUI/server 入口可用；若需 DOCX / XLSX / PPTX / EPUB / HTML 等扩展格式支持，请安装 `aih-contexture[full]` 或补充对应依赖。首次使用 Pipeline / Surya 时也会联网下载模型并写入本地缓存，因此首次运行可能明显更慢。
+```bash
+contexture_doctor
+contexture_backends
+```
 
 ---
 
-## 技术生态对比
+## 常用入口
 
-### 与文档处理工具对比
-
-Contexture 与现有文档处理工具不在同一赛道竞争。它们解决"如何把文档变成文本"，Contexture 解决"如何让文本可被学术引用"。但作为参考：
-
-| 维度 | Marker | MinerU | Docling | Contexture |
-|------|--------|--------|---------|------------|
-| 开发方 | Datalab | 上海AI Lab | IBM Research | AIH-Infra |
-| 核心定位 | PDF→Markdown 转换 | 文档解析 | 企业级多格式平台 | 人文学科文献结构化 |
-| 页码追溯 | 无 | 无 | 无 | 双重锚点系统 |
-| 边注/行内注 | 无 | 无 | 无 | 7+5 种类型细分 |
-| 古典引用系统 | 无 | 无 | 无 | Stephanus/Bekker/叶码 |
-| 模板系统 | 无 | 无 | 无 | 4 预设 + 自定义 |
-| 配置共享 | 无 | 无 | 无 | JSON 导入导出 |
-| 许可证 | GPL-3.0 | AGPL-3.0 | MIT | GPL-3.0 |
-
-### 与 Transkribus 对比
-
-Contexture 真正的对标对象是 [Transkribus](https://readcoop.eu/transkribus/)——目前人文学科数字化领域事实上的行业标准。
-
-| 维度 | Transkribus | Contexture |
-|------|-------------|------------|
-| 运营模式 | SaaS 平台，按页收费 | 本地部署，开源免费 |
-| 核心技术 | PyLaia HTR（CRNN+CTC，上一代架构） | 可接入 Transformer/VLM 等前沿模型 |
-| 手写识别 | 强项（十年积累） | 依赖 VLM 后端 |
-| 印刷文本 | 一般 | 强（继承 Surya/Chandra 能力） |
-| 页码追溯 | 无专门机制 | 双重锚点系统 |
-| 边注/行内注 | 无 | 7+5 种类型细分 |
-| 古典引用系统 | 无 | Stephanus/Bekker/叶码 |
-| 数据主权 | 数据上传至云端 | 完全本地，数据不出域 |
-| 中文支持 | 弱 | 强（古籍模板、版心叶码） |
-| 协作功能 | 完善（在线平台） | 配置共享（JSON 导入导出） |
-| 成熟度 | 10+ 年迭代 | v0.1 |
-
-Contexture 的结构性优势在于：数据主权（完全本地运行）、底层技术代差（可接入最新模型）、学术规范意识（页码锚点、古典引用系统是 Transkribus 完全不具备的能力）。明显短板在于：手写识别积累不足、缺乏在线协作平台、用户生态尚在初创阶段。
+| 命令 | 功能 |
+|------|------|
+| `contexture_gui` | 启动 Streamlit Web GUI |
+| `contexture_server` | 启动 FastAPI 本地 API |
+| `contexture` | 批量转换 |
+| `contexture_single` | 单文件转换 |
+| `contexture_chunk` | RAG chunk 输出 |
+| `contexture_middle` | Middle JSON 操作 |
+| `contexture_backends` | 查看后端能力目录 |
+| `contexture_doctor` | 检查后端可用性 |
+| `contexture_eval_layout` | Layout 质量评估 |
+| `contexture_eval_markdown` | Scholarly Markdown 质量评估 |
 
 ---
 
-## AIH-Infra路线图
+## API 概览
 
+本地服务提供统一转换入口：
+
+| Endpoint | 方法 | 功能 |
+|----------|------|------|
+| `/` | GET | 服务首页 |
+| `/marker` | POST | 兼容型 pipeline 转换入口 |
+| `/marker/upload` | POST | 兼容型上传转换入口 |
+| `/v1/convert` | POST | Runtime 统一转换入口 |
+| `/v1/backends` | GET | 后端能力目录与诊断 |
+
+推荐新集成优先使用 `/v1/convert`，因为它覆盖 pipeline、VLM 泛化、VLM 特化和 Markdown 后处理四种模式。
+
+---
+
+## 项目结构
+
+```text
+aih_contexture/
+  runtime/       # ContextureJob, ContextureResult, run_job, artifacts, model lifecycle
+  middle/        # Middle JSON schema, adapters, validation, scholarly markdown
+  backends/      # Backend catalog, capabilities, diagnostics, registries
+  converters/    # Pipeline, VLM generalized, VLM specialized, OCR direct
+  builders/      # Document/Layout/OCR/Line/Structure builders
+  processors/    # 页码、脚注、边注、表格、公式、LLM processors
+  postprocess/   # Markdown 后处理、页码修复、可选 LLM 审阅
+  renderers/     # Markdown, HTML, JSON, chunks, OCR JSON
+  services/      # OpenAI, Claude, Gemini, Ollama, LM Studio, OCR services
+  prompts/       # Prompt presets and builders
+  evaluation/    # Layout / Markdown quality evaluation
+  scripts/       # CLI, server, Streamlit GUI helpers
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  应用层（待建设）                                            │
-│  学术 RAG · Graph RAG · Agent RAG                           │
-├─────────────────────────────────────────────────────────────┤
-│  0.5 层：人文学科语义框架                                    │
-│  經緯·Contexture（页码锚点 · 边注 · 行内注 · 模板 · 配置）  │
-├─────────────────────────────────────────────────────────────┤
-│  转换层：文档 → 结构化文本                                   │
-│  Marker · MinerU · Docling                                  │
-├─────────────────────────────────────────────────────────────┤
-│  引擎层：OCR / 布局 / VLM                                   │
-│  Surya · Chandra · olmOCR · Churro · MinerU/Paddle adapters │
-├─────────────────────────────────────────────────────────────┤
-│  基础层：PDF 解析                                            │
-│  pdftext · pypdfium2                                        │
-└─────────────────────────────────────────────────────────────┘
-```
 
-**阶段一（当前）**：文献数字化基础设施——PDF/图像 → 带页码锚点的结构化 Markdown
+更完整的架构说明见 [ARCHITECTURE_AND_TECHNICAL_GUIDE.md](ARCHITECTURE_AND_TECHNICAL_GUIDE.md)。
 
-**阶段二（已实现）**：学术朴素 RAG——页码锚点使 RAG 检索天然具备学术引用能力，回答可自动附带"见《某书》第 X 页"
+---
 
-**阶段三（中期）**：人文学术 Graph RAG——实体/关系抽取 → 知识图谱，每个节点可追溯到原始文献的具体位置
+## 适用场景
 
-**阶段四（远期）**：人文版 Agent RAG——Agent 自主在数字化文献库中检索、比对、校勘，输出符合学术规范的研究成果
+Contexture 适合：
+
+- 人文学科书籍、论文、档案、扫描件的结构化
+- 需要保留 PDF 页码和印刷页码的数字化工作流
+- 面向 RAG / 知识库的可追溯材料预处理
+- 对 OCR / VLM 输出进行人工校阅前的结构化整理
+- 需要比较多种 Layout / OCR / VLM 后端效果的实验流程
+
+Contexture 不适合：
+
+- 只需要一次性纯文本抽取、且不关心页码追溯的轻量任务
+- 要求成熟多人协作平台、权限系统和在线标注工作台的机构级 SaaS 场景
+- 对某一类手写体要求稳定高精度识别、但没有配套模型或训练数据的任务
+
+---
+
+## 版本边界
+
+当前版本：`0.5.0`
+
+已经稳定形成的主线：
+
+- Runtime 统一任务入口
+- Pipeline / VLM 泛化 / VLM 特化 / Markdown 后处理四种模式
+- Middle JSON 中间表示
+- Scholarly Markdown 输出
+- 后端能力目录与诊断
+- Streamlit GUI、FastAPI API、CLI 入口
+
+仍在演进中的方向：
+
+- Office 文档直接转换
+- 服务版多用户任务队列
+- 更细粒度 checkpoint
+- 人文学科专用 Layout 后端
+- 更大规模的边注、行内注和古典引用系统验证
 
 ---
 
 ## 致谢
 
-Contexture 的 Pipeline 模式学习了 Marker 的处理器链架构，并集成了多个优秀的开源项目作为底层引擎。我们对以下项目表示诚挚感谢：
+Contexture 的形成离不开文档解析和 OCR/VLM 开源生态。特别感谢：
 
-**Datalab (Endless Labs, Inc.)**
+**Datalab / Endless Labs, Inc.**
 
-- [Marker](https://github.com/VikParuchuri/marker) (GPL-3.0) — 处理器链架构参考
-- [Surya](https://github.com/VikParuchuri/surya) (GPL-3.0) — OCR 与布局检测引擎
-- [Chandra](https://github.com/VikParuchuri/chandra) (Apache-2.0) — 端到端 VLM OCR
-- [PDFText](https://github.com/VikParuchuri/pdftext) (Apache-2.0) — PDF 文本提取
+- [Marker](https://github.com/VikParuchuri/marker) (GPL-3.0-or-later)：早期 pipeline 基座、处理器链与 PDF -> Markdown 工作流的重要来源。
+- [Surya](https://github.com/VikParuchuri/surya) (GPL-3.0)：OCR 与 Layout 引擎。
+- [PDFText](https://github.com/VikParuchuri/pdftext) (Apache-2.0)：PDF 文本层提取。
+- [Chandra](https://github.com/VikParuchuri/chandra) (Apache-2.0)：专用文档 OCR/VLM 路径的重要生态项目。
 
-**文档解析生态参考**
+**其他生态项目**
 
-- MinerU / PaddleOCR — 后续 layout adapter、中间结构和调试产物设计参考
+- MinerU / PaddleOCR：Layout、OCR-VL 和结构化文档解析生态的重要参考与可选后端来源。
+- Calamari OCR：欧洲历史字体 OCR 生态。
+- Tesseract：传统 OCR 生态。
 
-**其他项目**
-
-- [Calamari OCR](https://github.com/Calamari-OCR/calamari) (Apache-2.0) — 欧洲历史文献 OCR
+项目保留早期 git 历史，以便完整呈现来源、许可证继承和贡献脉络。当前架构、AIH-Infra 集成、人文学科页码锚点体系、Middle JSON、VLM 双模式和 Scholarly Markdown 输出由 AIH-Infra 在后续版本中持续开发。
 
 ---
 
 ## 许可证
 
-本项目基于 **GNU General Public License v3.0** 发布。
+本项目基于 **GNU General Public License v3.0-or-later** 发布。
 
-由于集成了 Surya (GPL-3.0) 作为底层引擎，根据 GPL 的传染性条款，本项目使用相同许可证。
-
-详见 [LICENSE](LICENSE) 和 [NOTICE](NOTICE) 文件。
+由于项目历史上继承并使用 GPL-3.0-or-later 生态组件，Contexture 继续采用 GPL-3.0-or-later。第三方组件和来源说明见 [NOTICE](NOTICE)。
 
 ---
 
@@ -408,23 +331,22 @@ Contexture 的 Pipeline 模式学习了 Marker 的处理器链架构，并集成
 
 **AIH-Infra（人文学科人工智能基础设施）** 致力于为人文学科研究者提供可追溯、可验证、可传承的 AI 工具链。
 
-- **材料线**：Contexture（文献数字化与结构化）
-- **系统线**：RAG 知识库与检索系统（规划中）
-- **应用线**：面向具体学科的研究工具（规划中）
+- **材料线**：Contexture，负责文献数字化与结构化。
+- **系统线**：RAG / Graph RAG / Agent RAG 知识基础设施。
+- **应用线**：面向具体学科问题的研究工具。
 
-我们坚信：**技术服务于学术规范，而非消解学术规范。**
+我们相信：**技术应当服务于学术规范，而不是消解学术规范。**
 
 ---
 
 ## 作者
 
-**Güriedrich & Baireinhold**
+**Güriedrich & Baireinhold**  
 橘里德里希 & 白茵霍尔德
 
 ---
 
 ## 链接
 
-- **GitHub**: https://github.com/AIH-Infra/aih-contexture
-- **Issues**: https://github.com/AIH-Infra/aih-contexture/issues
-- **技术评估报告**: [人文学科文献数字化技术生态评估报告](人文学科文献数字化技术生态评估报告.md)
+- GitHub: https://github.com/AIH-Infra/aih-contexture
+- Issues: https://github.com/AIH-Infra/aih-contexture/issues
