@@ -316,7 +316,13 @@ class VlmLayoutService(BaseLayoutService):
                 label=normalized_label,
                 position=idx,
                 top_k={normalized_label: float(confidence)},
-                polygon=scaled_polygon
+                polygon=scaled_polygon,
+                metadata={
+                    "raw_label": label,
+                    "backend_label": label,
+                    "label_source": "backend_native",
+                    "native_layout_backend": "vlm_layout",
+                },
             ))
 
         return layout_boxes

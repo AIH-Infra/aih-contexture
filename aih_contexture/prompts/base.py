@@ -30,8 +30,8 @@ class VlmPromptTemplate(BaseModel):
 
     # 🆕 手写识别模式（替代原来的 may_have_handwriting）
     handwriting_mode: str = "none"  # "none" | "mixed" | "pure"
-    # none: 不特别处理手写
-    # mixed: 混合内容，标记手写部分
+    # none: 忽略手写内容
+    # mixed: 混合内容，识别并标记手写部分
     # pure: 纯手写文档，不需要标记（默认全是手写）
 
     # 🆕 图片描述功能
@@ -145,14 +145,17 @@ class VlmPromptTemplate(BaseModel):
 
         marginalia_enabled = "marginal_notes" in self.special_features
         margin_labels = (
-            "**Margins:** Marginal-Note-Left, Marginal-Note-Right, Footnote"
+            "**Margins:** Marginal-Note-Left, Marginal-Note-Right, Marginal-Note-Top, Marginal-Note-Bottom, Footnote"
             if marginalia_enabled
             else "**Margins:** Footnote"
         )
         marginalia_rule = (
-            "2. **Marginal Notes:** Keep marginal notes separate; do NOT merge them into main text"
+            "2. **Marginal Notes:** Treat text outside the main text column as a separate marginal note region. "
+            "Use Marginal-Note-Left or Marginal-Note-Right for side notes, and Marginal-Note-Top or "
+            "Marginal-Note-Bottom only for true marginal annotations, not running headers, page numbers, or footnotes. "
+            "Do NOT merge marginal notes into nearby paragraphs."
             if marginalia_enabled
-            else "2. **Marginal Notes:** Do not use Marginal-Note-Left or Marginal-Note-Right labels; transcribe visible side text as normal Text unless it is clearly a Footnote"
+            else "2. **Marginal Notes:** Do not use Marginal-Note-Left, Marginal-Note-Right, Marginal-Note-Top, or Marginal-Note-Bottom labels; transcribe visible side text as normal Text unless it is clearly a Footnote"
         )
         reading_order_rule = (
             "3. **Reading Order:** Top-to-bottom, left-to-right; marginal notes near associated text"
@@ -207,6 +210,7 @@ class VlmPromptTemplate(BaseModel):
 - Start with `{{` and end with `}}`
 - No markdown fences
 - No text before or after the JSON
+- Do not add emojis, emoticons, uncertainty tags, or commentary
 - Stop immediately after the closing `}}`
 - Detect all visible content including small/faint text"""
 
@@ -216,7 +220,16 @@ class VlmPromptTemplate(BaseModel):
 
         # 手写识别（混合模式才标记）
         if self.handwriting_mode == "mixed":
-            instructions.append("## Handwriting Recognition\n- Mark handwritten text as `**[手写]** content` within the text field\n- Distinguish printed vs handwritten content")
+            instructions.append("""## Handwriting Recognition
+- Transcribe visible handwritten notes and handwritten marginalia.
+- Mark every handwritten text span as `**[handwritten]** content` inside the text field.
+- If handwritten text is in the page margin, keep it as a separate Marginal-Note-Left/Right/Top/Bottom region when marginalia recognition is enabled.
+- Distinguish printed vs handwritten content; do not merge handwritten notes into printed body text.""")
+        elif self.handwriting_mode == "none":
+            instructions.append("""## Handwriting Handling
+- Ignore handwritten content entirely.
+- Do not transcribe handwritten notes, pencil marks, manuscript marginalia, signatures, or reader annotations.
+- Do not output `**[handwritten]**`, `**[手写]**`, Handwriting, Signature, or handwritten Annotation regions.""")
 
         # 脚注
         if self.may_have_footnotes:
@@ -246,7 +259,22 @@ class VlmPromptTemplate(BaseModel):
 
         # 边注（如果启用）
         if "marginal_notes" in self.special_features:
-            instructions.append("## Marginal Notes\n- Create separate regions with labels \"Marginal-Note-Left\" or \"Marginal-Note-Right\"\n- Do NOT merge into main text")
+            if self.handwriting_mode == "mixed":
+                marginalia_scope = "all visible marginalia, including printed side notes, scholarly references, glosses, and handwritten marginal notes"
+                handwritten_rule = "- If a marginal note is handwritten, still use the appropriate Marginal-Note-* label and mark its text with `**[handwritten]**`."
+            else:
+                marginalia_scope = "all visible printed/typographic marginalia, including printed side notes, scholarly references, and glosses"
+                handwritten_rule = "- Ignore handwritten marks or reader annotations, but do not let them suppress nearby printed marginalia."
+            instructions.append("""## Marginal Notes
+- Create separate regions for {marginalia_scope}.
+- Use "Marginal-Note-Left" or "Marginal-Note-Right" for side notes outside the main text column.
+- Use "Marginal-Note-Top" or "Marginal-Note-Bottom" only for true annotations; use Page-Header/Page-Footer for running titles, page numbers, and ordinary footers.
+- Keep each marginal note exactly as printed/written, in its own reading order.
+- Do not treat small printed references in the margin as body paragraphs or footnotes unless they are visibly in the footnote area.
+{handwritten_rule}""".format(
+                marginalia_scope=marginalia_scope,
+                handwritten_rule=handwritten_rule,
+            ))
 
         return "\n\n".join(instructions) if instructions else ""
 
@@ -415,7 +443,7 @@ def _merge_paragraph_lines(markdown: str) -> str:
     4. 代码块（``` 包围）内容不处理
     5. 表格行（| 开头）独立，不合并
     6. 数学公式（$$ 包围）内容不处理
-    7. 脚注定义（[^1]: 开头）独立，不合并
+    7. 脚注定义（<sup>1</sup> 或兼容的 [^1]: 开头）独立，不合并
     8. 普通文本行：连续的非空行合并为一个段落
     """
     lines = markdown.split("\n")

@@ -9,8 +9,67 @@ import re
 from typing import Optional, Tuple
 
 from aih_contexture.logger import get_logger
+from aih_contexture.utils.markdown_filters import strip_blockquote_markers, strip_margin_comment_markers
 
 logger = get_logger()
+
+
+_EMOJI_OR_UNCERTAINTY_RE = re.compile(
+    r"[\U0001F300-\U0001FAFF\u2600-\u27BF]|\[(?:不确定|未知|未识别|uncertain|unknown)\]",
+    re.IGNORECASE,
+)
+_HANDWRITING_MARKER_RE = re.compile(
+    r"(?:\*\*\s*\[(?:handwritten|手写)\]\s*\*\*|\[(?:handwritten|手写)\]|"
+    r"\bhandwritten\b|\bhandwriting\b|手写)",
+    re.IGNORECASE,
+)
+_HANDWRITING_LABELS = {
+    "handwriting",
+    "handwritten",
+    "signature",
+    "stamp",
+    "annotation",
+    "reader-annotation",
+    "reader_annotation",
+    "manuscript-note",
+    "manuscript_note",
+}
+_MARGIN_LEFT_LABELS = {"Marginal-Left", "Marginal-Note-Left", "marginal-left", "marginal_note_left"}
+_MARGIN_RIGHT_LABELS = {"Marginal-Right", "Marginal-Note-Right", "marginal-right", "marginal_note_right"}
+
+
+def _sanitize_text(text: str) -> str:
+    if not text:
+        return text
+    cleaned = _EMOJI_OR_UNCERTAINTY_RE.sub("", text)
+    cleaned = re.sub(r"\*\*\s*\[手写\]\s*\*\*", "**[handwritten]**", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\[手写\]", "[handwritten]", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+    return cleaned.strip()
+
+
+def _normalize_superscript_markers(text: str) -> str:
+    text = re.sub(r'<sup>\s*([0-9ivxlcdmIVXLCDM]+|\*+)\s*\)</sup>', r'<sup>\1</sup>', text)
+    text = re.sub(r'\^([0-9ivxlcdmIVXLCDM]+|\*+)\)\^', r'<sup>\1</sup>', text)
+    text = re.sub(r'\\([0-9ivxlcdmIVXLCDM]+|\*+)\)', r'<sup>\1</sup>', text)
+    return text
+
+
+def _render_margin_note(side: str, text: str) -> str:
+    text = re.sub(r'(\w)-\n(\w)', r'\1\2', text)
+    text = text.replace('\n', ' ').strip()
+    return f"<!-- Margin:{side} -->\n> {text}\n<!-- /Margin -->"
+
+
+def _render_footnote_block(marker: str, text: str) -> str:
+    marker = marker.strip()
+    text = _normalize_superscript_markers(text).strip()
+    return f'<!-- FootnoteBlock: marker="{marker}" -->\n<sup>{marker}</sup> {text}'
+
+
+def _is_handwritten_region(label: str, text: str) -> bool:
+    label_norm = (label or "").strip().lower()
+    return label_norm in _HANDWRITING_LABELS or bool(_HANDWRITING_MARKER_RE.search(text or ""))
 
 
 def load_and_validate_vlm_json(json_str: str) -> dict:
@@ -60,8 +119,6 @@ def parse_json_to_markdown(
 
         md = _convert_region_to_markdown(label, text, config or {})
         if md:
-            if isinstance(confidence, (int, float)) and confidence < 0.7:
-                md = f"{md} `[不确定]`"
             markdown_parts.append(md)
 
     return ("\n\n".join(markdown_parts), printed_page)
@@ -82,14 +139,25 @@ def _convert_region_to_markdown(label: str, text: str, config: dict) -> str:
     if not text:
         return ""
 
+    text = _sanitize_text(text)
+    if not text:
+        return ""
+
     # 配置参数
     marginal_note_enabled = config.get("vlm_direct_marginal_note_enabled", False)
+    filter_margin_notes = config.get("vlm_filter_margin_notes", False)
+    filter_blockquote_markers = config.get("vlm_filter_blockquote_markers", False)
     use_markdown_footnotes = config.get("vlm_direct_use_markdown_footnotes", False)
     footnote_backlink = config.get("vlm_direct_footnote_backlink", False)
+    handwriting_mode = config.get("vlm_direct_handwriting_mode", "none")
+
+    if handwriting_mode == "none" and _is_handwritten_region(label, text):
+        return ""
 
     # 🔧 修复1：转换上标和下标格式
     text = re.sub(r'\^([^^]+)\^', r'<sup>\1</sup>', text)
     text = re.sub(r'~([^~]+)~', r'<sub>\1</sub>', text)
+    text = _normalize_superscript_markers(text)
 
     # Section-Header
     if label == "Section-Header":
@@ -100,47 +168,64 @@ def _convert_region_to_markdown(label: str, text: str, config: dict) -> str:
         # 合并断行：连字符断行直接拼接，普通断行变空格
         text = re.sub(r'(\w)-\n(\w)', r'\1\2', text)
         text = text.replace('\n', ' ')
-        if use_markdown_footnotes:
-            text = re.sub(r'<sup>(\d+|\*+)\)</sup>', r'[^\1]', text)
-        else:
-            text = re.sub(
-                r'<sup>(\d+|\*+)\)</sup>',
-                r'<sup id="ref\1"><a href="#fn\1">\1)</a></sup>',
-                text
-            )
+        if use_markdown_footnotes or footnote_backlink:
+            logger.debug("Legacy VLM footnote switches are ignored for canonical Contexture Markdown output.")
         return text
 
     # Marginal-Note-Left/Right
-    elif label in ("Marginal-Note-Left", "Marginal-Note-Right"):
+    elif label in (
+        "Marginal-Left",
+        "Marginal-Right",
+        "Marginal-Top",
+        "Marginal-Bottom",
+        "Marginal-Note",
+        "Marginal-Note-Left",
+        "Marginal-Note-Right",
+        "Marginal-Note-Top",
+        "Marginal-Note-Bottom",
+        "MarginalNote",
+        "marginal-left",
+        "marginal-right",
+        "marginal-top",
+        "marginal-bottom",
+        "marginal_note_left",
+        "marginal_note_right",
+        "marginal_note_top",
+        "marginal_note_bottom",
+        "marginal_note",
+    ):
         if marginal_note_enabled:
-            side = "Marginal-Left" if label == "Marginal-Note-Left" else "Marginal-Right"
-            # 合并断行连字符，换行变空格
-            text = re.sub(r'(\w)-\n(\w)', r'\1\2', text)
-            text = text.replace('\n', ' ').strip()
-            return f"> **[{side}]** {text}"
+            if label in _MARGIN_LEFT_LABELS:
+                rendered = _render_margin_note("left", text)
+                return strip_margin_comment_markers(rendered) if filter_margin_notes else rendered
+            if label in _MARGIN_RIGHT_LABELS:
+                rendered = _render_margin_note("right", text)
+                return strip_margin_comment_markers(rendered) if filter_margin_notes else rendered
+            return text
         else:
             return text
 
     # Footnote（含联动锚点）
     elif label == "Footnote":
         # 🔧 修复2：支持多种脚注格式
-        match = re.match(r'<sup>(\d+|\*+)\)</sup>\s*(.*)', text, re.DOTALL)
+        match = re.match(r'<sup>([0-9ivxlcdmIVXLCDM]+|\*+)</sup>\s*(.*)', text, re.DOTALL)
         if not match:
             # 格式2: ^1)^ text
             match = re.match(r'\^(\d+|\*+)\)\^\s*(.*)', text, re.DOTALL)
         if not match:
             # 格式3: 1) text
-            match = re.match(r'(\d+|\*+)\)\s*(.*)', text, re.DOTALL)
+            match = re.match(r'([0-9ivxlcdmIVXLCDM]+|\*+)\)\s*(.*)', text, re.DOTALL)
+        if not match:
+            # 格式4: 1. text
+            match = re.match(r'([0-9ivxlcdmIVXLCDM]+|\*+)\.\s*(.*)', text, re.DOTALL)
 
         if match:
             fn_id = match.group(1)
             fn_text = match.group(2)
-
-            if use_markdown_footnotes:
-                return f"[^{fn_id}]: {fn_text}"
-            else:
-                return f'<sup id="fn{fn_id}">{fn_id})</sup> {fn_text}'
-        return text
+            if use_markdown_footnotes or footnote_backlink:
+                logger.debug("Legacy VLM footnote switches are ignored for canonical Contexture Markdown output.")
+            return _render_footnote_block(fn_id, fn_text)
+        return _render_footnote_block("1", text)
 
     # List-Group
     elif label == "List-Group":
@@ -183,6 +268,10 @@ def _convert_region_to_markdown(label: str, text: str, config: dict) -> str:
     elif label == "Code-Block":
         return f"```\n{text}\n```"
 
+    elif label in ("Blockquote", "Blockquote-Block", "Quote", "Citation", "blockquote", "quote", "citation"):
+        rendered = "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
+        return strip_blockquote_markers(rendered) if filter_blockquote_markers else rendered
+
     # Figure
     elif label == "Figure":
         return text.replace('[图表:', '[Figure:') if text else ""
@@ -193,7 +282,8 @@ def _convert_region_to_markdown(label: str, text: str, config: dict) -> str:
 
     # Page-Header/Footer
     elif label in ("Page-Header", "Page-Footer"):
-        return ""
+        comment_label = "PageHeader" if label == "Page-Header" else "PageFooter"
+        return f"<!-- {comment_label}: {text.strip()} -->"
 
     # 🔧 修复4：添加缺失的labels
     # Table-Of-Contents

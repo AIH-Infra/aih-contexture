@@ -28,19 +28,28 @@ class MarginalAnnotationProcessor(BaseProcessor):
     识别并重新分类边码/页边注。
 
     处理流程：
-    1. 遍历所有 Text/PageHeader/PageFooter 块
+    1. 只遍历 Text 块
     2. 根据位置、内容、字体大小判断是否为边码
     3. 重新分类为 MarginalAnnotation
+
+    后端原生的 PageHeader/PageFooter/Footnote/MarginalAnnotation 不在这里二次仲裁。
+    这个处理器只负责从正文文本块中启发式恢复漏检的边码，避免把 MinerU 等
+    后端已经识别出的页眉/页脚改坏。
     """
 
-    # 处理的块类型
-    block_types = (BlockTypes.Text, BlockTypes.PageHeader, BlockTypes.PageFooter)
+    # 只处理正文文本块；原生页眉/页脚/脚注/边注由后端标签优先保留。
+    block_types = (BlockTypes.Text,)
 
     # 配置参数
     enable_marginal_detection: Annotated[
         bool,
         "是否启用边码检测"
     ] = True
+
+    heuristic_marginal_detection_enabled: Annotated[
+        bool | None,
+        "是否启用坐标启发式边码恢复；None 时沿用 enable_marginal_detection"
+    ] = None
 
     left_margin_threshold: Annotated[
         float,
@@ -68,7 +77,12 @@ class MarginalAnnotationProcessor(BaseProcessor):
     ] = 0.05
 
     def __call__(self, document: Document):
-        if not self.enable_marginal_detection:
+        enabled = (
+            self.enable_marginal_detection
+            if self.heuristic_marginal_detection_enabled is None
+            else self.heuristic_marginal_detection_enabled
+        )
+        if not enabled:
             return
 
         relabeled_count = 0
@@ -116,6 +130,9 @@ class MarginalAnnotationProcessor(BaseProcessor):
 
     def _is_marginal_annotation(self, block, text, cx, cy, pw, ph, document):
         """判断是否为边码"""
+
+        if block.block_type != BlockTypes.Text:
+            return False
 
         # 空文本不处理
         if not text or len(text.strip()) == 0:
@@ -284,6 +301,9 @@ class MarginalAnnotationProcessor(BaseProcessor):
         # 设置元数据
         new_block.set_internal_metadata("marginal_subtype", subtype)
         new_block.set_internal_metadata("position_type", position_type)
+        new_block.set_internal_metadata("marginal_source", "heuristic")
+        new_block.set_internal_metadata("label_source", "heuristic")
+        new_block.set_internal_metadata("original_block_type", block.block_type.name)
 
         # 替换块
         page.replace_block(block, new_block)

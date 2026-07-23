@@ -4,15 +4,11 @@ from typing import Annotated, Dict, List
 import numpy as np
 
 from aih_contexture.logger import get_logger
-from sklearn.cluster import KMeans
-from sklearn.exceptions import ConvergenceWarning
 
 from aih_contexture.processors import BaseProcessor
 from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.document import Document
 
-# Ignore sklearn warning about not converging
-warnings.filterwarnings("ignore", category=ConvergenceWarning)
 logger = get_logger()
 
 
@@ -90,6 +86,11 @@ class SectionHeaderProcessor(BaseProcessor):
     def bucket_headings(self, line_heights: List[float], num_levels=4):
         if len(line_heights) <= self.level_count:
             return []
+
+        from sklearn.cluster import KMeans
+        from sklearn.exceptions import ConvergenceWarning
+
+        warnings.filterwarnings("ignore", category=ConvergenceWarning)
 
         data = np.asarray(line_heights).reshape(-1, 1)
         labels = KMeans(n_clusters=num_levels, random_state=0, n_init="auto").fit_predict(data)

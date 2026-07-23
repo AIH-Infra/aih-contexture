@@ -88,8 +88,7 @@ class PdfProvider(BaseProvider):
         super().__init__(filepath, config)
 
         self.filepath = filepath
-        print(f"[PdfProvider] __init__ start: filepath={filepath}")
-        logger.info("[PdfProvider] __init__ start: filepath=%s", filepath)
+        logger.info("[Provider.Pdf] Initializing: filepath=%s", filepath)
 
         with self.get_doc() as doc:
             self.page_count = len(doc)
@@ -116,11 +115,9 @@ class PdfProvider(BaseProvider):
     def get_doc(self):
         doc = None
         try:
-            print(f"[PdfProvider] Opening PdfDocument: {self.filepath}")
-            logger.info("[PdfProvider] Opening PdfDocument: %s", self.filepath)
+            logger.info("[Provider.Pdf] Opening document: %s", self.filepath)
             doc = pdfium.PdfDocument(self.filepath)
-            print(f"[PdfProvider] PdfDocument opened: pages={len(doc)}")
-            logger.info("[PdfProvider] PdfDocument opened: pages=%s", len(doc))
+            logger.info("[Provider.Pdf] Document opened: pages=%d", len(doc))
 
             # Must be called on the parent pdf, before retrieving pages to render correctly
             if self.flatten_pdf:
@@ -211,7 +208,6 @@ class PdfProvider(BaseProvider):
 
     def pdftext_extraction(self) -> ProviderPageLines:
         page_lines: ProviderPageLines = {}
-        print(f"[PdfProvider] Starting dictionary_output: filepath={self.filepath} page_range={list(self.page_range)} workers={self.pdftext_workers}")
         logger.info(
             "[PdfProvider] Starting dictionary_output: filepath=%s page_range=%s workers=%s",
             self.filepath,
@@ -227,7 +223,6 @@ class PdfProvider(BaseProvider):
             quote_loosebox=False,
             disable_links=self.disable_links,
         )
-        print(f"[PdfProvider] dictionary_output completed: pages={len(page_char_blocks)}")
         logger.info("[PdfProvider] dictionary_output completed: pages=%s", len(page_char_blocks))
         self.page_bboxes = {
             i: [0, 0, page["width"], page["height"]]

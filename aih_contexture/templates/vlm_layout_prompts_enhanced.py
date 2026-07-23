@@ -23,7 +23,7 @@ Where:
 **Visual Characteristics**:
 - Location: Bottom 10-20% of page
 - Font size: 70-80% of main text size (noticeably smaller)
-- Markers: Has numbering (<sup>1)</sup>, [1], ①, *)
+- Markers: Has numbering (<sup>1</sup>, [1], ①, *)
 - Separation: Separated from main text by horizontal line or significant whitespace
 - Alignment: Usually left-aligned, may have indentation
 

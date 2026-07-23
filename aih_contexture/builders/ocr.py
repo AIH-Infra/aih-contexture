@@ -1,10 +1,8 @@
 import copy
-from typing import Annotated, List
+from typing import Annotated, Any, List
 
 from ftfy import fix_text
 from PIL import Image
-from surya.common.surya.schema import TaskNames
-from surya.recognition import RecognitionPredictor, OCRResult, TextChar
 
 from aih_contexture.builders import BaseBuilder
 from aih_contexture.providers.pdf import PdfProvider
@@ -66,7 +64,7 @@ class OcrBuilder(BaseBuilder):
     ocr_task_name: Annotated[
         str,
         "The OCR mode to use, see surya for details.  Set to 'ocr_without_boxes' for potentially better performance, at the expense of formatting.",
-    ] = TaskNames.ocr_with_boxes
+    ] = "ocr_with_boxes"
     keep_chars: Annotated[bool, "Keep individual characters."] = False
     disable_ocr_math: Annotated[bool, "Disable inline math recognition in OCR"] = False
     drop_repeated_text: Annotated[bool, "Drop repeated text in OCR results."] = False
@@ -74,7 +72,7 @@ class OcrBuilder(BaseBuilder):
     block_mode_max_lines: Annotated[int, "Max lines within a block before falling back to line mode"] = 15
     block_mode_max_height_frac: Annotated[float, "Max height of a block as a percentage of the page before falling back to line mode"] = 0.5
 
-    def __init__(self, recognition_model: RecognitionPredictor, config=None):
+    def __init__(self, recognition_model: Any, config=None):
         super().__init__(config)
 
         self.recognition_model = recognition_model
@@ -175,7 +173,7 @@ class OcrBuilder(BaseBuilder):
             return
 
         self.recognition_model.disable_tqdm = self.disable_tqdm
-        recognition_results: List[OCRResult] = self.recognition_model(
+        recognition_results: List[Any] = self.recognition_model(
             images=images,
             task_names=[self.ocr_task_name] * len(images),
             polygons=block_polygons,
@@ -303,7 +301,7 @@ class OcrBuilder(BaseBuilder):
             page.add_full_block(char)
 
     def spans_from_html_chars(
-        self, chars: List[TextChar], page: PageGroup, image: Image.Image
+        self, chars: List[Any], page: PageGroup, image: Image.Image
     ) -> List[List[Span]]:
         # Turn input characters from surya into spans - also store the raw characters
         SpanClass: Span = get_block_class(BlockTypes.Span)

@@ -4,19 +4,19 @@ Calamari OCR Builder - Line-level OCR using Calamari service
 Key fix: 按页发送，不按固定 batch_size 拆分，避免跨批次顺序问题
 """
 
-import copy
 from typing import Annotated, List, Optional, Tuple, Callable
 
-from PIL import Image
-
 from aih_contexture.builders import BaseBuilder
+from aih_contexture.builders.ocr_line_crops import OcrLineCrop, OcrLineCropper
 from aih_contexture.builders.ocr import OcrBuilder
+from aih_contexture.builders.tesseract_line_detection import ensure_tesseract_line_blocks
 from aih_contexture.providers.pdf import PdfProvider
 from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.document import Document
 from aih_contexture.schema.groups.page import PageGroup
 from aih_contexture.schema.registry import get_block_class
 from aih_contexture.services.ocr_calamari import CalamariOcrService
+from aih_contexture.services.ocr_tesseract import TesseractOcrService
 from aih_contexture.logger import get_logger
 
 logger = get_logger()
@@ -57,6 +57,12 @@ class CalamariOcrBuilder(BaseBuilder):
         
         self.calamari_service = calamari_service
         self._ocr_helper = OcrBuilder(recognition_model=None, config=self.config)
+        self.cropper = OcrLineCropper(self._cropper_config(self.config))
+        self.tesseract_line_service = (
+            TesseractOcrService(self.config)
+            if str(self.config.get("ocr_line_source") or "").strip().lower() == "tesseract"
+            else None
+        )
         
         if isinstance(config, dict):
             self.debug_mapping = bool(config.get("calamari_debug_mapping", True))
@@ -114,25 +120,22 @@ class CalamariOcrBuilder(BaseBuilder):
         x0, y0, x1, y1 = bbox
         return (int(y0), int(x0))
 
-    def _binarize_image(self, pil_image: Image.Image) -> Image.Image:
-        """对PIL图像进行Otsu二值化处理，失败时返回原图"""
-        try:
-            import cv2
-            import numpy as np
-        except ImportError:
-            return pil_image
-
-        try:
-            img_array = np.array(pil_image)
-            if len(img_array.shape) == 3:
-                gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+    def _cropper_config(self, config: dict) -> dict:
+        cropper_config = dict(config or {})
+        cropper_config.setdefault("ocr_crop_padding_px", int(cropper_config.get("calamari_crop_padding_px", 5)))
+        cropper_config.setdefault("ocr_crop_padding_frac", float(cropper_config.get("calamari_crop_padding_frac", 0.08)))
+        if "ocr_crop_preprocess" not in cropper_config:
+            if "calamari_preprocess" in cropper_config:
+                cropper_config["ocr_crop_preprocess"] = cropper_config["calamari_preprocess"]
+            elif cropper_config.get("calamari_binarize_lines", True):
+                cropper_config["ocr_crop_preprocess"] = "otsu"
             else:
-                gray = img_array
-            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            return Image.fromarray(binary, mode='L')
-        except Exception as e:
-            logger.warning(f"[CalamariOcrBuilder] Binarization failed: {e}")
-            return pil_image
+                cropper_config["ocr_crop_preprocess"] = "none"
+        cropper_config.setdefault("ocr_crop_upscale_min_height", int(cropper_config.get("calamari_upscale_min_height", 0)))
+        cropper_config.setdefault("ocr_crop_min_width", self.min_line_width)
+        cropper_config.setdefault("ocr_crop_min_height", self.min_line_height)
+        cropper_config.setdefault("ocr_crop_min_area", self.min_line_area)
+        return cropper_config
 
     def _ocr_single_page(
         self,
@@ -142,95 +145,18 @@ class CalamariOcrBuilder(BaseBuilder):
     ):
         """OCR all lines on a single page - 单栏优化：全页稳定排序 + 页底(脚注)后置"""
 
-        page_highres_image = page.get_image(highres=True)
-        if page_highres_image is None:
-            logger.warning(f"[CalamariOcrBuilder] No highres image for page {page.page_id}")
-            return
-
-        page_size = provider.get_page_bbox(page.page_id).size
-        image_size = page_highres_image.size
-        page_h = float(image_size[1])
-
-        # 收集全页 line items: (line_id, block_type, bbox, crop_img)
-        all_line_items: List[Tuple[str, str, Tuple[int, int, int, int], Image.Image]] = []
-        block_count = 0
-
-        for block in page.structure_blocks(document):
-            if block.block_type in self.skip_ocr_blocks:
-                continue
-
-            block.text_extraction_method = "surya"
-            block_type_name = str(block.block_type.name) if hasattr(block.block_type, "name") else str(block.block_type)
-            block_count += 1
-
-            block_lines = block.contained_blocks(document, [BlockTypes.Line])
-            for line_block in block_lines:
-                line_polygon_rescaled = (
-                    copy.deepcopy(line_block.polygon)
-                    .rescale(page_size, image_size)
-                    .fit_to_bounds((0, 0, *image_size))
-                )
-
-                bbox = line_polygon_rescaled.bbox
-                x0, y0, x1, y1 = bbox
-                w = x1 - x0
-                h = y1 - y0
-
-                if w < self.min_line_width or h < self.min_line_height:
-                    continue
-                if (w * h) < self.min_line_area:
-                    continue
-
-                crop_bbox = (int(x0), int(y0), int(x1), int(y1))
-                if crop_bbox[2] <= crop_bbox[0] or crop_bbox[3] <= crop_bbox[1]:
-                    continue
-
-                try:
-                    crop_img = page_highres_image.crop(crop_bbox)
-                    all_line_items.append((line_block.id, block_type_name, crop_bbox, crop_img))
-                except Exception as e:
-                    logger.warning(f"[CalamariOcrBuilder] Failed to crop line {line_block.id}: {e}")
-                    continue
-
-        if not all_line_items:
+        ordered_items = self._collect_ordered_page_crops(document, page, provider)
+        if not ordered_items:
             logger.info(f"[CalamariOcrBuilder] No lines to OCR on page {page.page_id}")
             return
 
-        # ---------- 关键：全页排序（单栏） ----------
-        # 启发式：把页底区域（疑似脚注/出处/页码）后置，避免混入正文
-        FOOTNOTE_Y_FRAC = float(self.config.get("calamari_footnote_y_frac", 0.83))  # 默认最后 17% 视为“页底区”
-        y_threshold = page_h * FOOTNOTE_Y_FRAC
-
-        def is_bottom_region(item: Tuple[str, str, Tuple[int, int, int, int], Image.Image]) -> bool:
-            _, _, (x0, y0, x1, y1), _ = item
-            y_center = (y0 + y1) * 0.5
-            return y_center >= y_threshold
-
-        def sort_key(item: Tuple[str, str, Tuple[int, int, int, int], Image.Image]):
-            _, _, (x0, y0, x1, y1), _ = item
-            # 单栏：以 y0 为主，x0 为辅
-            return (int(y0), int(x0), int(y1), int(x1))
-
-        top_items = [it for it in all_line_items if not is_bottom_region(it)]
-        bottom_items = [it for it in all_line_items if is_bottom_region(it)]
-
-        top_items.sort(key=sort_key)
-        bottom_items.sort(key=sort_key)
-
-        ordered_items = top_items + bottom_items
-        # -------------------------------------------
-
-        sorted_line_ids = [item[0] for item in ordered_items]
-        sorted_crops = [item[3] for item in ordered_items]
-
-        # 二值化处理
-        if self.config.get("calamari_binarize_lines", True):
-            logger.info(f"[CalamariOcrBuilder] Binarizing {len(sorted_crops)} line images")
-            sorted_crops = [self._binarize_image(img) for img in sorted_crops]
+        sorted_line_ids = [item.line_id for item in ordered_items]
+        sorted_crops = [item.image for item in ordered_items]
+        bottom_count = sum(1 for item in ordered_items if self._is_bottom_region(item, page))
 
         logger.info(
             f"[CalamariOcrBuilder] Sending {len(sorted_crops)} lines to Calamari "
-            f"(page {page.page_id}, {block_count} blocks; bottom_region={len(bottom_items)})"
+            f"(page {page.page_id}; bottom_region={bottom_count}; preprocess={self.cropper.preprocess})"
         )
 
         texts = self.calamari_service.ocr_page(sorted_crops)  # 整页一批发送 [7]
@@ -355,85 +281,41 @@ class CalamariOcrBuilder(BaseBuilder):
 
     def _collect_sorted_page_lines(self, document, page, provider):
         """收集并排序单页的所有行，返回 [(line_id, crop_img)]"""
-        page_highres_image = page.get_image(highres=True)
-        if page_highres_image is None:
-            logger.warning(f"[CalamariOcrBuilder] No highres image for page {page.page_id}")
+        ordered_items = self._collect_ordered_page_crops(document, page, provider)
+        return [(item.line_id, item.image) for item in ordered_items]
+
+    def _collect_ordered_page_crops(self, document, page, provider) -> list[OcrLineCrop]:
+        if self.tesseract_line_service is not None:
+            ensure_tesseract_line_blocks(
+                document,
+                page,
+                provider,
+                self.tesseract_line_service,
+                skip_blocks=set(self.skip_ocr_blocks),
+                write_tesseract_text=False,
+            )
+        crops = self.cropper.collect_page_crops(
+            document,
+            page,
+            provider,
+            skip_blocks=set(self.skip_ocr_blocks),
+        )
+        if not crops:
             return []
-
-        page_size = provider.get_page_bbox(page.page_id).size
-        image_size = page_highres_image.size
-        page_h = float(image_size[1])
-
-        # 收集全页 line items
-        all_line_items = []  # [(line_id, block_type, bbox, crop_img)]
-
-        for block in page.structure_blocks(document):
-            if block.block_type in self.skip_ocr_blocks:
-                continue
-
-            block.text_extraction_method = "surya"
-            block_lines = block.contained_blocks(document, [BlockTypes.Line])
-
-            for line_block in block_lines:
-                line_polygon_rescaled = (
-                    copy.deepcopy(line_block.polygon)
-                    .rescale(page_size, image_size)
-                    .fit_to_bounds((0, 0, *image_size))
-                )
-
-                bbox = line_polygon_rescaled.bbox
-                x0, y0, x1, y1 = bbox
-                w = x1 - x0
-                h = y1 - y0
-
-                if w < self.min_line_width or h < self.min_line_height:
-                    continue
-                if (w * h) < self.min_line_area:
-                    continue
-
-                crop_bbox = (int(x0), int(y0), int(x1), int(y1))
-                if crop_bbox[2] <= crop_bbox[0] or crop_bbox[3] <= crop_bbox[1]:
-                    continue
-
-                try:
-                    crop_img = page_highres_image.crop(crop_bbox)
-                    all_line_items.append((line_block.id, str(block.block_type.name), crop_bbox, crop_img))
-                except Exception as e:
-                    logger.warning(f"[CalamariOcrBuilder] Failed to crop line {line_block.id}: {e}")
-                    continue
-
-        if not all_line_items:
-            return []
-
-        # 排序：脚注后置
-        FOOTNOTE_Y_FRAC = float(self.config.get("calamari_footnote_y_frac", 0.83))
-        y_threshold = page_h * FOOTNOTE_Y_FRAC
-
-        def is_bottom_region(item):
-            _, _, (x0, y0, x1, y1), _ = item
-            y_center = (y0 + y1) * 0.5
-            return y_center >= y_threshold
-
-        def sort_key(item):
-            _, _, (x0, y0, x1, y1), _ = item
-            return (int(y0), int(x0), int(y1), int(x1))
-
-        top_items = [it for it in all_line_items if not is_bottom_region(it)]
-        bottom_items = [it for it in all_line_items if is_bottom_region(it)]
-
+        top_items = [item for item in crops if not self._is_bottom_region(item, page)]
+        bottom_items = [item for item in crops if self._is_bottom_region(item, page)]
+        sort_key = lambda item: (int(item.padded_bbox[1]), int(item.padded_bbox[0]), int(item.padded_bbox[3]), int(item.padded_bbox[2]))
         top_items.sort(key=sort_key)
         bottom_items.sort(key=sort_key)
+        return top_items + bottom_items
 
-        ordered_items = top_items + bottom_items
-
-        # 返回 (line_id, crop_img)
-        result = [(item[0], item[3]) for item in ordered_items]
-
-        # 二值化处理
-        if self.config.get("calamari_binarize_lines", True):
-            result = [(line_id, self._binarize_image(img)) for line_id, img in result]
-
-        return result
+    def _is_bottom_region(self, item: OcrLineCrop, page) -> bool:
+        image = page.get_image(highres=True) or page.get_image(highres=False)
+        if image is None:
+            return False
+        y_threshold = float(image.size[1]) * float(self.config.get("calamari_footnote_y_frac", 0.83))
+        _, y0, _, y1 = item.padded_bbox
+        return ((y0 + y1) * 0.5) >= y_threshold
 
     def _write_batch_results(self, document, all_items, texts):
         """批量写回结果"""

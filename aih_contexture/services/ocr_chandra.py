@@ -27,6 +27,13 @@ from PIL import Image
 import aiohttp
 
 from aih_contexture.logger import get_logger
+from aih_contexture.config.vlm_model_presets import (
+    default_quant,
+    default_version,
+    normalize_quant,
+    normalize_version,
+    resolve_vlm_model,
+)
 from aih_contexture.services.ocr_base import BaseOcrService
 
 logger = get_logger()
@@ -115,7 +122,7 @@ class OcrChandraService(BaseOcrService):
 
     ocr_model: Annotated[
         str, "OCR model name"
-    ] = "chandra"
+    ] = "chandra-ocr-2@q8_0"
 
     ocr_api_key: Annotated[
         Optional[str], "API key for authentication (optional)"
@@ -162,7 +169,13 @@ class OcrChandraService(BaseOcrService):
         """
         super().__init__(config or {})
         self._consecutive_failures = 0  # 连续异常计数器
-        self.chandra_version = "1.0"
+        self.chandra_version = default_version("chandra")
+        self.chandra_quant = default_quant("chandra")
+        self.ocr_model = resolve_vlm_model(
+            "chandra",
+            version=self.chandra_version,
+            quant=self.chandra_quant,
+        )
 
         # 从配置字典设置属性
         if config:
@@ -183,11 +196,19 @@ class OcrChandraService(BaseOcrService):
             if "ocr_api_style" in config:
                 self.ocr_api_style = str(config["ocr_api_style"]).strip().lower()
             if "chandra_version" in config:
-                self.chandra_version = str(config["chandra_version"]).strip()
+                self.chandra_version = normalize_version("chandra", str(config["chandra_version"]).strip())
+            if "chandra_quant" in config:
+                self.chandra_quant = normalize_quant("chandra", self.chandra_version, str(config["chandra_quant"]).strip())
             if "max_retries" in config:
                 self.max_retries = config["max_retries"]
             if "max_consecutive_failures" in config:
                 self.max_consecutive_failures = config["max_consecutive_failures"]
+            if "ocr_model" not in config:
+                self.ocr_model = resolve_vlm_model(
+                    "chandra",
+                    version=self.chandra_version,
+                    quant=self.chandra_quant,
+                )
 
         if self.ocr_api_style not in ("openai", "lmstudio-native"):
             logger.warning(f"Unknown ocr_api_style={self.ocr_api_style}, fallback to lmstudio-native")
@@ -233,6 +254,7 @@ class OcrChandraService(BaseOcrService):
             "backend": "chandra",
             "api_style": self.ocr_api_style,
             "chandra_version": profile["version"],
+            "chandra_quant": self.chandra_quant,
             "bbox_scale": profile["bbox_scale"],
             "preprocess_profile": profile["preprocess_profile"],
             "sampling_profile": profile["sampling_profile"],
@@ -265,7 +287,7 @@ class OcrChandraService(BaseOcrService):
         # 检测重复数字序列（如 "14600000000..."）
         digit_count = sum(1 for c in result if c.isdigit())
         if digit_count > len(result) * 0.7 and len(result) > 100:
-            logger.warning(f"[异常检测] 检测到大量数字序列")
+            logger.warning("[Service.Chandra] Suspicious output: excessive digit sequences")
             return True
 
         # 检测重复短语循环（如 "Therefore it would seem..."）
@@ -276,7 +298,7 @@ class OcrChandraService(BaseOcrService):
             if len(chunks) > 5:
                 unique_chunks = set(chunks)
                 if len(unique_chunks) < len(chunks) * 0.3:  # 重复率超过70%
-                    logger.warning(f"[异常检测] 检测到重复短语循环")
+                    logger.warning("[Service.Chandra] Suspicious output: repeated phrase loops")
                     return True
 
         return False
@@ -286,7 +308,7 @@ class OcrChandraService(BaseOcrService):
         构建 OCR prompt (使用 Chandra 官方推荐的 ocr_layout 模式)
         """
         prompt = self._get_profile()["prompt"]
-        logger.info(f"[DEBUG] 使用官方 ocr_layout 提示词 (长度: {len(prompt)} 字符)")
+        logger.debug("Using official ocr_layout prompt (length: %d chars)", len(prompt))
         return prompt
 
     def _img_to_base64(self, img: PIL.Image.Image) -> str:
@@ -306,13 +328,13 @@ class OcrChandraService(BaseOcrService):
             img = img.convert("RGB")
 
         # 记录图像尺寸
-        logger.info(f"[DEBUG] 图像尺寸: {img.size[0]}x{img.size[1]} 像素")
+        logger.debug("Image dimensions: %dx%d pixels", img.size[0], img.size[1])
 
         # 保存为 PNG（与其他分支一致）
         img.save(buffered, format="PNG")
 
         base64_str = base64.b64encode(buffered.getvalue()).decode()
-        logger.info(f"[DEBUG] Base64 长度: {len(base64_str)} 字符")
+        logger.debug("Base64 length: %d chars", len(base64_str))
 
         return base64_str
 
@@ -337,6 +359,7 @@ class OcrChandraService(BaseOcrService):
                     {"type": "text", "content": prompt},
                     {"type": "image", "data_url": f"data:image/png;base64,{img_base64}"},
                 ],
+                "store": False,
                 "temperature": temperature,
                 "top_p": top_p,
                 "max_output_tokens": profile["max_tokens"],
@@ -478,7 +501,7 @@ class OcrChandraService(BaseOcrService):
         img_base64 = self._img_to_base64(img)
         headers = self._build_headers()
 
-        logger.info(f"[DEBUG] 使用同步 HTTP 请求发送 OCR（api_style={self.ocr_api_style}）")
+        logger.debug("Using sync HTTP request for OCR (api_style=%s)", self.ocr_api_style)
 
         for attempt in range(self.max_retries):
             try:
@@ -505,12 +528,15 @@ class OcrChandraService(BaseOcrService):
                     body = json.load(resp)
 
                 result = self._extract_response_text(body).strip()
-                logger.info(f"[DEBUG] 返回内容长度: {len(result)} 字符")
-                logger.info(f"[DEBUG] 返回内容前200字符: {result[:200]}")
+                logger.debug("Response length: %d chars", len(result))
+                logger.debug("Response preview: %s", result[:200])
 
                 if self._is_abnormal_output(result):
                     self._consecutive_failures += 1
-                    logger.warning(f"[异常检测] 检测到异常输出（连续第 {self._consecutive_failures} 次）")
+                    logger.warning(
+                        "[Service.Chandra] Suspicious output detected (consecutive: %d)",
+                        self._consecutive_failures
+                    )
                     if self._consecutive_failures >= self.max_consecutive_failures:
                         error_msg = (
                             f"⚠️ 检测到连续 {self._consecutive_failures} 次异常输出！\n"
@@ -553,7 +579,7 @@ class OcrChandraService(BaseOcrService):
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
 
-        logger.info(f"[DEBUG] 使用 aiohttp 发送 OCR（api_style={self.ocr_api_style}）")
+        logger.debug("Using aiohttp for OCR (api_style=%s)", self.ocr_api_style)
 
         for attempt in range(self.max_retries):
             try:
@@ -580,14 +606,17 @@ class OcrChandraService(BaseOcrService):
                     body = await response.json()
 
                 result = self._extract_response_text(body).strip()
-                logger.info(f"[DEBUG] 返回内容长度: {len(result)} 字符")
-                logger.info(f"[DEBUG] 返回内容前200字符: {result[:200]}")
+                logger.debug("Response length: %d chars", len(result))
+                logger.debug("Response preview: %s", result[:200])
 
                 # 异常输出检测
                 if self._is_abnormal_output(result):
                     self._consecutive_failures += 1
-                    logger.warning(f"[异常检测] 检测到异常输出（连续第 {self._consecutive_failures} 次）")
-                    logger.warning(f"[异常检测] 异常内容: {result[:100]}...")
+                    logger.warning(
+                        "[Service.Chandra] Suspicious output detected (consecutive: %d)",
+                        self._consecutive_failures
+                    )
+                    logger.warning("[Service.Chandra] Suspicious content preview: %s...", result[:100])
 
                     if self._consecutive_failures >= self.max_consecutive_failures:
                         error_msg = (

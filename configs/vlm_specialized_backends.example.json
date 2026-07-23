@@ -1,0 +1,92 @@
+{
+  "ocr": {
+    "tesseract": {
+      "enabled": false,
+      "command": "tesseract",
+      "languages": ["eng", "chi_sim"],
+      "output_format": "hocr",
+      "psm": 6,
+      "oem": 1,
+      "timeout_seconds": 120,
+      "omp_thread_limit": 1,
+      "preprocess": {
+        "orientation_detection": true,
+        "deskew": true,
+        "thresholding": "auto",
+        "downsample_large_images": true,
+        "downsample_above": 32767
+      },
+      "user_words": null,
+      "user_patterns": null
+    }
+  },
+  "vlm": {
+    "paddleocr_vl": {
+      "enabled": false,
+      "mode": "openai_compatible",
+      "model": "PaddleOCR-VL-1.5",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "api_key_env": "CONTEXTURE_VLM_API_KEY",
+      "service_endpoint": null,
+      "request": {
+        "fileType": 0,
+        "useDocOrientationClassify": true,
+        "useDocUnwarping": true,
+        "useLayoutDetection": true,
+        "useChartRecognition": true,
+        "useSealRecognition": true,
+        "useOcrForImageBlock": true,
+        "layoutShapeMode": "auto",
+        "promptLabel": null,
+        "formatBlockContent": true,
+        "minPixels": 112896,
+        "maxPixels": 1003520,
+        "maxNewTokens": 4096,
+        "mergeLayoutBlocks": true,
+        "markdownIgnoreLabels": []
+      },
+      "preserve_raw_result": true
+    },
+    "mineru_vl": {
+      "enabled": false,
+      "mode": "openai_compatible",
+      "model": "OpenDataLab/MinerU2.5-Pro-2604-1.2B",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "api_key_env": "CONTEXTURE_VLM_API_KEY",
+      "cli_sidecar": {
+        "enabled": false,
+        "mineru_command": "mineru",
+        "backend": "vlm-http-client",
+        "server_url": "http://127.0.0.1:1234"
+      },
+      "prompts": {
+        "layout": "\nLayout Detection:",
+        "text": "\nText Recognition:",
+        "table": "\nTable Recognition:",
+        "formula": "\nFormula Recognition:",
+        "image": "\nImage Analysis:"
+      },
+      "sampling": {
+        "temperature": 0.0,
+        "top_p": 0.01,
+        "top_k": 1,
+        "presence_penalty": 1.0,
+        "frequency_penalty": 0.05,
+        "repetition_penalty": 1.0,
+        "no_repeat_ngram_size": 100,
+        "skip_special_tokens": false
+      },
+      "layout_image_size": [1036, 1036],
+      "bbox_coordinate_space": "0..1000",
+      "official_protocol": "single product path: Layout Detection plus official MinerU block recognition prompts; fail clearly if structured parsing is unavailable.",
+      "preserve_raw_result": true
+    }
+  },
+  "notes": {
+    "runtime_policy": "Do not install PaddleOCR-VL or MinerU-VL heavy local inference stacks into the Contexture main environment.",
+    "lmstudio": "For LM Studio, set base_url to its OpenAI-compatible /v1 endpoint and choose the loaded model id.",
+    "cloud_api": "For cloud APIs, set base_url, model, and api_key_env according to the provider.",
+    "paddle_service_mode": "For an official Paddle service, set paddleocr_vl.mode to service and service_endpoint to the /layout-parsing URL.",
+    "mineru_cli_sidecar": "For transitional MinerU verification, enable cli_sidecar and point server_url to an OpenAI-compatible model server root, not /v1."
+  }
+}

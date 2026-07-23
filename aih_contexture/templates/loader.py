@@ -224,9 +224,6 @@ class TemplateLoader:
             reading_direction=config.get("reading_direction", "ltr"),
             vlm_layout_prompt=config.get("vlm_layout_prompt"),
             vlm_layout_timeout=config.get("vlm_layout_timeout", 120),
-            yolo_base_url=config.get("yolo_base_url", "http://localhost:11900"),
-            yolo_model=config.get("yolo_model", "doclayout_yolo"),
-            yolo_confidence_threshold=config.get("yolo_confidence_threshold", 0.25),
         )
 
         ocr_config = OcrTemplateConfig(

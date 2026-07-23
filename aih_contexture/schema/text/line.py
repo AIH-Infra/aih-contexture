@@ -8,10 +8,19 @@ from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.blocks import Block, BlockOutput
 
 HYPHENS = r"-—¬"
+ESCAPED_ALLOWED_INLINE_TAG_RE = re.compile(r"&lt;(/?)(sup|sub)&gt;", re.IGNORECASE)
 
 
 def remove_tags(text):
     return re.sub(r"<[^>]+>", "", text)
+
+
+def restore_allowed_inline_tags(text: str) -> str:
+    """Keep trusted inline semantic tags produced by upstream processors."""
+    return ESCAPED_ALLOWED_INLINE_TAG_RE.sub(
+        lambda match: f"<{match.group(1)}{match.group(2).lower()}>",
+        text,
+    )
 
 
 def replace_last(string, old, new):
@@ -61,8 +70,9 @@ class Line(Block):
         text = ""
         for block in self.contained_blocks(document, (BlockTypes.Span,)):
             block_text = html.escape(block.text)
+            block_text = restore_allowed_inline_tags(block_text)
 
-            if block.has_superscript:
+            if block.has_superscript and "<sup>" not in block_text.lower():
                 block_text = re.sub(r"^([0-9\W]+)(.*)", r"<sup>\1</sup>\2", block_text)
                 if "<sup>" not in block_text:
                     block_text = f"<sup>{block_text}</sup>"

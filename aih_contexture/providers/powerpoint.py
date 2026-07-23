@@ -1,7 +1,6 @@
 import base64
 import os
 import tempfile
-import traceback
 
 from aih_contexture.logger import get_logger
 from aih_contexture.providers import raise_missing_format_dependency
@@ -52,7 +51,7 @@ class PowerPointProvider(PdfProvider):
         try:
             self.convert_pptx_to_pdf(filepath)
         except Exception as e:
-            print(traceback.format_exc())
+            logger.exception("Error converting PPTX to PDF")
             raise ValueError(f"Error converting PPTX to PDF: {e}")
 
         # Initalize the PDF provider with the temp pdf path

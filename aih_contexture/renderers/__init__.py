@@ -39,7 +39,7 @@ class BaseRenderer:
         bool, "Whether footnote-style markup should be preserved in output."
     ] = True
     superscript_policy: Annotated[
-        str, "Superscript output policy: auto, preserve_all, suppress_footnote_like, suppress_all."
+        str, "Superscript output policy: auto, footnote_safe, preserve_all, suppress_footnote_like, suppress_all."
     ] = "auto"
     add_block_ids: Annotated[bool, "Whether to add block IDs to the output HTML."] = (
         False
@@ -50,7 +50,7 @@ class BaseRenderer:
 
         if self.superscript_policy == "auto":
             self.superscript_policy = (
-                "preserve_all" if self.footnote_enabled else "suppress_footnote_like"
+                "footnote_safe" if self.footnote_enabled else "suppress_footnote_like"
             )
 
         self.block_config = {
@@ -164,16 +164,16 @@ class BaseRenderer:
                     break
 
             if ref_block_id.block_type in self.image_blocks and self.extract_images:
-                images[ref_block_id] = self.extract_image(
-                    document, ref_block_id, to_base64=True
-                )
+                image = self.extract_image(document, ref_block_id, to_base64=True)
+                if image is not None:
+                    images[ref_block_id] = image
             else:
                 images.update(sub_images)
                 ref.replace_with(BeautifulSoup(content, "html.parser"))
 
         if block_output.id.block_type in self.image_blocks and self.extract_images:
-            images[block_output.id] = self.extract_image(
-                document, block_output.id, to_base64=True
-            )
+            image = self.extract_image(document, block_output.id, to_base64=True)
+            if image is not None:
+                images[block_output.id] = image
 
         return str(soup), images

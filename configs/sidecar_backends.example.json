@@ -1,0 +1,15 @@
+{
+  "mineru_command": "mineru",
+  "paddle_python": null,
+  "tesseract_command": "tesseract",
+  "paddleocr_vl_runtime": null,
+  "mineru_vl_runtime": null,
+  "notes": {
+    "mineru_command": "Prefer CONTEXTURE_MINERU_COMMAND or an explicit mineru executable path in production.",
+    "paddle_python": "Prefer CONTEXTURE_PADDLE_PYTHON or an explicit GPU Paddle virtualenv python.exe in production.",
+    "tesseract_command": "Future OCR backend; use a system Tesseract binary or OCR sidecar.",
+    "paddleocr_vl_runtime": "Future VLM specialized backend; follow PaddleOCR-VL upstream protocol.",
+    "mineru_vl_runtime": "Future VLM specialized backend; follow MinerU-VL upstream protocol.",
+    "future_backends": "Tesseract belongs to OCR; PaddleOCR-VL and MinerU-VL belong to VLM specialized backends."
+  }
+}

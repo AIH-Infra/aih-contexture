@@ -113,9 +113,12 @@ class ConfigCrawler:
                     pass
         return subclasses
 
-    def _format_type(self, t: Type) -> str:
+    @staticmethod
+    def _format_type(t: Type) -> str:
         """Format a typing type like Optional[int] into a readable string."""
 
+        if isinstance(t, str):
+            return t
         if get_origin(t):  # Handle Optional and types with origins separately
             return f"{t}".removeprefix("typing.")
         else:  # Regular types like int, str

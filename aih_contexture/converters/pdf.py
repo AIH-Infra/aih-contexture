@@ -31,10 +31,13 @@ from aih_contexture.processors.footnote_policy import FootnotePolicyProcessor
 from aih_contexture.processors.ignoretext import IgnoreTextProcessor
 from aih_contexture.processors.line_numbers import LineNumbersProcessor
 from aih_contexture.processors.list import ListProcessor
+from aih_contexture.processors.inline_annotation import InlineAnnotationProcessor
 from aih_contexture.processors.llm.llm_complex import LLMComplexRegionProcessor
 from aih_contexture.processors.llm.llm_form import LLMFormProcessor
 from aih_contexture.processors.llm.llm_image_description import LLMImageDescriptionProcessor
 from aih_contexture.processors.llm.llm_table import LLMTableProcessor
+from aih_contexture.processors.marginal_annotation import MarginalAnnotationProcessor
+from aih_contexture.processors.marginal_line_numbers import MarginalLineNumberProcessor
 from aih_contexture.processors.page_footer import PageFooterProcessor
 from aih_contexture.processors.page_header import PageHeaderProcessor
 from aih_contexture.processors.reference import ReferenceProcessor
@@ -61,8 +64,7 @@ from aih_contexture.processors.llm.llm_noise_removal import LLMNoiseRemovalProce
 from aih_contexture.processors.page_number import PageNumberProcessor
 from aih_contexture.processors.printed_page_correction import PrintedPageNumberCorrectorProcessor
 from aih_contexture.processors.markdown_noise import MarkdownNoiseRemovalProcessor  # 🆕 Markdown 噪音清理
-from aih_contexture.builders.vlm_ocr import VlmOcrBuilder
-from aih_contexture.services.ocr_vlm import VlmOcrService
+from aih_contexture.backends.pipeline import create_layout_builder, create_ocr_builder
 
 
 class PdfConverter(BaseConverter):
@@ -97,7 +99,11 @@ class PdfConverter(BaseConverter):
         PageHeaderProcessor,
         PageFooterProcessor,
         PageNumberProcessor,  # 提取页码
+        PrintedPageNumberCorrectorProcessor,  # 基于连续序列修正/补全印刷页码
         LLMPrintedPageCorrectionProcessor,  # 🆕 LLM辅助修正页码
+        MarginalAnnotationProcessor,
+        MarginalLineNumberProcessor,
+        InlineAnnotationProcessor,
         SectionHeaderProcessor,
         TableProcessor,
         LLMTableProcessor,
@@ -131,6 +137,9 @@ class PdfConverter(BaseConverter):
         PageFooterProcessor: "page_footer",
         PageNumberProcessor: "page_number",
         PrintedPageNumberCorrectorProcessor: "printed_page_correction",
+        MarginalAnnotationProcessor: "marginal_annotation",
+        MarginalLineNumberProcessor: "marginal_line_numbers",
+        InlineAnnotationProcessor: "inline_annotation",
         SectionHeaderProcessor: "section_header",
         TableProcessor: "table",
         ReferenceProcessor: "reference",
@@ -203,6 +212,7 @@ class PdfConverter(BaseConverter):
 
         self.layout_builder_class = LayoutBuilder
         self.page_count = None  # Track how many pages were converted
+        self.last_document = None
         self.processor_debug_summary = self._build_processor_debug_summary(config)
 
     @classmethod
@@ -234,8 +244,44 @@ class PdfConverter(BaseConverter):
             SectionHeaderProcessor: "section_header_enabled",
             ReferenceProcessor: "reference_enabled",
             MarkdownNoiseRemovalProcessor: "markdown_noise_removal_enabled",
+            MarginalAnnotationProcessor: "heuristic_marginal_detection_enabled",
+            MarginalLineNumberProcessor: "marginal_line_number_dedupe_enabled",
+            InlineAnnotationProcessor: "enable_inline_detection",
         }
         return processor_config_map, non_llm_processor_config_map
+
+    @classmethod
+    def _processor_enabled_default(cls, config_key):
+        if config_key in {"enable_marginal_detection", "heuristic_marginal_detection_enabled", "enable_inline_detection"}:
+            return False
+        if config_key == "marginal_line_number_dedupe_enabled":
+            return False
+        return True
+
+    @classmethod
+    def _marginal_line_number_dedupe_enabled(cls, config):
+        config = config or {}
+        if "marginal_line_number_dedupe_enabled" in config:
+            return bool(config.get("marginal_line_number_dedupe_enabled"))
+
+        layout_backend = str(config.get("layout_backend") or "").lower()
+        external_backend = str(config.get("external_layout_backend_name") or "").lower()
+        if "mineru" in layout_backend or "mineru" in external_backend:
+            return True
+        if bool(config.get("enable_marginal_detection", False)):
+            return True
+        if bool(config.get("native_marginalia_enabled", False)):
+            return True
+        if bool(cls._heuristic_marginal_detection_enabled(config)):
+            return True
+        return False
+
+    @classmethod
+    def _heuristic_marginal_detection_enabled(cls, config):
+        config = config or {}
+        if "heuristic_marginal_detection_enabled" in config:
+            return bool(config.get("heuristic_marginal_detection_enabled"))
+        return bool(config.get("enable_marginal_detection", False))
 
     def _build_processor_debug_summary(self, config):
         config = config or {}
@@ -247,7 +293,12 @@ class PdfConverter(BaseConverter):
                 enabled = bool(config.get(config_key, False))
             elif processor_cls in non_llm_map:
                 config_key = non_llm_map[processor_cls]
-                enabled = bool(config.get(config_key, True))
+                if config_key == "marginal_line_number_dedupe_enabled":
+                    enabled = self._marginal_line_number_dedupe_enabled(config)
+                elif config_key == "heuristic_marginal_detection_enabled":
+                    enabled = self._heuristic_marginal_detection_enabled(config)
+                else:
+                    enabled = bool(config.get(config_key, self._processor_enabled_default(config_key)))
             else:
                 config_key = None
                 enabled = True
@@ -288,7 +339,13 @@ class PdfConverter(BaseConverter):
                     filtered_list.append(processor_cls)
             elif processor_cls in non_llm_processor_config_map:
                 config_key = non_llm_processor_config_map[processor_cls]
-                if config.get(config_key, True):
+                if config_key == "marginal_line_number_dedupe_enabled":
+                    enabled = self._marginal_line_number_dedupe_enabled(config)
+                elif config_key == "heuristic_marginal_detection_enabled":
+                    enabled = self._heuristic_marginal_detection_enabled(config)
+                else:
+                    enabled = bool(config.get(config_key, self._processor_enabled_default(config_key)))
+                if enabled:
                     filtered_list.append(processor_cls)
             else:
                 filtered_list.append(processor_cls)
@@ -324,126 +381,27 @@ class PdfConverter(BaseConverter):
         provider_cls = provider_from_filepath(filepath)
         line_builder = self.resolve_dependencies(LineBuilder)
 
-        # ========== 版面后端选择 ==========
-        layout_backend = (self.config or {}).get("layout_backend", "surya")
-        ocr_backend = (self.config or {}).get("ocr_backend", "surya")
-        force_ocr = (self.config or {}).get("force_ocr", False)
-        disable_ocr = (self.config or {}).get("disable_ocr", False)
+        layout_builder = create_layout_builder(
+            config=self.config or {},
+            resolve_dependencies=self.resolve_dependencies,
+            logger=logger,
+            layout_builder_class=self.layout_builder_class,
+        )
+        ocr_builder = create_ocr_builder(
+            config=self.config or {},
+            resolve_dependencies=self.resolve_dependencies,
+            logger=logger,
+            ocr_builder_class=OcrBuilder,
+        )
 
-        # ========== 版面识别后端选择 ==========
-        if layout_backend == "vlm":
-            from aih_contexture.services.layout_vlm import VlmLayoutService
-            from aih_contexture.builders.vlm_layout import VlmLayoutBuilder
-
-            print("[PdfConverter] Using VLM layout backend")
-            logger.info("[PdfConverter] 使用 VLM 版面识别后端")
-
-            try:
-                vlm_layout_service = VlmLayoutService(self.config)
-                layout_builder = VlmLayoutBuilder(vlm_layout_service, config=self.config)
-                print("[PdfConverter] VlmLayoutBuilder created")
-            except Exception as e:
-                print(f"[PdfConverter] VLM layout init failed: {e}")
-                import traceback
-                traceback.print_exc()
-                print("[PdfConverter] Falling back to Surya layout")
-                layout_builder = self.resolve_dependencies(self.layout_builder_class)
-
-        elif layout_backend == "yolo":
-            from aih_contexture.services.layout_yolo import YoloLayoutService
-            from aih_contexture.builders.yolo_layout import YoloLayoutBuilder
-
-            print("[PdfConverter] Using YOLO layout backend")
-            logger.info("[PdfConverter] 使用 YOLO 版面识别后端")
-
-            try:
-                yolo_service = YoloLayoutService(self.config)
-
-                if not yolo_service.health_check():
-                    print("[PdfConverter] YOLO unavailable, falling back to Surya layout")
-                    logger.warning("[PdfConverter] YOLO service unavailable, falling back to Surya")
-                    layout_builder = self.resolve_dependencies(self.layout_builder_class)
-                else:
-                    layout_builder = YoloLayoutBuilder(yolo_service, config=self.config)
-                    print("[PdfConverter] YoloLayoutBuilder created")
-            except Exception as e:
-                print(f"[PdfConverter] YOLO layout init failed: {e}")
-                import traceback
-                traceback.print_exc()
-                print("[PdfConverter] Falling back to Surya layout")
-                layout_builder = self.resolve_dependencies(self.layout_builder_class)
-
-        else:
-            # 默认使用 Surya 版面识别
-            print("[PdfConverter] Using Surya layout backend")
-            logger.info("[PdfConverter] 使用 Surya 版面识别后端")
-            layout_builder = self.resolve_dependencies(self.layout_builder_class)
-        
-        # ========== OCR 后端选择 ==========
-        if disable_ocr:
-            # OCR 已禁用，使用 PDF 内嵌文本
-            print("[PdfConverter] OCR disabled; using embedded PDF text")
-            logger.info("[PdfConverter] OCR disabled, using PDF embedded text")
-            ocr_builder = self.resolve_dependencies(OcrBuilder)
-        elif ocr_backend == "vlm":
-            from aih_contexture.services.ocr_vlm import VlmOcrService
-            from aih_contexture.builders.vlm_ocr import VlmOcrBuilder
-            
-            print("[PdfConverter] Using VLM OCR backend")
-            logger.warning("[PdfConverter] Using VLM OCR backend")
-            
-            try:
-                openai_service = VlmOcrService(self.config)
-                ocr_builder = VlmOcrBuilder(openai_service, config=self.config)
-                print("[PdfConverter] VlmOcrBuilder created")
-            except Exception as e:
-                print(f"[PdfConverter] VLM OCR init failed: {e}")
-                import traceback
-                traceback.print_exc()
-                print("[PdfConverter] Falling back to Surya OCR")
-                ocr_builder = self.resolve_dependencies(OcrBuilder)
-        
-        elif ocr_backend == "calamari":
-            from aih_contexture.services.ocr_calamari import CalamariOcrService
-            from aih_contexture.builders.calamari_ocr import CalamariOcrBuilder
-            
-            print("[PdfConverter] Using Calamari OCR backend")
-            logger.warning("[PdfConverter] Using Calamari OCR backend")
-            
-            try:
-                calamari_service = CalamariOcrService(self.config)
-                
-                if not calamari_service.health_check():
-                    print("[PdfConverter] Calamari unavailable, falling back to Surya OCR")
-                    logger.warning("[PdfConverter] Calamari service unavailable, falling back to Surya")
-                    ocr_builder = self.resolve_dependencies(OcrBuilder)
-                else:
-                    ocr_builder = CalamariOcrBuilder(calamari_service, config=self.config)
-                    print("[PdfConverter] CalamariOcrBuilder created")
-            except Exception as e:
-                print(f"[PdfConverter] Calamari OCR init failed: {e}")
-                import traceback
-                traceback.print_exc()
-                print("[PdfConverter] Falling back to Surya OCR")
-                ocr_builder = self.resolve_dependencies(OcrBuilder)
-        
-        else:
-            print("[PdfConverter] Using Surya OCR backend")
-            logger.warning("[PdfConverter] 使用 Surya OCR 后端")
-            ocr_builder = self.resolve_dependencies(OcrBuilder)
-
-        print(f"[PdfConverter] Creating provider: {provider_cls.__name__}")
         logger.info("[PdfConverter] Creating provider: %s", provider_cls.__name__)
         provider = provider_cls(filepath, self.config)
-        print(f"[PdfConverter] Provider created: {provider_cls.__name__}")
         logger.info("[PdfConverter] Provider created: %s", provider_cls.__name__)
 
-        print("[PdfConverter] Building document via DocumentBuilder")
         logger.info("[PdfConverter] Building document via DocumentBuilder")
         document = DocumentBuilder(self.config)(
             provider, layout_builder, line_builder, ocr_builder
         )
-        print("[PdfConverter] DocumentBuilder completed")
         logger.info("[PdfConverter] DocumentBuilder completed")
         structure_builder_cls = self.resolve_dependencies(StructureBuilder)
         structure_builder_cls(document)
@@ -471,6 +429,7 @@ class PdfConverter(BaseConverter):
     def __call__(self, filepath: str | io.BytesIO):
         with self.filepath_to_str(filepath) as temp_path:
             document = self.build_document(temp_path)
+            self.last_document = document
             self.page_count = len(document.pages)
             renderer = self.resolve_dependencies(self.renderer)
             rendered = renderer(document)

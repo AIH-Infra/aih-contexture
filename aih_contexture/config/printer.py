@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, get_args
 
 import click
 
@@ -15,6 +15,7 @@ class CustomClickPrinter(click.Command):
 
         # Keep track of shared attributes and their types
         shared_attrs = {}
+        existing_param_names = {param.name for param in ctx.command.params if getattr(param, "name", None)}
 
         # First pass: identify shared attributes and verify compatibility
         for base_type, base_type_dict in crawler.class_config_map.items():
@@ -26,31 +27,22 @@ class CustomClickPrinter(click.Command):
                         shared_attrs[attr] = {
                             "classes": [],
                             "type": attr_type,
-                            "is_flag": attr_type in [bool, Optional[bool]]
-                            and not default,
+                            "is_flag": _click_type(attr_type) is bool and not default,
                             "metadata": metadata,
                             "default": default,
                         }
                     shared_attrs[attr]["classes"].append(class_name)
 
-        # These are the types of attrs that can be set from the command line
-        attr_types = [
-            str,
-            int,
-            float,
-            bool,
-            Optional[int],
-            Optional[float],
-            Optional[str],
-        ]
-
         # Add shared attribute options first
         for attr, info in shared_attrs.items():
-            if info["type"] in attr_types:
+            if attr in existing_param_names:
+                continue
+            option_type = _click_type(info["type"])
+            if option_type is not None:
                 ctx.command.params.append(
                     click.Option(
                         ["--" + attr],
-                        type=info["type"],
+                        type=option_type,
                         help=" ".join(info["metadata"])
                         + f" (Applies to: {', '.join(info['classes'])})",
                         default=None,  # This is important, or it sets all the default keys again in config
@@ -80,14 +72,15 @@ class CustomClickPrinter(click.Command):
                             "\n".join([f"{' ' * 12}" + desc for desc in metadata])
                         )
 
-                    if attr_type in attr_types:
-                        is_flag = attr_type in [bool, Optional[bool]] and not default
+                    option_type = _click_type(attr_type)
+                    if option_type is not None and class_name_attr not in existing_param_names:
+                        is_flag = option_type is bool and not default
 
                         # Only add class-specific options
                         ctx.command.params.append(
                             click.Option(
                                 ["--" + class_name_attr, class_name_attr],
-                                type=attr_type,
+                                type=option_type,
                                 help=" ".join(metadata),
                                 is_flag=is_flag,
                                 default=None,  # This is important, or it sets all the default keys again in config
@@ -98,3 +91,15 @@ class CustomClickPrinter(click.Command):
             ctx.exit()
 
         super().parse_args(ctx, args)
+
+
+def _click_type(annotation: Any) -> type | None:
+    if annotation in (str, int, float, bool):
+        return annotation
+    args = get_args(annotation)
+    if not args:
+        return None
+    non_none = [arg for arg in args if arg is not type(None)]
+    if len(non_none) == 1 and non_none[0] in (str, int, float, bool):
+        return non_none[0]
+    return None

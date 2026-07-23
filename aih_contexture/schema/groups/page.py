@@ -56,10 +56,15 @@ class PageGroup(Group):
         **kwargs,
     ):
         image = self.highres_image if highres else self.lowres_image
+        if image is None and highres:
+            image = self.lowres_image
 
         # Check if RGB, convert if needed
         if isinstance(image, Image.Image) and image.mode != "RGB":
             image = image.convert("RGB")
+
+        if image is None:
+            return None
 
         # Avoid double OCR for certain elements
         if remove_blocks:

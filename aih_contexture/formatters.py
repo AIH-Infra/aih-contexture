@@ -6,6 +6,28 @@
 
 from typing import Optional, Callable
 
+from aih_contexture.logger import get_logger
+
+logger = get_logger()
+
+
+def join_markdown_pages(
+    pages: list[str],
+    *,
+    page_separator: str = "\n\n---\n\n",
+    page_anchors_enabled: bool = False,
+) -> str:
+    """
+    Join rendered page Markdown without duplicating page separators.
+
+    When PageAnchorPlugin is enabled, each page already starts with
+    "{n} + page separator", so the outer join should only keep spacing
+    between the previous page body and the next page anchor.
+    """
+    if page_anchors_enabled:
+        return "\n\n".join(pages)
+    return page_separator.join(pages)
+
 
 class PageAnchorFormatter:
     """
@@ -112,14 +134,18 @@ class PageAnchorPlugin:
             display_id = self.custom_id_injector.get_custom_id(page_index)
 
         page_tag = f"<!-- Page: {display_id} -->\n" if display_id else ""
+        separator_block = ""
+        page_separator = str(self.page_separator or "").strip()
+        if page_separator:
+            separator_block = f"{self.separator}{page_separator}"
 
         # 根据位置插入锚点和标签
         if self.position == "before":
-            return f"{anchor_str}{self.separator}{page_tag}{content}"
+            return f"{anchor_str}{separator_block}{self.separator}{page_tag}{content}"
         elif self.position == "after":
-            return f"{content}{self.separator}{page_tag}{anchor_str}"
+            return f"{content}{self.separator}{page_tag}{anchor_str}{separator_block}"
         elif self.position == "both":
-            return f"{anchor_str}{self.separator}{page_tag}{content}{self.separator}{page_tag}{anchor_str}"
+            return f"{anchor_str}{separator_block}{self.separator}{page_tag}{content}{self.separator}{page_tag}{anchor_str}{separator_block}"
         else:
             return content
 
@@ -151,7 +177,7 @@ class PrintedPageExtractor:
     印刷页码提取器 - 从页面内容提取印刷页码
 
     策略：
-    1. 优先从注释标记中提取（page-header/footer）
+    1. 优先从注释标记中提取（PageHeader/PageFooter，兼容历史 page-header/footer）
     2. 使用传入的正则模式（来自正则预设系统）
     3. 每页只提取一个
     """
@@ -171,10 +197,11 @@ class PrintedPageExtractor:
         self.remove_from_content = remove_from_content
         self.search_lines = search_lines
         self.patterns = patterns or []
-        # 调试日志
-        print(f"[PrintedPageExtractor] Initialized with {len(self.patterns)} patterns:")
-        for i, p in enumerate(self.patterns):
-            print(f"  [{i}] {p}")
+        logger.info(
+            "[PrintedPageExtractor] Initialized with %s patterns: %s",
+            len(self.patterns),
+            self.patterns,
+        )
 
     def extract(self, content: str) -> tuple[str, Optional[str]]:
         """
@@ -230,10 +257,12 @@ class PrintedPageExtractor:
                 return False
             return True
 
-        # 罗马数字: 1-6位，只允许 IVXLCDM
-        # 单字母只允许 I, V, X（过滤 M, L, C, D 等 OCR 错误）
-        if self.re.match(r'^[IVXLCDM]{1,6}$', text, self.re.IGNORECASE):
-            if len(text) == 1 and text.upper() not in ['I', 'V', 'X']:
+        # 罗马数字：必须符合正常罗马数字语法，避免把 did、civil 等正文词误判为页码。
+        # 单字母仍只允许 I, V, X（过滤 M, L, C, D 等 OCR 噪声）。
+        roman_text = text.upper()
+        roman_pattern = r'M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})'
+        if self.re.fullmatch(roman_pattern, roman_text):
+            if len(roman_text) == 1 and roman_text not in ['I', 'V', 'X']:
                 return False
             return True
 

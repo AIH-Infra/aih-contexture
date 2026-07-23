@@ -14,11 +14,12 @@ OCR Direct Async Converter
 
 import asyncio
 import base64
+import gc
 import re
 import time
 from io import BytesIO
 from pathlib import Path
-from typing import List, Optional, Annotated, Tuple, Union
+from typing import Any, Callable, List, Optional, Annotated, Tuple, Union
 
 import aiohttp
 from PIL import Image
@@ -28,13 +29,63 @@ from bs4 import BeautifulSoup
 from aih_contexture.converters import BaseConverter
 from aih_contexture.schema.document import Document
 from aih_contexture.services.ocr_factory import OcrServiceFactory
+from aih_contexture.config.vlm_model_presets import default_version
 from aih_contexture.builders.ocr_parser import OcrParser
-from aih_contexture.formatters import PageAnchorPlugin, PrintedPageExtractor
+from aih_contexture.formatters import PageAnchorPlugin, PrintedPageExtractor, join_markdown_pages
 from aih_contexture.utils.api_key_pool import APIKeyPool
 from aih_contexture.utils.chandra_output import parse_markdown, parse_html, parse_chunks
 from aih_contexture.logger import get_logger
+from aih_contexture.runtime.chrome_screenai_runtime import ChromeScreenAIRuntime
+from aih_contexture.utils.markdown_filters import strip_blockquote_markers, strip_margin_comment_markers
 
 logger = get_logger()
+
+
+def _coalesce_config_value(value, default):
+    if value is None:
+        return default
+    if isinstance(value, str) and value.strip().lower() in {"", "none"}:
+        return default
+    return value
+
+
+def _empty_page_result(page_num: int, img: Image.Image, raw_output: str = ""):
+    from aih_contexture.schema.groups.page import PageGroup
+    from aih_contexture.schema.polygon import PolygonBox
+
+    page_polygon = PolygonBox.from_bbox([0, 0, img.width, img.height])
+    empty_page = PageGroup(
+        page_id=page_num,
+        polygon=page_polygon,
+        structure=[]
+    )
+    return (page_num, empty_page, raw_output, img.size, img)
+
+
+def _specialized_vlm_error_page(backend: str, page_num: int, exc: Exception) -> dict[str, Any]:
+    return {
+        "backend": backend,
+        "official_protocol": "error",
+        "markdown": "",
+        "blocks": [],
+        "raw": "",
+        "error": {
+            "page": page_num,
+            "stage": "process_page_async",
+            "message": str(exc),
+        },
+    }
+
+
+def _page_result_ok(result: Any) -> bool:
+    if isinstance(result, Exception):
+        return False
+    if not isinstance(result, tuple) or len(result) < 3:
+        return False
+    raw_output = result[2]
+    if isinstance(raw_output, dict) and raw_output.get("error"):
+        return False
+    return True
 
 
 class OcrDirectAsyncConverter(BaseConverter):
@@ -114,53 +165,71 @@ class OcrDirectAsyncConverter(BaseConverter):
         bool, "Enable page anchor system"
     ] = True
 
-    def __init__(self, config):
+    def __init__(self, config, *, progress_callback: Callable[[dict[str, Any]], None] | None = None):
         super().__init__(config)
         config = config or {}
+        self.progress_callback = progress_callback
 
         # 🆕 接收后端类型和输出格式
         self.backend = config.get("ocr_backend", "chandra")
-        self.chandra_version = str(config.get("chandra_version", "1.0"))
+        self.chandra_version = str(config.get("chandra_version", default_version("chandra")))
         self.final_output_formats = config.get("final_output_formats", ["markdown"])
+        self.specialized_vlm_markdown_mode = self._normalize_specialized_vlm_markdown_mode(
+            config.get(
+                "vlm_specialized_markdown_mode",
+                config.get("ocr_specialized_markdown_mode", "contexture_middle"),
+            )
+        )
+        self.is_chrome_screenai = self.backend == "chrome_screenai"
 
         # 加载配置（支持字典访问）
-        self.endpoint = config.get("ocr_endpoint", self.ocr_endpoint)
+        endpoint = config.get("ocr_endpoint")
+        if not endpoint:
+            endpoint = type(self).ocr_endpoint
+        self.endpoint = str(endpoint)
 
         # 协议风格：默认走 LM Studio 原生协议
-        self.api_style = config.get("ocr_api_style", "lmstudio-native")
+        self.api_style = str(_coalesce_config_value(config.get("ocr_api_style"), "lmstudio-native")).strip().lower()
 
         # 端点自动补全：
-        # - openai            : /v1 -> /v1/chat/completions
-        # - lmstudio-native   : /v1 -> /api/v1/chat
-        if self.endpoint.endswith("/v1"):
-            if self.api_style == "lmstudio-native":
-                self.endpoint = self.endpoint.replace("/v1", "/api/v1/chat")
-            else:
-                self.endpoint = self.endpoint.replace("/v1", "/v1/chat/completions")
+        # - openai            : root or /v1 -> /v1/chat/completions
+        # - lmstudio-native   : root or /v1 -> /api/v1/chat
+        if not self.is_chrome_screenai:
+            if self.endpoint.endswith("/v1"):
+                if self.api_style == "lmstudio-native":
+                    self.endpoint = self.endpoint.replace("/v1", "/api/v1/chat")
+                else:
+                    self.endpoint = self.endpoint.replace("/v1", "/v1/chat/completions")
+            elif self.api_style != "lmstudio-native" and not self.endpoint.rstrip("/").endswith("/chat/completions"):
+                self.endpoint = self.endpoint.rstrip("/") + "/v1/chat/completions"
+            elif self.api_style == "lmstudio-native" and not self.endpoint.rstrip("/").endswith("/api/v1/chat"):
+                self.endpoint = self.endpoint.rstrip("/") + "/api/v1/chat"
 
-        self.model = config.get("ocr_model", self.ocr_model)
-        self.api_key = config.get("ocr_api_key", self.ocr_api_key)
-        self.output_format = config.get("ocr_output_format", self.ocr_output_format)
-        self.max_tokens = config.get("ocr_max_tokens", self.ocr_max_tokens)
-        self.temperature = config.get("ocr_temperature", self.ocr_temperature)
-        self.timeout = config.get("ocr_timeout", self.ocr_timeout)
-        self.max_retries = config.get("ocr_max_retries", self.ocr_max_retries)
+        self.model = _coalesce_config_value(config.get("ocr_model"), self.ocr_model)
+        self.api_key = _coalesce_config_value(config.get("ocr_api_key"), self.ocr_api_key)
+        self.output_format = _coalesce_config_value(config.get("ocr_output_format"), self.ocr_output_format)
+        self.max_tokens = _coalesce_config_value(config.get("ocr_max_tokens"), self.ocr_max_tokens)
+        self.temperature = _coalesce_config_value(config.get("ocr_temperature"), self.ocr_temperature)
+        self.timeout = _coalesce_config_value(config.get("ocr_timeout"), self.ocr_timeout)
+        self.max_retries = _coalesce_config_value(config.get("ocr_max_retries"), self.ocr_max_retries)
 
-        self.ocr_concurrency = config.get("ocr_concurrency", self.ocr_concurrency)
-        self.ocr_batch_size = config.get("ocr_batch_size", self.ocr_batch_size)
-        self.ocr_batch_rest = config.get("ocr_batch_rest", self.ocr_batch_rest)
+        self.ocr_concurrency = _coalesce_config_value(config.get("ocr_concurrency"), self.ocr_concurrency)
+        self.ocr_batch_size = _coalesce_config_value(config.get("ocr_batch_size"), self.ocr_batch_size)
+        self.ocr_batch_rest = _coalesce_config_value(config.get("ocr_batch_rest"), self.ocr_batch_rest)
         self.concurrency = self.ocr_concurrency
         self.batch_size = self.ocr_batch_size
         self.batch_rest = self.ocr_batch_rest
 
-        self.ocr_resize_max = config.get("ocr_resize_max", self.ocr_resize_max)
-        self.ocr_image_format = str(config.get("ocr_image_format", self.ocr_image_format)).upper()
-        self.ocr_image_quality = config.get("ocr_image_quality", self.ocr_image_quality)
+        self.ocr_resize_max = _coalesce_config_value(config.get("ocr_resize_max"), self.ocr_resize_max)
+        self.ocr_image_format = str(_coalesce_config_value(config.get("ocr_image_format"), self.ocr_image_format)).upper()
+        self.ocr_image_quality = _coalesce_config_value(config.get("ocr_image_quality"), self.ocr_image_quality)
         self.resize_max = self.ocr_resize_max
         self.image_format = self.ocr_image_format
         self.image_quality = self.ocr_image_quality
 
-        self.page_anchor_enabled = config.get("ocr_page_anchor_enabled", self.ocr_page_anchor_enabled)
+        self.page_anchor_enabled = _coalesce_config_value(
+            config.get("ocr_page_anchor_enabled"), self.ocr_page_anchor_enabled
+        )
 
         # 页码范围配置
         page_range_str = config.get("page_range", None)
@@ -180,22 +249,72 @@ class OcrDirectAsyncConverter(BaseConverter):
         self.hyphenation_fix_enabled = config.get("ocr_hyphenation_fix", True)
         self.filter_page_header = config.get("ocr_filter_page_header", False)
         self.filter_page_footer = config.get("ocr_filter_page_footer", False)
+        self.filter_margin_notes = config.get("ocr_filter_margin_notes", False)
+        self.filter_blockquote_markers = config.get("ocr_filter_blockquote_markers", False)
+        self.chrome_screenai_light = bool(config.get("chrome_screenai_light", False))
+        self.chrome_preprocess_mode = str(config.get("chrome_preprocess_mode", "native"))
+        self.chrome_workers = int(config.get("chrome_workers", self.ocr_concurrency))
+        self.chrome_chunk_pages = int(config.get("chrome_chunk_pages", self.ocr_batch_size))
+        self.chrome_emit_searchable_pdf = bool(config.get("chrome_emit_searchable_pdf", False))
+        self.chrome_rasterize_dpi = int(config.get("chrome_rasterize_dpi", 144))
+        self.chrome_model_dir = config.get("chrome_model_dir")
+        self._last_searchable_pdf_path = None
 
         # 初始化 OCR 服务（使用工厂模式）
-        ocr_service_config = {
-            "ocr_backend": self.backend,
-            "chandra_version": self.chandra_version,
-            "ocr_api_style": self.api_style,
-            "ocr_endpoint": self.endpoint,
-            "ocr_model": self.model,
-            "ocr_api_key": self.api_key or "",
-            "ocr_output_format": self.output_format,
-            "ocr_max_tokens": self.max_tokens,
-            "ocr_temperature": self.temperature,
-            "ocr_timeout": self.timeout,
-            "max_retries": self.max_retries
-        }
-        self.ocr_service = OcrServiceFactory.create_service(ocr_service_config)
+        if self.is_chrome_screenai:
+            self.ocr_service = None
+            self.chrome_runtime = ChromeScreenAIRuntime(
+                model_dir=self.chrome_model_dir,
+                light_mode=self.chrome_screenai_light,
+                preprocess_mode=self.chrome_preprocess_mode,
+                workers=self.chrome_workers,
+                chunk_pages=self.chrome_chunk_pages,
+                batch_rest=self.batch_rest,
+                rasterize_dpi=self.chrome_rasterize_dpi,
+                emit_searchable_pdf=self.chrome_emit_searchable_pdf,
+                max_retries=self.max_retries,
+                progress_callback=self.progress_callback,
+            )
+        else:
+            ocr_service_config = {
+                "ocr_backend": self.backend,
+                "chandra_version": self.chandra_version,
+                "ocr_api_style": self.api_style,
+                "ocr_endpoint": self.endpoint,
+                "ocr_model": self.model,
+                "ocr_api_key": self.api_key or "",
+                "ocr_output_format": self.output_format,
+                "ocr_max_tokens": self.max_tokens,
+                "ocr_temperature": self.temperature,
+                "ocr_timeout": self.timeout,
+                "max_retries": self.max_retries,
+                "ocr_image_quality": self.image_quality,
+                "paddleocr_vl_prompt_label": config.get("paddleocr_vl_prompt_label", "layout_detection"),
+                "paddleocr_vl_mode": config.get("paddleocr_vl_mode", "auto"),
+                "paddleocr_vl_version": config.get("paddleocr_vl_version"),
+                "paddleocr_vl_layout_parsing_url": config.get("paddleocr_vl_layout_parsing_url"),
+                "paddleocr_vl_endpoint": config.get("paddleocr_vl_endpoint"),
+                "paddleocr_vl_model": config.get("paddleocr_vl_model"),
+                "paddleocr_vl_api_key": config.get("paddleocr_vl_api_key"),
+                "paddleocr_vl_api_style": config.get("paddleocr_vl_api_style"),
+                "paddleocr_vl_image_quality": config.get("paddleocr_vl_image_quality", self.image_quality),
+                "mineru_vl_block_concurrency": config.get("mineru_vl_block_concurrency", 4),
+                "mineru_vl_request_concurrency": config.get("mineru_vl_request_concurrency"),
+                "mineru_vl_layout_image_size": config.get("mineru_vl_layout_image_size", (1036, 1036)),
+                "mineru_vl_version": config.get("mineru_vl_version"),
+                "mineru_vl_quant": config.get("mineru_vl_quant"),
+                "surya2_endpoint": config.get("surya2_endpoint"),
+                "surya2_model": config.get("surya2_model"),
+                "surya2_api_key": config.get("surya2_api_key"),
+                "surya2_api_style": config.get("surya2_api_style"),
+                "surya2_version": config.get("surya2_version"),
+                "surya2_image_format": config.get("surya2_image_format", self.image_format),
+                "surya2_image_quality": config.get("surya2_image_quality", self.image_quality),
+                "surya2_request_concurrency": config.get("surya2_request_concurrency"),
+                "surya2_block_concurrency": config.get("surya2_block_concurrency", 4),
+            }
+            self.ocr_service = OcrServiceFactory.create_service(ocr_service_config)
+            self.chrome_runtime = None
         self.runtime_profile = self._build_runtime_profile(config)
 
         # 初始化解析器
@@ -257,6 +376,17 @@ class OcrDirectAsyncConverter(BaseConverter):
         self._last_xml_pages = None
         self._last_clean_html_pages = None
         self._last_chunks = None
+        self._last_printed_pages = None
+        self._last_official_markdown_pages = None
+        self._last_contexture_middle_markdown = None
+
+    def _emit_progress(self, **event: Any) -> None:
+        if self.progress_callback is None:
+            return
+        try:
+            self.progress_callback(event)
+        except Exception as exc:
+            logger.debug(f"[OcrDirectAsyncConverter] progress callback ignored: {exc}")
 
     def _build_runtime_profile(self, config: dict) -> dict:
         """
@@ -266,9 +396,12 @@ class OcrDirectAsyncConverter(BaseConverter):
         bbox_scale、preprocess profile 等元信息。
         """
         service_profile = {}
-        get_runtime_profile = getattr(self.ocr_service, "get_runtime_profile", None)
-        if callable(get_runtime_profile):
-            service_profile = get_runtime_profile() or {}
+        if self.is_chrome_screenai and self.chrome_runtime is not None:
+            service_profile = self.chrome_runtime.get_runtime_profile() or {}
+        else:
+            get_runtime_profile = getattr(self.ocr_service, "get_runtime_profile", None)
+            if callable(get_runtime_profile):
+                service_profile = get_runtime_profile() or {}
 
         bbox_scale = service_profile.get("bbox_scale")
         if bbox_scale is None and self.backend == "chandra":
@@ -282,7 +415,44 @@ class OcrDirectAsyncConverter(BaseConverter):
             "preprocess_profile": service_profile.get("preprocess_profile"),
             "sampling_profile": service_profile.get("sampling_profile"),
             "image_transport": service_profile.get("image_transport", self.ocr_image_format),
+            "official_protocol": service_profile.get("official_protocol"),
+            "model_family": service_profile.get("model_family"),
+            "request_concurrency": service_profile.get("request_concurrency"),
+            "specialized_vlm_markdown_mode": self.specialized_vlm_markdown_mode
+            if self.backend in {"paddleocr_vl", "mineru_vl", "surya2"}
+            else None,
         }
+
+    def _run_chrome_screenai(self, filepath: str) -> tuple[list[str], list[str], list[str | None], list[dict[str, Any]]]:
+        if self.chrome_runtime is None:
+            raise RuntimeError("Chrome ScreenAI runtime is not initialized")
+        page_indices = self._target_page_indices(filepath)
+        page_count = len(page_indices)
+        logger.info("[Chrome ScreenAI] Selected %s pages", page_count)
+        self._emit_progress(event="pages_loaded", total_pages=page_count, stage="processing")
+        outputs = self.chrome_runtime.process_document(filepath, page_indices)
+        markdown_pages = list(outputs.get("markdown_pages") or [])
+        clean_html_pages = list(outputs.get("clean_html_pages") or [])
+        printed_pages = list(outputs.get("printed_pages") or [])
+        chunk_pages = list(outputs.get("chunk_pages") or [])
+        self._last_xml_pages = None
+        self._last_clean_html_pages = clean_html_pages
+        self._last_chunks = chunk_pages
+        self._last_printed_pages = printed_pages
+        self._last_official_markdown_pages = list(markdown_pages)
+        self._last_searchable_pdf_path = outputs.get("searchable_pdf_path")
+        self._emit_progress(event="postprocess", stage="saving")
+        return markdown_pages, clean_html_pages, printed_pages, chunk_pages
+
+    async def _run_chrome_screenai_async(
+        self,
+        filepath: str,
+        global_semaphore: Optional[asyncio.Semaphore] = None,
+    ) -> tuple[list[str], list[str], list[str | None], list[dict[str, Any]]]:
+        if global_semaphore is None:
+            return await asyncio.to_thread(self._run_chrome_screenai, filepath)
+        async with global_semaphore:
+            return await asyncio.to_thread(self._run_chrome_screenai, filepath)
 
     def _get_chandra_bbox_scale(self) -> int:
         """获取当前 Chandra profile 的 bbox scale。"""
@@ -290,6 +460,52 @@ class OcrDirectAsyncConverter(BaseConverter):
         if isinstance(bbox_scale, int):
             return bbox_scale
         return 1024
+
+    @staticmethod
+    def _normalize_specialized_vlm_markdown_mode(value: Any) -> str:
+        mode = str(value or "contexture_middle").strip().lower().replace("-", "_")
+        if mode in {"middle", "contexture", "contexture_scholarly", "scholarly"}:
+            return "contexture_middle"
+        if mode == "official":
+            return "official"
+        return "contexture_middle"
+
+    def _render_specialized_vlm_middle_markdown(
+        self,
+        *,
+        source_name: str | None,
+        source: str | None,
+    ) -> str | None:
+        chunks = getattr(self, "_last_chunks", None)
+        if self.backend not in {"paddleocr_vl", "mineru_vl", "surya2"} or not chunks:
+            return None
+
+        try:
+            from aih_contexture.middle.adapters import ocr_direct_outputs_to_middle_document
+            from aih_contexture.middle.semantics import resolve_middle_for_rendering
+            from aih_contexture.middle.scholarly_markdown import render_middle_scholarly_markdown
+
+            middle = ocr_direct_outputs_to_middle_document(
+                chunks,
+                backend=str(self.backend),
+                model=str(self.model) if self.model is not None else None,
+                source_name=source_name,
+                source=source,
+                printed_pages=getattr(self, "_last_printed_pages", None),
+            ).to_dict()
+            middle = resolve_middle_for_rendering(middle)
+            markdown = render_middle_scholarly_markdown(
+                middle,
+                include_page_header_comments=not bool(getattr(self, "filter_page_header", False)),
+                include_page_footer_comments=not bool(getattr(self, "filter_page_footer", False)),
+                include_margin_comments=not bool(getattr(self, "filter_margin_notes", False)),
+                include_blockquote_markers=not bool(getattr(self, "filter_blockquote_markers", False)),
+            )
+            self._last_contexture_middle_markdown = markdown
+            return markdown
+        except Exception as exc:
+            logger.warning(f"Failed to render specialized VLM output through Contexture Middle: {exc}")
+            return None
 
     def _get_preprocess_profile(self) -> Optional[str]:
         """获取当前 OCR profile 的图像预处理策略。"""
@@ -302,7 +518,7 @@ class OcrDirectAsyncConverter(BaseConverter):
         return [p.strip() for p in patterns_text.split('\n') if p.strip()]
 
     def _fix_unicode_superscript_footnotes(self, markdown_pages: List[str]) -> List[str]:
-        """转换行首Unicode上标脚注：^¹) → <sup>1)</sup>"""
+        """转换行首 Unicode 上标脚注：¹) → <sup>1</sup>"""
         fixed = []
         superscript_map = {
             '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
@@ -310,7 +526,7 @@ class OcrDirectAsyncConverter(BaseConverter):
         }
         for page in markdown_pages:
             for sup_char, normal_char in superscript_map.items():
-                page = re.sub(f'^{sup_char}\\)', f'<sup>{normal_char})</sup>', page, flags=re.MULTILINE)
+                page = re.sub(f'^{sup_char}\\)', f'<sup>{normal_char}</sup>', page, flags=re.MULTILINE)
             fixed.append(page)
         return fixed
 
@@ -577,8 +793,7 @@ class OcrDirectAsyncConverter(BaseConverter):
             else:
                 return f"## {text}"
 
-        # 2. Footnote（脚注）- 保留 <sup> 格式（对齐 Pipeline 模式）
-        # Pipeline 模式下脚注保留 <sup>1)</sup> 格式，不转换为 [^n]:
+        # 2. Footnote（脚注）- 保留规范化 <sup>n</sup> 格式，不转换为 [^n]:
         elif label == "footnote":
             return text
 
@@ -596,12 +811,12 @@ class OcrDirectAsyncConverter(BaseConverter):
         # 5. Page-Header（页眉）
         elif label == "page-header":
             # 页眉通常包含页码，使用小字体或注释
-            return f"<!-- page-header: {text} -->"
+            return f"<!-- PageHeader: {text} -->"
 
         # 6. Page-Footer（页脚）
         elif label == "page-footer":
             # 页脚通常包含页码，使用小字体或注释
-            return f"<!-- page-footer: {text} -->"
+            return f"<!-- PageFooter: {text} -->"
 
         # 7. Image/Picture（图片）
         elif label in ["image", "picture"]:
@@ -918,7 +1133,7 @@ class OcrDirectAsyncConverter(BaseConverter):
 
         处理：
         1. 未识别的脚注（如 "1) 文本", "*) 文本"）添加 <sup> 标签
-        2. 重复的括号（如 "<sup>1)</sup>)"）
+        2. 重复的括号（如 "<sup>1</sup>)"）
         3. 统一脚注格式
         4. 清理脚注中的 HTML 残留
 
@@ -931,23 +1146,23 @@ class OcrDirectAsyncConverter(BaseConverter):
         fixed = []
         for page in markdown_pages:
             # 1. 转换行首的Unicode上标脚注（脚注定义）
-            # ^¹) → <sup>1)</sup>
+            # ¹) → <sup>1</sup>
             superscript_map = {
                 '¹': '1', '²': '2', '³': '3', '⁴': '4', '⁵': '5',
                 '⁶': '6', '⁷': '7', '⁸': '8', '⁹': '9', '⁰': '0'
             }
             for sup_char, normal_char in superscript_map.items():
-                page = re.sub(f'^{sup_char}\\)', f'<sup>{normal_char})</sup>', page, flags=re.MULTILINE)
+                page = re.sub(f'^{sup_char}\\)', f'<sup>{normal_char}</sup>', page, flags=re.MULTILINE)
 
             # 2. 识别 Markdown 转义的脚注并添加 sup 标签
-            # \*) → <sup>*)</sup>
-            page = re.sub(r'\\(\*+)\)', r'<sup>\1)</sup>', page)
-            # \1) → <sup>1)</sup>
-            page = re.sub(r'\\(\d+)\)', r'<sup>\1)</sup>', page)
+            # \*) → <sup>*</sup>
+            page = re.sub(r'\\(\*+)\)', r'<sup>\1</sup>', page)
+            # \1) → <sup>1</sup>
+            page = re.sub(r'\\(\d+)\)', r'<sup>\1</sup>', page)
 
             # 3. 修复可能的重复括号
-            page = re.sub(r'<sup>(\d+)\)</sup>\)', r'<sup>\1)</sup>', page)
-            page = re.sub(r'<sup>(\*+)\)</sup>\)', r'<sup>\1)</sup>', page)
+            page = re.sub(r'<sup>(\d+|\*+)\)</sup>\)?', r'<sup>\1</sup>', page)
+            page = re.sub(r'<sup>(\d+|\*+)</sup>\)', r'<sup>\1</sup>', page)
 
             fixed.append(page)
         return fixed
@@ -1022,11 +1237,13 @@ class OcrDirectAsyncConverter(BaseConverter):
 
     def _filter_page_markers(self, markdown_pages: List[str]) -> List[str]:
         """
-        过滤页眉/页脚语法标识，但保留内容
+        过滤页眉/页脚/边注/引用块语法标识，但保留内容
 
         例如：
-        - 输入: <!-- page-header: 0115 -->
+        - 输入: <!-- PageHeader: 0115 -->
         - 输出: 0115
+        - 输入: <!-- Margin:left -->\n> Side note\n<!-- /Margin -->
+        - 输出: Side note
 
         Args:
             markdown_pages: Markdown 页面列表
@@ -1038,35 +1255,57 @@ class OcrDirectAsyncConverter(BaseConverter):
         for page_idx, page in enumerate(markdown_pages):
             # 过滤页眉标记，保留内容
             if self.filter_page_header:
-                # 匹配 <!-- page-header: 内容 --> 格式（内容可以为空）
-                header_pattern = r'<!--\s*page-header:\s*(.*?)\s*-->'
+                # 匹配统一 PageHeader 和历史 page-header 格式（内容可以为空）
+                header_pattern = r'<!--\s*(?:PageHeader|page-header):\s*(.*?)\s*-->'
                 matches = re.findall(header_pattern, page)
 
                 if matches:
-                    logger.info(f"[FILTER] Page {page_idx + 1}: Found page-header(s): {matches}")
+                    logger.debug("[Converter.OcrDirectAsync] Page %d: Found PageHeader(s): %s", page_idx + 1, matches)
                     # 替换为捕获的内容
                     page = re.sub(header_pattern, r'\1', page)
-                    logger.info(f"[FILTER] Page {page_idx + 1}: Header filter applied")
+                    logger.debug("[Converter.OcrDirectAsync] Page %d: Header filter applied", page_idx + 1)
                 else:
                     # 检查是否有未匹配的页眉注释
-                    if '<!-- page-header' in page:
-                        logger.warning(f"[FILTER] Page {page_idx + 1}: Found unmatched page-header comment")
+                    if '<!-- page-header' in page or '<!-- PageHeader' in page:
+                        logger.warning("[Converter.OcrDirectAsync] Page %d: Unmatched PageHeader comment", page_idx + 1)
 
             # 过滤页脚标记，保留内容
             if self.filter_page_footer:
-                footer_pattern = r'<!--\s*page-footer:\s*(.*?)\s*-->'
+                footer_pattern = r'<!--\s*(?:PageFooter|page-footer):\s*(.*?)\s*-->'
                 matches = re.findall(footer_pattern, page)
 
                 if matches:
-                    logger.info(f"[FILTER] Page {page_idx + 1}: Found page-footer(s): {matches}")
+                    logger.debug("[Converter.OcrDirectAsync] Page %d: Found PageFooter(s): %s", page_idx + 1, matches)
                     page = re.sub(footer_pattern, r'\1', page)
-                    logger.info(f"[FILTER] Page {page_idx + 1}: Footer filter applied")
+                    logger.debug("[Converter.OcrDirectAsync] Page %d: Footer filter applied", page_idx + 1)
                 else:
-                    if '<!-- page-footer' in page:
-                        logger.warning(f"[FILTER] Page {page_idx + 1}: Found unmatched page-footer comment")
+                    if '<!-- page-footer' in page or '<!-- PageFooter' in page:
+                        logger.warning("[Converter.OcrDirectAsync] Page %d: Unmatched PageFooter comment", page_idx + 1)
+
+            if self.filter_margin_notes:
+                page = self._filter_margin_markers(page, page_idx=page_idx)
+
+            if self.filter_blockquote_markers:
+                page = self._filter_blockquote_markers(page, page_idx=page_idx)
 
             filtered.append(page.strip())
         return filtered
+
+    def _filter_margin_markers(self, page: str, *, page_idx: int) -> str:
+        """Remove Margin comment wrappers and render quoted marginalia as plain text."""
+        margin_block_pattern = r'<!--\s*Margin(?::[A-Za-z_-]+)?(?:\s+[^>]*)?\s*-->\s*(.*?)\s*<!--\s*/Margin\s*-->'
+        matches = re.findall(margin_block_pattern, page, flags=re.IGNORECASE | re.DOTALL)
+        if matches:
+            logger.debug("[Converter.OcrDirectAsync] Page %d: Found Margin block(s): %d", page_idx + 1, len(matches))
+        elif "<!-- Margin" in page or "<!-- /Margin" in page:
+            logger.warning("[Converter.OcrDirectAsync] Page %d: Unmatched Margin comment", page_idx + 1)
+        return strip_margin_comment_markers(page)
+
+    def _filter_blockquote_markers(self, page: str, *, page_idx: int) -> str:
+        """Remove recognized blockquote wrappers and render quoted text as plain text."""
+        if re.search(r"(?m)^[ \t]{0,3}>\s?", page) or re.search(r"<blockquote\b", page, flags=re.IGNORECASE):
+            logger.debug("[Converter.OcrDirectAsync] Page %d: Found blockquote marker(s)", page_idx + 1)
+        return strip_blockquote_markers(page)
 
     def _load_document(self, filepath: str) -> List[Image.Image]:
         """
@@ -1085,6 +1324,44 @@ class OcrDirectAsyncConverter(BaseConverter):
         else:
             # 单张图片
             return [Image.open(filepath)]
+
+    def _target_page_indices(self, filepath: str) -> List[int]:
+        """
+        Return the document page indices selected for conversion without
+        rendering them. PDF pages are rendered later in small batches.
+        """
+        filepath = Path(filepath)
+
+        if filepath.suffix.lower() != ".pdf":
+            return [0]
+
+        with fitz.open(filepath) as doc:
+            total_pages = len(doc)
+
+        if self.page_start is not None and self.page_end is not None:
+            actual_end = min(self.page_end, total_pages - 1)
+            page_indices = list(range(self.page_start, actual_end + 1))
+            logger.info(
+                "[OcrDirectAsyncConverter] Selected pages %s-%s (total %s pages)",
+                self.page_start,
+                actual_end,
+                total_pages,
+            )
+        else:
+            page_indices = list(range(total_pages))
+
+        return page_indices
+
+    def _load_document_batch(self, filepath: str, page_indices: List[int]) -> List[Image.Image]:
+        """
+        Render only the requested page indices for the current processing batch.
+        """
+        filepath = Path(filepath)
+
+        if filepath.suffix.lower() != ".pdf":
+            return [Image.open(filepath)]
+
+        return self._load_pdf_pages(filepath, page_indices)
 
     def _load_pdf(self, pdf_path: Path) -> List[Image.Image]:
         """
@@ -1125,13 +1402,31 @@ class OcrDirectAsyncConverter(BaseConverter):
         doc.close()
         return images
 
+    def _load_pdf_pages(self, pdf_path: Path, page_indices: List[int]) -> List[Image.Image]:
+        """
+        Render a small set of PDF pages to images.
+        """
+        images = []
+        with fitz.open(pdf_path) as doc:
+            for page_num in page_indices:
+                page = doc[page_num]
+                mat = fitz.Matrix(2.0, 2.0)
+                pix = page.get_pixmap(matrix=mat)
+                img = Image.frombytes(
+                    "RGB",
+                    [pix.width, pix.height],
+                    pix.samples,
+                )
+                images.append(img)
+        return images
+
     async def _convert_page_async(
         self,
         session: aiohttp.ClientSession,
         img: Image.Image,
         page_num: int,
         semaphore: asyncio.Semaphore
-    ) -> Tuple[int, any, str, Tuple[int, int]]:
+    ) -> Tuple[int, any, Any, Tuple[int, int], Image.Image]:
         """
         异步处理单页
 
@@ -1165,41 +1460,46 @@ class OcrDirectAsyncConverter(BaseConverter):
                 if isinstance(ocr_output, str):
                     logger.info(f"Page {page_num + 1}: OCR output is string, length = {len(ocr_output)}")
 
-                # 4. 保存 raw_html（供后续官方工具批量转换）
-                raw_html = ocr_output if isinstance(ocr_output, str) else ""
+                # 4. 保存官方原始输出（供后续官方协议适配）
+                raw_output = ocr_output
 
                 # 5. 解析输出为 PageGroup
-                page = self.parser.parse_to_page(
-                    ocr_output,
-                    page_num,
-                    img_size,
-                    self.ocr_service.ocr_output_format,
-                    bbox_scale=self._get_chandra_bbox_scale(),
-                )
+                if self.backend == "churro":
+                    page = _empty_page_result(page_num, processed_img)[1]
+                else:
+                    page = self.parser.parse_to_page(
+                        ocr_output,
+                        page_num,
+                        img_size,
+                        self.ocr_service.ocr_output_format,
+                        bbox_scale=self._get_chandra_bbox_scale(),
+                    )
 
-                logger.info(f"Processed page {page_num + 1}, raw_html length: {len(raw_html)}")
-                return (page_num, page, raw_html, img_size, processed_img)
+                raw_len = len(raw_output) if isinstance(raw_output, str) else len(str(type(raw_output)))
+                logger.info(f"Processed page {page_num + 1}, raw output marker length: {raw_len}")
+                return (page_num, page, raw_output, img_size, processed_img)
 
             except Exception as e:
                 logger.error(f"Failed to process page {page_num + 1}: {e}")
-                if self.backend == "churro":
-                    raise RuntimeError(f"Churro OCR failed on page {page_num + 1}: {e}") from e
-                from aih_contexture.schema.polygon import PolygonBox
-                from aih_contexture.schema.groups.page import PageGroup
-                page_polygon = PolygonBox.from_bbox([0, 0, img.width, img.height])
-                empty_page = PageGroup(
-                    page_id=page_num,
-                    polygon=page_polygon,
-                    structure=[]
-                )
-                return (page_num, empty_page, "", img.size, img)
+                if self.backend in ("paddleocr_vl", "mineru_vl", "surya2"):
+                    return _empty_page_result(
+                        page_num,
+                        img,
+                        _specialized_vlm_error_page(self.backend, page_num, e),
+                    )
+                error_xml = (
+                    f"<Page>"
+                    f"<Metadata><Error>Churro OCR failed on page {page_num + 1}: {e}</Error></Metadata>"
+                    f"<Body/></Page>"
+                ) if self.backend == "churro" else ""
+                return _empty_page_result(page_num, img, error_xml)
 
     async def _convert_page_async_no_semaphore(
         self,
         session: aiohttp.ClientSession,
         img: Image.Image,
         page_num: int
-    ) -> Tuple[int, any, str, Tuple[int, int]]:
+    ) -> Tuple[int, any, Any, Tuple[int, int], Image.Image]:
         """
         异步处理单页（无信号量版本，用于严格批次模式）
 
@@ -1226,34 +1526,38 @@ class OcrDirectAsyncConverter(BaseConverter):
                 session, processed_img, api_key
             )
 
-            # 4. 保存 raw_html（供后续官方工具批量转换）
-            raw_html = ocr_output if isinstance(ocr_output, str) else ""
+            # 4. 保存官方原始输出（供后续官方协议适配）
+            raw_output = ocr_output
 
             # 5. 解析输出为 PageGroup
-            page = self.parser.parse_to_page(
-                ocr_output,
-                page_num,
-                img_size,
-                self.ocr_service.ocr_output_format,
-                bbox_scale=self._get_chandra_bbox_scale(),
-            )
+            if self.backend == "churro":
+                page = _empty_page_result(page_num, processed_img)[1]
+            else:
+                page = self.parser.parse_to_page(
+                    ocr_output,
+                    page_num,
+                    img_size,
+                    self.ocr_service.ocr_output_format,
+                    bbox_scale=self._get_chandra_bbox_scale(),
+                )
 
             logger.info(f"Processed page {page_num + 1}")
-            return (page_num, page, raw_html, img_size, processed_img)
+            return (page_num, page, raw_output, img_size, processed_img)
 
         except Exception as e:
             logger.error(f"Failed to process page {page_num + 1}: {e}")
-            if self.backend == "churro":
-                raise RuntimeError(f"Churro OCR failed on page {page_num + 1}: {e}") from e
-            from aih_contexture.schema.polygon import PolygonBox
-            from aih_contexture.schema.groups.page import PageGroup
-            page_polygon = PolygonBox.from_bbox([0, 0, img.width, img.height])
-            empty_page = PageGroup(
-                page_id=page_num,
-                polygon=page_polygon,
-                structure=[]
-            )
-            return (page_num, empty_page, "", img.size, img)
+            if self.backend in ("paddleocr_vl", "mineru_vl", "surya2"):
+                return _empty_page_result(
+                    page_num,
+                    img,
+                    _specialized_vlm_error_page(self.backend, page_num, e),
+                )
+            error_xml = (
+                f"<Page>"
+                f"<Metadata><Error>Churro OCR failed on page {page_num + 1}: {e}</Error></Metadata>"
+                f"<Body/></Page>"
+            ) if self.backend == "churro" else ""
+            return _empty_page_result(page_num, img, error_xml)
 
     async def _process_batch_async(
         self,
@@ -1284,10 +1588,10 @@ class OcrDirectAsyncConverter(BaseConverter):
                 sub_batch_idx = batch_start_idx + sub_batch_start
 
                 logger.info(f"Processing sub-batch: {len(sub_batch)} pages (concurrency={concurrency})")
-                print(f"\n{'='*60}")
-                print(f"[STRICT BATCH] Starting sub-batch with {len(sub_batch)} pages")
-                print(f"[STRICT BATCH] Concurrency setting: {concurrency}")
-                print(f"{'='*60}\n")
+                logger.info("%s", "=" * 60)
+                logger.info("[STRICT BATCH] Starting sub-batch with %s pages", len(sub_batch))
+                logger.info("[STRICT BATCH] Concurrency setting: %s", concurrency)
+                logger.info("%s", "=" * 60)
 
                 # 创建当前小批次的所有任务
                 tasks = []
@@ -1298,12 +1602,17 @@ class OcrDirectAsyncConverter(BaseConverter):
                     tasks.append(task)
 
                 # 等待当前小批次全部完成
-                print(f"[STRICT BATCH] Waiting for all {len(tasks)} tasks to complete...")
+                logger.info("[STRICT BATCH] Waiting for all %s tasks to complete...", len(tasks))
                 sub_results = await asyncio.gather(*tasks, return_exceptions=True)
-                failures = [result for result in sub_results if isinstance(result, Exception)]
-                if failures:
-                    raise RuntimeError("; ".join(str(failure) for failure in failures))
-                print(f"[STRICT BATCH] Sub-batch completed! {len(sub_results)} results")
+                for idx, result in enumerate(sub_results):
+                    page_num = sub_batch_idx + idx + 1
+                    self._emit_progress(
+                        event="page_done",
+                        page_num=page_num,
+                        ok=_page_result_ok(result),
+                        stage="processing",
+                    )
+                logger.info("[STRICT BATCH] Sub-batch completed! %s results", len(sub_results))
                 all_results.extend(sub_results)
 
                 logger.info(f"Sub-batch completed: {len(sub_results)} pages")
@@ -1328,25 +1637,118 @@ class OcrDirectAsyncConverter(BaseConverter):
         logger.info(f"Starting OCR Direct conversion: {filepath}")
         start_time = time.time()
 
-        # 1. 加载图片
-        pages_images = self._load_document(filepath)
-        logger.info(f"Loaded {len(pages_images)} pages")
+        if self.is_chrome_screenai:
+            markdown_pages, _, printed_pages, _ = await self._run_chrome_screenai_async(filepath, global_semaphore)
+            markdown_pages = self._clean_page_separators(markdown_pages)
+            if self.noise_removal_enabled:
+                logger.info("Removing noise...")
+                markdown_pages = self._remove_noise(markdown_pages)
+            if self.footnote_fix_enabled:
+                logger.info("Fixing unicode superscript footnotes...")
+                markdown_pages = self._fix_unicode_superscript_footnotes(markdown_pages)
+            if self.hyphenation_fix_enabled:
+                logger.info("Fixing hyphenation...")
+                markdown_pages = self._fix_hyphenation(markdown_pages)
+            if self.filter_page_header or self.filter_page_footer or self.filter_margin_notes or self.filter_blockquote_markers:
+                logger.info("Filtering page markers...")
+                markdown_pages = self._filter_page_markers(markdown_pages)
+            if self.page_anchor_plugin and self.page_anchor_plugin.enabled:
+                logger.info("Adding page anchors...")
+                markdown_pages = self.page_anchor_plugin.process_pages(markdown_pages, printed_pages)
+            anchors_enabled = bool(self.page_anchor_plugin and self.page_anchor_plugin.enabled)
+            full_markdown = join_markdown_pages(
+                markdown_pages,
+                page_separator="\n\n---\n\n",
+                page_anchors_enabled=anchors_enabled,
+            )
+            if anchors_enabled:
+                final_anchor = f"{{{len(markdown_pages)}}}"
+                full_markdown += f"\n\n{final_anchor}\n\n---"
+                logger.info(f"Added final anchor: {final_anchor}")
+            elapsed_time = time.time() - start_time
+            logger.info(f"OCR Direct conversion completed in {elapsed_time:.1f}s")
+            logger.info(f"Total: {len(full_markdown)} chars")
+            logger.info(f"Speed: {len(markdown_pages) / elapsed_time:.2f} pages/sec")
+            self._emit_progress(event="file_done", stage="saving")
+            return full_markdown
+
+        # 1. 只解析目标页码；PDF 图像在每个处理批次中按需渲染，避免整本书常驻内存。
+        page_indices = self._target_page_indices(filepath)
+        page_count = len(page_indices)
+        logger.info(f"Selected {page_count} pages")
+        self._emit_progress(event="pages_loaded", total_pages=page_count, stage="processing")
 
         # 2. 批处理
         all_results = []
-        for batch_idx in range(0, len(pages_images), self.batch_size):
-            batch = pages_images[batch_idx:batch_idx + self.batch_size]
+        chandra_chunks_by_page: dict[int, dict[str, Any]] = {}
+        for batch_idx in range(0, page_count, self.batch_size):
+            batch_page_indices = page_indices[batch_idx:batch_idx + self.batch_size]
+            batch = self._load_document_batch(filepath, batch_page_indices)
             batch_num = batch_idx // self.batch_size + 1
-            total_batches = (len(pages_images) + self.batch_size - 1) // self.batch_size
+            total_batches = (page_count + self.batch_size - 1) // self.batch_size
 
-            logger.info(f"Processing batch {batch_num}/{total_batches} ({len(batch)} pages)")
+            logger.info(
+                "Processing batch %s/%s (%s pages rendered on demand)",
+                batch_num,
+                total_batches,
+                len(batch),
+            )
 
             # 3. 并发处理批次（传递全局信号量）
             batch_results = await self._process_batch_async(batch, batch_idx, global_semaphore)
+            if self.backend == "chandra":
+                for result in batch_results:
+                    if not isinstance(result, tuple) or len(result) < 5:
+                        continue
+                    page_num, _, raw_output, _, img = result
+                    if img is None:
+                        continue
+                    try:
+                        chunks = parse_chunks(raw_output, img, bbox_scale=self._get_chandra_bbox_scale())
+                        chandra_chunks_by_page[int(page_num)] = {
+                            "page_num": int(page_num),
+                            "img_size": list(img.size),
+                            "chunks": chunks,
+                        }
+                    except Exception as e:
+                        logger.warning(f"parse_chunks failed for page {int(page_num) + 1}: {e}")
+                        chandra_chunks_by_page[int(page_num)] = {
+                            "page_num": int(page_num),
+                            "img_size": list(img.size),
+                            "chunks": [],
+                        }
+                batch_results = [
+                    (
+                        result[0],
+                        result[1],
+                        result[2],
+                        result[3],
+                        None,
+                    )
+                    if isinstance(result, tuple) and len(result) >= 5
+                    else result
+                    for result in batch_results
+                ]
+            else:
+                batch_results = [
+                    (
+                        result[0],
+                        result[1],
+                        result[2],
+                        result[3],
+                        None,
+                    )
+                    if isinstance(result, tuple) and len(result) >= 5
+                    else result
+                    for result in batch_results
+                ]
             all_results.extend(batch_results)
+            del batch
+            del batch_results
+            gc.collect()
 
             # 4. 批次间休息
-            if batch_idx + self.batch_size < len(pages_images):
+            if batch_idx + self.batch_size < page_count:
                 logger.info(f"Resting for {self.batch_rest} seconds...")
                 await asyncio.sleep(self.batch_rest)
 
@@ -1355,22 +1757,56 @@ class OcrDirectAsyncConverter(BaseConverter):
 
         # 6. 提取 pages、raw_output_pages、img_list
         pages = [result[1] for result in all_results]
-        raw_output_pages = [result[2] for result in all_results]  # HTML 或 XML
-        img_list = [result[4] for result in all_results]
+        raw_output_pages = [result[2] for result in all_results]  # HTML/XML 或官方 JSON-like 输出
 
         # 6.1 根据后端类型处理输出
-        logger.info(f"[DEBUG] Backend type: {self.backend}")
-        logger.info(f"[DEBUG] raw_output_pages count: {len(raw_output_pages)}")
-        if self.backend == "churro":
+        logger.debug("Backend type: %s", self.backend)
+        logger.debug("raw_output_pages count: %d", len(raw_output_pages))
+        if self.backend in ("paddleocr_vl", "mineru_vl", "surya2"):
+            logger.info("Processing specialized VLM official output...")
+            self._last_xml_pages = None
+            self._last_clean_html_pages = None
+            markdown_pages = [
+                str(page.get("markdown") or "") if isinstance(page, dict) else str(page or "")
+                for page in raw_output_pages
+            ]
+            self._last_official_markdown_pages = list(markdown_pages)
+            html_extracted_pages = [None] * len(raw_output_pages)
+            self._last_chunks = []
+            for i, page_output in enumerate(raw_output_pages):
+                img_size = all_results[i][3] if i < len(all_results) else []
+                if isinstance(page_output, dict):
+                    self._last_chunks.append({
+                        "page_num": i,
+                        "img_size": list(img_size) if img_size else [],
+                        "backend": self.backend,
+                        "official_protocol": page_output.get("official_protocol"),
+                        "markdown": page_output.get("markdown", ""),
+                        "blocks": page_output.get("blocks", []),
+                        "raw": page_output.get("raw", page_output),
+                        "error": page_output.get("error"),
+                    })
+                else:
+                    self._last_chunks.append({
+                        "page_num": i,
+                        "img_size": list(img_size) if img_size else [],
+                        "backend": self.backend,
+                        "official_protocol": "unknown",
+                        "markdown": str(page_output or ""),
+                        "blocks": [],
+                        "raw": page_output,
+                    })
+
+        elif self.backend == "churro":
             # Churro: XML 输出
             logger.info("Processing Churro XML output...")
             from aih_contexture.utils.churro_output import xml_to_markdown, xml_to_json, xml_to_html, extract_page_number
 
             # 保存原始 XML
             self._last_xml_pages = raw_output_pages
-            logger.info(f"[DEBUG] Saved {len(self._last_xml_pages)} XML pages")
+            logger.debug("Saved %d XML pages", len(self._last_xml_pages))
             if self._last_xml_pages:
-                logger.info(f"[DEBUG] First XML page length: {len(self._last_xml_pages[0])}")
+                logger.debug("First XML page length: %d", len(self._last_xml_pages[0]))
             empty_xml_pages = [idx + 1 for idx, xml in enumerate(raw_output_pages) if not isinstance(xml, str) or not xml.strip()]
             if empty_xml_pages:
                 raise ValueError(f"Churro returned empty XML for pages: {empty_xml_pages}")
@@ -1417,24 +1853,15 @@ class OcrDirectAsyncConverter(BaseConverter):
                 for html in raw_output_pages
             ]
 
-            # 生成 chunks
-            logger.info("Generating chunks via official Chandra tools...")
-            self._last_chunks = []
-            for i, (html, img) in enumerate(zip(raw_output_pages, img_list)):
-                try:
-                    chunks = parse_chunks(html, img, bbox_scale=self._get_chandra_bbox_scale())
-                    self._last_chunks.append({
-                        "page_num": i,
-                        "img_size": list(img.size),
-                        "chunks": chunks
-                    })
-                except Exception as e:
-                    logger.warning(f"parse_chunks failed for page {i + 1}: {e}")
-                    self._last_chunks.append({
-                        "page_num": i,
-                        "img_size": list(img.size) if img else [],
-                        "chunks": []
-                    })
+            # chunks 已在每个批次内生成，避免所有页面图像滞留到后处理阶段。
+            logger.info("Using batch-generated chunks from official Chandra tools...")
+            self._last_chunks = [
+                chandra_chunks_by_page.get(
+                    int(result[0]),
+                    {"page_num": int(result[0]), "img_size": list(result[3]) if result[3] else [], "chunks": []},
+                )
+                for result in all_results
+            ]
 
         # 7. 提取印刷页码（优先使用 HTML 提取，regex 作为 fallback）
         printed_pages = html_extracted_pages  # 使用 HTML 提取的结果
@@ -1455,6 +1882,26 @@ class OcrDirectAsyncConverter(BaseConverter):
         else:
             found_count = sum(1 for p in printed_pages if p is not None)
             logger.info(f"Final: {found_count} printed pages (HTML only)")
+        self._last_printed_pages = printed_pages
+        self._emit_progress(event="postprocess", stage="saving")
+
+        if (
+            self.backend in ("paddleocr_vl", "mineru_vl", "surya2")
+            and self.specialized_vlm_markdown_mode == "contexture_middle"
+        ):
+            logger.info("Rendering specialized VLM primary Markdown through Contexture Middle...")
+            middle_markdown = self._render_specialized_vlm_middle_markdown(
+                source_name=Path(filepath).name,
+                source=filepath,
+            )
+            if middle_markdown and middle_markdown.strip():
+                elapsed_time = time.time() - start_time
+                logger.info(f"OCR Direct conversion completed in {elapsed_time:.1f}s")
+                logger.info(f"Total: {len(middle_markdown)} chars")
+                logger.info(f"Speed: {page_count / elapsed_time:.2f} pages/sec")
+                self._emit_progress(event="file_done", stage="saving")
+                return middle_markdown
+            logger.warning("Contexture Middle rendering produced no Markdown; falling back to official Markdown.")
 
         # 8. 清理页面分隔符（避免嵌套）
         logger.info("Cleaning page separators...")
@@ -1475,8 +1922,8 @@ class OcrDirectAsyncConverter(BaseConverter):
             logger.info("Fixing hyphenation...")
             markdown_pages = self._fix_hyphenation(markdown_pages)
 
-        # 8.8 过滤页眉/页脚标记
-        if self.filter_page_header or self.filter_page_footer:
+        # 8.8 过滤页眉/页脚/边注/引用块标记
+        if self.filter_page_header or self.filter_page_footer or self.filter_margin_notes or self.filter_blockquote_markers:
             logger.info("Filtering page markers...")
             markdown_pages = self._filter_page_markers(markdown_pages)
 
@@ -1486,19 +1933,27 @@ class OcrDirectAsyncConverter(BaseConverter):
             markdown_pages = self.page_anchor_plugin.process_pages(markdown_pages, printed_pages)
 
         # 10. 拼接所有页面
-        page_separator = "\n\n---\n\n"
-        full_markdown = page_separator.join(markdown_pages)
+        anchors_enabled = bool(self.page_anchor_plugin and self.page_anchor_plugin.enabled)
+        full_markdown = join_markdown_pages(
+            markdown_pages,
+            page_separator="\n\n---\n\n",
+            page_anchors_enabled=anchors_enabled,
+        )
 
         # 11. 添加文档末尾的额外锚点（用于区间提取）
-        if self.page_anchor_plugin and self.page_anchor_plugin.enabled:
-            page_count = len(pages_images)
+        if anchors_enabled:
             final_anchor = f"{{{page_count}}}"
-            full_markdown += f"\n\n{final_anchor}"
+            full_markdown += f"\n\n{final_anchor}\n\n---"
             logger.info(f"Added final anchor: {final_anchor}")
+
+        from aih_contexture.renderers.markdown import MarkdownFormatter
+
+        full_markdown = MarkdownFormatter().format(full_markdown)
 
         elapsed_time = time.time() - start_time
         logger.info(f"OCR Direct conversion completed in {elapsed_time:.1f}s")
         logger.info(f"Total: {len(full_markdown)} chars")
-        logger.info(f"Speed: {len(pages_images) / elapsed_time:.2f} pages/sec")
+        logger.info(f"Speed: {page_count / elapsed_time:.2f} pages/sec")
+        self._emit_progress(event="file_done", stage="saving")
 
         return full_markdown

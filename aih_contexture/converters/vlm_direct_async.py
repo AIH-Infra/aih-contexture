@@ -19,11 +19,13 @@ VLM Direct Async Converter - 异步并发版本
 import asyncio
 import base64
 import json
+import os
 import time
 import re
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from io import BytesIO
-from typing import Annotated, List, Optional
+from pathlib import Path
+from typing import Annotated, Any, Callable, List, Optional
 
 import aiohttp
 from PIL import Image
@@ -31,8 +33,9 @@ from tqdm.asyncio import tqdm
 
 from aih_contexture.converters import BaseConverter
 from aih_contexture.logger import get_logger
+from aih_contexture.utils.markdown_filters import strip_blockquote_markers, strip_margin_comment_markers
 from aih_contexture.providers.registry import provider_from_filepath
-from aih_contexture.formatters import PageAnchorFormatter, PageAnchorPlugin, PrintedPageExtractor
+from aih_contexture.formatters import PageAnchorFormatter, PageAnchorPlugin, PrintedPageExtractor, join_markdown_pages
 from aih_contexture.builders.markdown import MarkdownDocumentBuilder
 from aih_contexture.utils.api_key_pool import APIKeyPool
 
@@ -181,8 +184,8 @@ class VlmDirectAsyncConverter(BaseConverter):
 
     # Markdown格式化配置（新增）
     vlm_direct_marginal_note_enabled: Annotated[bool, "启用边注显示"] = False
-    vlm_direct_use_markdown_footnotes: Annotated[bool, "使用Markdown原生脚注"] = False
-    vlm_direct_footnote_backlink: Annotated[bool, "添加脚注返回链接"] = False
+    vlm_direct_use_markdown_footnotes: Annotated[bool, "兼容旧配置：新输出固定使用Contexture脚注规范"] = False
+    vlm_direct_footnote_backlink: Annotated[bool, "兼容旧配置：新输出不再生成HTML脚注回链"] = False
 
     # 图像处理配置
     vlm_direct_image_format: Annotated[str, "图像格式: jpeg, png, webp"] = "png"
@@ -194,6 +197,7 @@ class VlmDirectAsyncConverter(BaseConverter):
     vlm_direct_max_tokens: Annotated[int, "最大输出 token 数（0=不限制）"] = 0
     vlm_direct_max_retries: Annotated[int, "最大重试次数"] = 3
     vlm_direct_json_safe_max_tokens: Annotated[int, "JSON模式安全最大输出token"] = 4096
+    vlm_direct_allow_empty_api_key: Annotated[bool, "允许在本地重渲染等场景下不提供 API Key"] = True
 
     # 并发配置（新增）
     vlm_direct_max_concurrent: Annotated[int, "最大并发数"] = 5
@@ -224,6 +228,13 @@ class VlmDirectAsyncConverter(BaseConverter):
 
     # 后处理配置
     vlm_direct_disable_postprocess: Annotated[bool, "禁用后处理（信任VLM原始输出）"] = False
+    vlm_direct_streaming_batches: Annotated[bool, "按页并发数流式渲染/请求"] = True
+    vlm_direct_checkpoint_dir: Annotated[str | None, "VLM中途checkpoint目录"] = None
+    vlm_direct_checkpoint_name: Annotated[str | None, "VLM中途checkpoint文件名"] = None
+    vlm_direct_resume_checkpoint: Annotated[bool, "从checkpoint恢复已成功页面"] = True
+    vlm_auto_repair_failed_pages: Annotated[bool, "转换结束前自动低并发补跑失败页"] = False
+    vlm_repair_max_concurrent: Annotated[int, "失败页补跑并发数"] = 2
+    vlm_repair_rounds: Annotated[int, "失败页补跑轮数"] = 2
 
     # 提示词模板配置（新增）
     vlm_direct_prompt_template: Annotated[str, "提示词模板名称"] = "modern_publication"
@@ -236,9 +247,10 @@ class VlmDirectAsyncConverter(BaseConverter):
     vlm_direct_top_k: Annotated[int | None, "Top K"] = None
     vlm_direct_disable_thinking: Annotated[bool, "Disable thinking/reasoning mode when supported"] = True
 
-    def __init__(self, config: Optional[dict] = None):
+    def __init__(self, config: Optional[dict] = None, *, progress_callback: Callable[[dict[str, Any]], None] | None = None):
         super().__init__(config)
         config = config or {}
+        self.progress_callback = progress_callback
 
         # 🆕 API 提供商配置
         self.api_provider = config.get("vlm_api_provider", "openai_compatible")
@@ -268,6 +280,9 @@ class VlmDirectAsyncConverter(BaseConverter):
         self.json_safe_max_tokens = int(
             config.get("vlm_direct_json_safe_max_tokens", self.vlm_direct_json_safe_max_tokens)
         )
+        self.allow_empty_api_key = bool(
+            config.get("vlm_direct_allow_empty_api_key", self.vlm_direct_allow_empty_api_key)
+        )
 
         self.max_concurrent = int(config.get("vlm_direct_max_concurrent", self.vlm_direct_max_concurrent))
 
@@ -277,6 +292,17 @@ class VlmDirectAsyncConverter(BaseConverter):
 
         # 后处理配置
         self.disable_postprocess = config.get("vlm_direct_disable_postprocess", self.vlm_direct_disable_postprocess)
+        self.footnote_fix_enabled = bool(config.get("vlm_footnote_fix", False))
+        self.hyphenation_fix_enabled = bool(config.get("vlm_hyphenation_fix", False))
+        self.streaming_batches = bool(config.get("vlm_direct_streaming_batches", True))
+        self.resume_checkpoint = bool(config.get("vlm_direct_resume_checkpoint", True))
+        self.checkpoint_dir = config.get("vlm_direct_checkpoint_dir", self.vlm_direct_checkpoint_dir)
+        self.checkpoint_name = config.get("vlm_direct_checkpoint_name", self.vlm_direct_checkpoint_name)
+        self.auto_repair_failed_pages = bool(
+            config.get("vlm_auto_repair_failed_pages", self.vlm_auto_repair_failed_pages)
+        )
+        self.repair_max_concurrent = max(1, int(config.get("vlm_repair_max_concurrent", self.vlm_repair_max_concurrent)))
+        self.repair_rounds = max(0, int(config.get("vlm_repair_rounds", self.vlm_repair_rounds)))
 
         self.page_separator = config.get("vlm_direct_page_separator", self.vlm_direct_page_separator)
         self.dpi = int(config.get("vlm_direct_dpi", self.vlm_direct_dpi))
@@ -330,10 +356,16 @@ class VlmDirectAsyncConverter(BaseConverter):
             remove_from_content=True
         ) if self.extract_printed_pages else None
 
-        # 初始化 API Key Pool for multi-key concurrent support
-        self.key_pool = APIKeyPool(self.api_key)
-        if self.key_pool.get_key_count() > 1:
-            logger.info(f"[VlmDirectAsyncConverter] Using {self.key_pool.get_key_count()} API keys with concurrent pool")
+        # 初始化 API Key Pool；本地重渲染/无认证服务允许空 key
+        self.key_pool = None
+        if self.api_key:
+            self.key_pool = APIKeyPool(self.api_key)
+            if self.key_pool.get_key_count() > 1:
+                logger.info(f"[VlmDirectAsyncConverter] Using {self.key_pool.get_key_count()} API keys with concurrent pool")
+        elif not self.allow_empty_api_key:
+            raise ValueError("At least one API key is required")
+        else:
+            logger.info("[VlmDirectAsyncConverter] No API key configured; auth headers will be omitted")
 
         # 初始化提示词模板管理器（保留用于自定义模板/回退）
         from aih_contexture.prompts.manager import PromptTemplateManager
@@ -356,10 +388,21 @@ class VlmDirectAsyncConverter(BaseConverter):
             logger.info(f"[VlmDirectAsyncConverter] Using generated prompt from template: {template_id}")
 
         # API 参数配置
+        preset_name = config.get("vlm_direct_api_preset", self.vlm_direct_api_preset)
+        preset_params = {}
+        try:
+            preset_params = self.prompt_builder.from_preset(preset_name)
+        except Exception:
+            if preset_name and preset_name != "custom":
+                logger.warning(f"[VlmDirectAsyncConverter] Unknown API preset ignored: {preset_name}")
+
         self.api_params = {
-            "temperature": float(config.get("vlm_direct_temperature", 0.0)),
-            "top_p": float(config.get("vlm_direct_top_p", 0.1)),
+            "temperature": float(config.get("vlm_direct_temperature", preset_params.get("temperature", 0.0))),
+            "top_p": float(config.get("vlm_direct_top_p", preset_params.get("top_p", 0.1))),
         }
+        top_k = config.get("vlm_direct_top_k", preset_params.get("top_k"))
+        if top_k is not None:
+            self.api_params["top_k"] = int(top_k)
         self.disable_thinking = bool(config.get("vlm_direct_disable_thinking", self.vlm_direct_disable_thinking))
 
         # 渲染器配置（新增）
@@ -402,7 +445,7 @@ class VlmDirectAsyncConverter(BaseConverter):
         except Exception:
             fallback_prompt = self.template_manager.get_template(template_id)
             logger.warning(f"[VlmDirectAsyncConverter] Falling back to static template for: {template_id}")
-            return fallback_prompt
+            return self._append_runtime_prompt_controls(fallback_prompt, self.prompt_params or {})
 
         for key, value in params.items():
             if key == "primary_language" and value == "auto":
@@ -418,6 +461,85 @@ class VlmDirectAsyncConverter(BaseConverter):
         prompt_template.special_features = special_features
 
         return prompt_template.build_prompt()
+
+    def _append_runtime_prompt_controls(self, prompt: str, params: dict) -> str:
+        """Append UI switch instructions to static/custom template presets.
+
+        Static UI presets are plain prompt strings, so they cannot consume the
+        VlmPromptTemplate fields directly. This section keeps those switches real
+        without changing the user's selected template text.
+        """
+        if not params:
+            return prompt
+
+        controls = [
+            "## Runtime Controls",
+            "- These runtime controls override conflicting template examples or older label lists.",
+            "- Output ONLY one valid JSON object. Do not include markdown fences, emojis, emoticons, uncertainty tags, or commentary.",
+        ]
+
+        text_direction = params.get("text_direction")
+        if text_direction == "vertical":
+            controls.append("- Text direction: vertical; read right-to-left, top-to-bottom, then transcribe in reading order.")
+        elif text_direction == "mixed":
+            controls.append("- Text direction: mixed; detect horizontal/vertical regions and transcribe each in reading order.")
+
+        primary_language = params.get("primary_language")
+        if primary_language and primary_language != "auto":
+            controls.append(f"- Primary language hint: {primary_language}; preserve original spelling and characters exactly.")
+
+        handwriting_mode = params.get("handwriting_mode")
+        if handwriting_mode == "mixed":
+            controls.append("- Handwriting: transcribe visible handwritten notes and mark every handwritten span as `**[handwritten]** content` inside the text field.")
+            controls.append("- Handwriting in margins: when marginalia recognition is enabled, keep handwritten side notes as separate Marginal-Note-Left/Right/Top/Bottom regions; do not merge them into printed body text.")
+        elif handwriting_mode == "none":
+            controls.append("- Handwriting: ignore handwritten content entirely. Do not transcribe pencil notes, manuscript marginalia, signatures, reader annotations, or any `**[handwritten]**` / `**[手写]**` spans.")
+
+        if params.get("extract_bboxes") is False:
+            controls.append("- Bboxes: set every `bbox` field to null.")
+        elif params.get("extract_bboxes") is True:
+            controls.append("- Bboxes: estimate visible region coordinates as `[x0, y0, x1, y1]` in image pixels; use null when uncertain.")
+
+        if params.get("include_confidence") is False:
+            controls.append("- Confidence: set every `confidence` field to null.")
+        elif params.get("include_confidence") is True:
+            controls.append("- Confidence: include only conservative approximate values from 0.0 to 1.0; use null when uncertain.")
+
+        if params.get("anti_hallucination", True):
+            controls.append("- Anti-hallucination: include only visible content; use null or empty strings instead of guessing missing text, labels, page numbers, captions, or coordinates.")
+
+        if params.get("may_have_page_numbers") is True:
+            controls.append("- Page numbers: extract visible printed page numbers into `printed_page_number` and/or Page-Header/Page-Footer regions.")
+        elif params.get("may_have_page_numbers") is False:
+            controls.append("- Page numbers: do not invent printed page numbers; use null if no visible page number exists.")
+
+        if params.get("may_have_footnotes") is True:
+            controls.append('- Footnotes: output bottom footnotes as separate regions with label "Footnote".')
+        elif params.get("may_have_footnotes") is False:
+            controls.append("- Footnotes: do not force footnote regions unless the page clearly contains them.")
+
+        if params.get("enable_marginalia") is True:
+            if handwriting_mode == "mixed":
+                controls.append('- Marginalia: separate all side/top/bottom notes from body text, including printed side references, glosses, scholarly notes, and handwritten marginal notes. Use exactly "Marginal-Note-Left", "Marginal-Note-Right", "Marginal-Note-Top", or "Marginal-Note-Bottom".')
+                controls.append("- Marginalia + handwriting: if the marginal note is handwritten, keep the Marginal-Note-* label and mark its text with `**[handwritten]**`.")
+            else:
+                controls.append('- Marginalia: separate printed/typographic side/top/bottom notes from body text, including printed side references, glosses, and scholarly notes. Use exactly "Marginal-Note-Left", "Marginal-Note-Right", "Marginal-Note-Top", or "Marginal-Note-Bottom".')
+                controls.append("- Marginalia + handwriting off: ignore handwritten marks, but do not ignore nearby printed marginalia or printed side references.")
+            controls.append("- Marginalia: do not merge marginal notes into nearby paragraphs; do not label running headers, page numbers, or ordinary footnotes as marginal notes.")
+        elif params.get("enable_marginalia") is False:
+            controls.append("- Marginalia: do not use Marginal-Note labels; transcribe visible side text as Text unless it is clearly a Footnote.")
+
+        if params.get("describe_images") is True:
+            controls.append("- Figures/images: describe only explicit non-text visual content such as photos, stamps, diagrams, maps, or illustrations.")
+        elif params.get("describe_images") is False:
+            controls.append("- Figures/images: do not invent image descriptions; use visible captions as Caption regions, otherwise leave Figure text empty.")
+
+        if params.get("enhance_tables_equations") is True:
+            controls.append("- Tables/equations: preserve tables and standalone formulas structurally when visible.")
+        elif params.get("enhance_tables_equations") is False:
+            controls.append("- Tables/equations: do not force table or equation structure when uncertain; use Text regions instead.")
+
+        return f"{prompt.rstrip()}\n\n" + "\n".join(controls)
 
     def _clean_page_separators(self, pages: List[str]) -> List[str]:
         """
@@ -466,10 +588,40 @@ class VlmDirectAsyncConverter(BaseConverter):
 
         cleaned = text
         if self.config.get("vlm_filter_page_header", False):
-            cleaned = re.sub(r"<!--\s*page-header:\s*(.*?)\s*-->", r"\1", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"<!--\s*(?:PageHeader|page-header):\s*(.*?)\s*-->", r"\1", cleaned)
         if self.config.get("vlm_filter_page_footer", False):
-            cleaned = re.sub(r"<!--\s*page-footer:\s*(.*?)\s*-->", r"\1", cleaned, flags=re.IGNORECASE)
+            cleaned = re.sub(r"<!--\s*(?:PageFooter|page-footer):\s*(.*?)\s*-->", r"\1", cleaned)
+        if self.config.get("vlm_filter_margin_notes", False):
+            cleaned = strip_margin_comment_markers(cleaned)
+        if self.config.get("vlm_filter_blockquote_markers", False):
+            cleaned = strip_blockquote_markers(cleaned)
         return cleaned.strip()
+
+    def _fix_unicode_superscript_footnotes(self, markdown_pages: List[str]) -> List[str]:
+        """Convert leading Unicode superscript footnote markers to HTML sup tags."""
+        superscript_map = {
+            "¹": "1", "²": "2", "³": "3", "⁴": "4", "⁵": "5",
+            "⁶": "6", "⁷": "7", "⁸": "8", "⁹": "9", "⁰": "0",
+        }
+        fixed = []
+        for page in markdown_pages:
+            for sup_char, normal_char in superscript_map.items():
+                page = re.sub(
+                    rf"(?m)^(\s*){re.escape(sup_char)}\)",
+                    rf"\1<sup>{normal_char})</sup>",
+                    page,
+                )
+            fixed.append(page)
+        return fixed
+
+    def _fix_hyphenation(self, markdown_pages: List[str]) -> List[str]:
+        """Merge common OCR/VLM line breaks and end-of-line hyphenation."""
+        fixed = []
+        for page in markdown_pages:
+            page = re.sub(r"(?<=\w)-\s*\r?\n\s*(?=\w)", "", page)
+            page = re.sub(r" +\r?\n", " ", page)
+            fixed.append(page)
+        return fixed
 
     def _postprocess_markdown_pages(self, pages: List[str]) -> List[str]:
         processed_pages = []
@@ -477,6 +629,10 @@ class VlmDirectAsyncConverter(BaseConverter):
             page_text = self._apply_noise_patterns(page)
             page_text = self._filter_page_markup(page_text)
             processed_pages.append(page_text)
+        if self.footnote_fix_enabled:
+            processed_pages = self._fix_unicode_superscript_footnotes(processed_pages)
+        if self.hyphenation_fix_enabled:
+            processed_pages = self._fix_hyphenation(processed_pages)
         return processed_pages
 
     def _is_json_mode(self) -> bool:
@@ -529,6 +685,7 @@ class VlmDirectAsyncConverter(BaseConverter):
             "model": payload.get("model"),
             "temperature": payload.get("temperature"),
             "top_p": payload.get("top_p"),
+            "top_k": payload.get("top_k"),
             "max_tokens": payload.get("max_tokens"),
             "response_format": payload.get("response_format"),
             "thinking": payload.get("thinking"),
@@ -553,6 +710,19 @@ class VlmDirectAsyncConverter(BaseConverter):
         if not isinstance(self._last_response_metadata, list):
             self._last_response_metadata = []
         self._last_response_metadata.append(metadata)
+
+    def _acquire_api_key(self) -> str | None:
+        if self.key_pool is None:
+            return None
+        return self.key_pool.acquire()
+
+    def _mark_api_key_success(self, key: str | None) -> None:
+        if key is not None and self.key_pool is not None:
+            self.key_pool.mark_success(key)
+
+    def _mark_api_key_failure(self, key: str | None) -> None:
+        if key is not None and self.key_pool is not None:
+            self.key_pool.mark_failure(key)
 
     def _finalize_page_output(self, text: str) -> str:
         text = (text or "").strip()
@@ -1109,6 +1279,9 @@ class VlmDirectAsyncConverter(BaseConverter):
             "vlm_direct_marginal_note_enabled": self.config.get("vlm_direct_marginal_note_enabled", False),
             "vlm_direct_use_markdown_footnotes": self.config.get("vlm_direct_use_markdown_footnotes", False),
             "vlm_direct_footnote_backlink": self.config.get("vlm_direct_footnote_backlink", False),
+            "vlm_filter_margin_notes": self.config.get("vlm_filter_margin_notes", False),
+            "vlm_filter_blockquote_markers": self.config.get("vlm_filter_blockquote_markers", False),
+            "vlm_direct_handwriting_mode": (self.prompt_params or {}).get("handwriting_mode", "none"),
         }
 
     def _process_json_outputs(self, raw_outputs: List[str | PageResult]) -> tuple[List[str], List[Optional[str]], List[str]]:
@@ -1172,6 +1345,81 @@ class VlmDirectAsyncConverter(BaseConverter):
         logger.info(f"[VlmDirectAsyncConverter] Stored {len(json_pages)} JSON pages")
         return markdown_pages, printed_pages, json_pages
 
+    def _failed_page_nums(self, page_results: List[PageResult]) -> list[int]:
+        return [
+            int(result.page_num)
+            for result in page_results
+            if not result.ok or result.content_kind != "json"
+        ]
+
+    def _prepare_markdown_pages(
+        self,
+        raw_outputs: List[str | PageResult],
+    ) -> tuple[list[str], list[Optional[str]] | None]:
+        if self.output_mode == "json":
+            markdown_pages, printed_pages, _ = self._process_json_outputs(raw_outputs)
+        else:
+            markdown_pages = [
+                result.cleaned_text if isinstance(result, PageResult) else str(result)
+                for result in raw_outputs
+            ]
+            printed_pages = None
+            logger.info(f"[VlmDirectAsyncConverter] Markdown mode: {len(markdown_pages)} pages")
+        return markdown_pages, printed_pages
+
+    def _finalize_markdown_pages(
+        self,
+        markdown_pages: list[str],
+        printed_pages: list[Optional[str]] | None,
+        page_count: int,
+    ) -> str:
+        self._emit_progress(event="postprocess", stage="saving")
+
+        logger.debug("After processing: %d pages", len(markdown_pages))
+        for i, page in enumerate(markdown_pages):
+            logger.debug("Page %d length: %d chars", i + 1, len(page))
+            if len(page) < 200:
+                logger.debug("Page %d content: %s", i + 1, repr(page[:500]))
+
+        if self.printed_page_extractor and printed_pages is None:
+            logger.info(f"[VlmDirectAsyncConverter] Extracting printed pages...")
+            markdown_pages, printed_pages = self.printed_page_extractor.extract_batch(markdown_pages)
+            found_count = sum(1 for p in printed_pages if p is not None)
+            logger.info(f"[VlmDirectAsyncConverter] Found {found_count} printed pages")
+
+        logger.info(f"[VlmDirectAsyncConverter] Cleaning page separators...")
+        markdown_pages = self._clean_page_separators(markdown_pages)
+        markdown_pages = self._postprocess_markdown_pages(markdown_pages)
+
+        if self.page_anchor_plugin.enabled:
+            logger.info(f"[VlmDirectAsyncConverter] Adding page anchors...")
+            markdown_pages = self.page_anchor_plugin.process_pages(markdown_pages, printed_pages)
+
+        self._last_markdown_pages = markdown_pages
+        logger.info(f"[VlmDirectAsyncConverter] Stored {len(markdown_pages)} Markdown pages")
+
+        if "html" in self.final_output_formats:
+            from aih_contexture.utils.vlm_json_output import markdown_to_html
+            self._last_clean_html_pages = [markdown_to_html(page) for page in self._last_markdown_pages]
+            logger.info(f"[VlmDirectAsyncConverter] Generated {len(self._last_clean_html_pages)} HTML pages")
+
+        full_markdown = join_markdown_pages(
+            markdown_pages,
+            page_separator=self.page_separator,
+            page_anchors_enabled=self.page_anchor_plugin.enabled,
+        )
+
+        if self.page_anchor_plugin.enabled:
+            final_anchor = f"{{{page_count}}}"
+            full_markdown += f"\n\n{final_anchor}\n\n{self.page_separator.strip()}"
+            logger.info(f"[VlmDirectAsyncConverter] Added final anchor: {final_anchor}")
+
+        from aih_contexture.renderers.markdown import MarkdownFormatter
+
+        full_markdown = MarkdownFormatter().format(full_markdown)
+
+        return full_markdown
+
     def _resolve_image_mime(self) -> str:
         fmt = (self.image_format or "png").lower()
         if fmt in ("jpg", "jpeg"):
@@ -1190,6 +1438,14 @@ class VlmDirectAsyncConverter(BaseConverter):
         scale = min(self.max_image_dimension / w, self.max_image_dimension / h)
         new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
         return img.resize(new_size, Image.Resampling.LANCZOS)
+
+    def _emit_progress(self, **event: Any) -> None:
+        if self.progress_callback is None:
+            return
+        try:
+            self.progress_callback(event)
+        except Exception as exc:
+            logger.debug(f"[VlmDirectAsyncConverter] progress callback ignored: {exc}")
 
     def _img_to_base64(self, img: Image.Image) -> str:
         """将图像转换为 base64 编码"""
@@ -1219,7 +1475,7 @@ class VlmDirectAsyncConverter(BaseConverter):
     ) -> PageResult:
         """异步转换单个页面"""
         async with semaphore:  # 控制并发数
-            logger.info(f"[VlmDirectAsyncConverter] Converting page {page_num}...")
+            logger.debug("Converting page %d", page_num)
 
             # 🆕 根据 API 提供商选择不同的调用方式
             if self.api_provider == "gemini":
@@ -1281,7 +1537,10 @@ class VlmDirectAsyncConverter(BaseConverter):
             "temperature": _temperature,
             "top_p": _top_p,
             "max_tokens": _max_tokens,
+            "store": False,
         }
+        if "top_k" in getattr(self, "api_params", {}):
+            payload["top_k"] = self.api_params["top_k"]
         self._apply_openai_thinking_off(payload)
 
         # JSON输出模式：强制模型只输出JSON，自然停止
@@ -1291,7 +1550,7 @@ class VlmDirectAsyncConverter(BaseConverter):
         request_metadata = self._sanitize_openai_payload_metadata(payload, page_num)
 
         if page_num == 1:
-            logger.info(f"[VlmDirectAsyncConverter] OpenAI params: temperature={_temperature}, top_p={_top_p}, max_tokens={_max_tokens}, json_mode={payload.get('response_format')}")
+            logger.info(f"[VlmDirectAsyncConverter] OpenAI params: temperature={_temperature}, top_p={_top_p}, top_k={payload.get('top_k')}, max_tokens={_max_tokens}, json_mode={payload.get('response_format')}")
 
         # API 调用（带重试和Key Pool）
         last_error = None
@@ -1305,11 +1564,12 @@ class VlmDirectAsyncConverter(BaseConverter):
         for attempt in range(max_retries + 1):
             current_key = None
             try:
-                current_key = self.key_pool.acquire()
+                current_key = self._acquire_api_key()
                 headers = {
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {current_key}"
                 }
+                if current_key:
+                    headers["Authorization"] = f"Bearer {current_key}"
 
                 async with session.post(
                     f"{self.base_url}/chat/completions",
@@ -1350,7 +1610,7 @@ class VlmDirectAsyncConverter(BaseConverter):
 
                         if result.ok:
                             logger.info(f"[VlmDirectAsyncConverter] Page {page_num} converted ({len(result.cleaned_text)} chars)")
-                            self.key_pool.mark_success(current_key)
+                            self._mark_api_key_success(current_key)
                             return result
 
                         last_error = ValueError(result.error_kind)
@@ -1362,7 +1622,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                         logger.warning(
                             f"[VlmDirectAsyncConverter] Invalid page {page_num}: kind={result.content_kind}, error={result.error_kind}, truncated={result.truncated}"
                         )
-                        self.key_pool.mark_failure(current_key)
+                        self._mark_api_key_failure(current_key)
                         if attempt < max_retries:
                             await asyncio.sleep(2 * (attempt + 1))
                             continue
@@ -1383,7 +1643,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                     last_truncated = False
                     last_error_kind = "upstream_http"
                     logger.error(f"[VlmDirectAsyncConverter] Error on page {page_num}: {last_error}")
-                    self.key_pool.mark_failure(current_key)
+                    self._mark_api_key_failure(current_key)
                     if attempt < max_retries:
                         await asyncio.sleep(2 * (attempt + 1))
                         continue
@@ -1397,8 +1657,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                 last_truncated = False
                 last_error_kind = "retry_exhausted"
                 logger.warning(f"[VlmDirectAsyncConverter] Retryable error on page {page_num} (attempt {attempt + 1}): {e}")
-                if current_key is not None:
-                    self.key_pool.mark_failure(current_key)
+                self._mark_api_key_failure(current_key)
                 if attempt < max_retries:
                     await asyncio.sleep(2 * (attempt + 1))
                     continue
@@ -1407,8 +1666,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                 last_error = e
                 last_error_kind = "retry_exhausted"
                 logger.error(f"[VlmDirectAsyncConverter] Error on page {page_num}: {e}")
-                if current_key is not None:
-                    self.key_pool.mark_failure(current_key)
+                self._mark_api_key_failure(current_key)
                 if attempt < max_retries:
                     await asyncio.sleep(2 * (attempt + 1))
                     continue
@@ -1526,12 +1784,13 @@ class VlmDirectAsyncConverter(BaseConverter):
         for attempt in range(self.max_retries + 1):
             current_key = None
             try:
-                current_key = self.key_pool.acquire()
+                current_key = self._acquire_api_key()
 
                 headers = {
                     "Content-Type": "application/json",
-                    "Authorization": f"Bearer {current_key}"
                 }
+                if current_key:
+                    headers["Authorization"] = f"Bearer {current_key}"
 
                 if page_num == 1 and attempt == 0:
                     logger.info(f"[Gemini] URL: {url}")
@@ -1550,7 +1809,7 @@ class VlmDirectAsyncConverter(BaseConverter):
 
                         if result.ok:
                             logger.info(f"[Gemini] Page {page_num} converted ({len(result.cleaned_text)} chars)")
-                            self.key_pool.mark_success(current_key)
+                            self._mark_api_key_success(current_key)
                             return result
 
                         last_error = ValueError(result.error_kind)
@@ -1562,7 +1821,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                         logger.warning(
                             f"[Gemini] Invalid page {page_num}: kind={result.content_kind}, error={result.error_kind}, truncated={result.truncated}"
                         )
-                        self.key_pool.mark_failure(current_key)
+                        self._mark_api_key_failure(current_key)
                         if attempt < self.max_retries:
                             await asyncio.sleep(2 * (attempt + 1))
                             continue
@@ -1586,8 +1845,8 @@ class VlmDirectAsyncConverter(BaseConverter):
 
                                 if result.ok:
                                     logger.info(f"[Gemini] Page {page_num} converted with query param auth ({len(result.cleaned_text)} chars)")
-                                    self.key_pool.mark_success(current_key)
-                                    return result
+                                self._mark_api_key_success(current_key)
+                                return result
 
                                 last_error = ValueError(result.error_kind)
                                 last_raw_text = page_text
@@ -1598,7 +1857,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                                 logger.warning(
                                     f"[Gemini] Invalid page {page_num} with query param auth: kind={result.content_kind}, error={result.error_kind}, truncated={result.truncated}"
                                 )
-                                self.key_pool.mark_failure(current_key)
+                                self._mark_api_key_failure(current_key)
                                 if attempt < self.max_retries:
                                     await asyncio.sleep(2 * (attempt + 1))
                                     continue
@@ -1612,7 +1871,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                             last_truncated = False
                             last_error_kind = "upstream_http"
                             logger.warning(f"[Gemini] Error on page {page_num} (attempt {attempt + 1}): {last_error}")
-                            self.key_pool.mark_failure(current_key)
+                            self._mark_api_key_failure(current_key)
                             if attempt < self.max_retries:
                                 await asyncio.sleep(2 * (attempt + 1))
                                 continue
@@ -1626,7 +1885,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                     last_truncated = False
                     last_error_kind = "upstream_http"
                     logger.warning(f"[Gemini] Error on page {page_num} (attempt {attempt + 1}): {last_error}")
-                    self.key_pool.mark_failure(current_key)
+                    self._mark_api_key_failure(current_key)
                     if attempt < self.max_retries:
                         await asyncio.sleep(2 * (attempt + 1))
                         continue
@@ -1637,8 +1896,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                 if isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError)):
                     last_error_kind = "retry_exhausted"
                 logger.warning(f"[Gemini] Error on page {page_num} (attempt {attempt + 1}): {e}")
-                if current_key is not None:
-                    self.key_pool.mark_failure(current_key)
+                self._mark_api_key_failure(current_key)
                 if attempt < self.max_retries:
                     await asyncio.sleep(2 * (attempt + 1))
                     continue
@@ -1710,12 +1968,13 @@ class VlmDirectAsyncConverter(BaseConverter):
         for attempt in range(self.max_retries + 1):
             current_key = None
             try:
-                current_key = self.key_pool.acquire()
+                current_key = self._acquire_api_key()
                 headers = {
                     "Content-Type": "application/json",
-                    "x-api-key": current_key,
                     "anthropic-version": "2023-06-01"
                 }
+                if current_key:
+                    headers["x-api-key"] = current_key
 
                 if page_num == 1 and attempt == 0:
                     logger.info(f"[Anthropic] URL: {url}")
@@ -1751,7 +2010,7 @@ class VlmDirectAsyncConverter(BaseConverter):
 
                         if result.ok:
                             logger.info(f"[Anthropic] Page {page_num} converted ({len(result.cleaned_text)} chars)")
-                            self.key_pool.mark_success(current_key)
+                            self._mark_api_key_success(current_key)
                             return result
 
                         last_error = ValueError(result.error_kind)
@@ -1763,7 +2022,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                         logger.warning(
                             f"[Anthropic] Invalid page {page_num}: kind={result.content_kind}, error={result.error_kind}, truncated={result.truncated}"
                         )
-                        self.key_pool.mark_failure(current_key)
+                        self._mark_api_key_failure(current_key)
                         if attempt < self.max_retries:
                             await asyncio.sleep(2 * (attempt + 1))
                             continue
@@ -1777,7 +2036,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                     last_truncated = False
                     last_error_kind = "upstream_http"
                     logger.warning(f"[Anthropic] Error on page {page_num} (attempt {attempt + 1}): {last_error}")
-                    self.key_pool.mark_failure(current_key)
+                    self._mark_api_key_failure(current_key)
                     if attempt < self.max_retries:
                         await asyncio.sleep(2 * (attempt + 1))
                         continue
@@ -1788,8 +2047,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                 if isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError)):
                     last_error_kind = "retry_exhausted"
                 logger.warning(f"[Anthropic] Error on page {page_num} (attempt {attempt + 1}): {e}")
-                if current_key is not None:
-                    self.key_pool.mark_failure(current_key)
+                self._mark_api_key_failure(current_key)
                 if attempt < self.max_retries:
                     await asyncio.sleep(2 * (attempt + 1))
                     continue
@@ -1840,8 +2098,9 @@ class VlmDirectAsyncConverter(BaseConverter):
             return self._error_page_result(page_num, self.api_provider, str(result))
 
         if isinstance(result, PageResult):
-            logger.info(
-                f"[DEBUG] Page result: page={result.page_num}, ok={result.ok}, kind={result.content_kind}, error={result.error_kind}, len={len(result.cleaned_text)}"
+            logger.debug(
+                "Page %d result: ok=%s kind=%s error=%s len=%d",
+                result.page_num, result.ok, result.content_kind, result.error_kind, len(result.cleaned_text)
             )
             return result
 
@@ -1852,9 +2111,70 @@ class VlmDirectAsyncConverter(BaseConverter):
             f"unexpected result type: {type(result).__name__}"
         )
 
+    def _checkpoint_path(self) -> Optional[Path]:
+        if not self.checkpoint_dir or not self.checkpoint_name:
+            return None
+        safe_name = re.sub(r'[<>:"/\\\\|?*]+', "_", str(self.checkpoint_name)).strip() or "vlm_checkpoint"
+        return Path(self.checkpoint_dir) / f"{safe_name}.vlm_checkpoint.json"
+
+    def _load_checkpoint_results(self, total_pages: int) -> dict[int, PageResult]:
+        path = self._checkpoint_path()
+        if not path or not self.resume_checkpoint or not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning(f"[VLM] Failed to read checkpoint {path}: {exc}")
+            return {}
+
+        if int(data.get("total_pages") or 0) != int(total_pages):
+            logger.warning(f"[VLM] Ignoring checkpoint with mismatched total_pages: {path}")
+            return {}
+
+        loaded: dict[int, PageResult] = {}
+        for item in data.get("pages", []):
+            if not isinstance(item, dict):
+                continue
+            try:
+                result = PageResult(**item)
+            except TypeError:
+                continue
+            if result.ok:
+                loaded[int(result.page_num)] = result
+        if loaded:
+            logger.info(f"[VLM] Loaded {len(loaded)} successful pages from checkpoint: {path}")
+        return loaded
+
+    def _save_checkpoint_results(self, total_pages: int, results_by_page: dict[int, PageResult]) -> None:
+        path = self._checkpoint_path()
+        if not path:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "format": "vlm_generalized_checkpoint",
+                "version": 1,
+                "total_pages": int(total_pages),
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "model": self.model,
+                "provider": self.api_provider,
+                "pages": [
+                    asdict(results_by_page[page_num])
+                    for page_num in sorted(results_by_page)
+                ],
+            }
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(tmp_path, path)
+            ok_count = sum(1 for result in results_by_page.values() if result.ok)
+            logger.info(f"[VLM] Checkpoint saved: {path} ({ok_count}/{total_pages} successful pages)")
+        except Exception as exc:
+            logger.warning(f"[VLM] Failed to save checkpoint: {exc}")
+
     async def _convert_all_pages_strict_batches_async(
         self,
         images: List[Image.Image],
+        page_offset: int = 0,
     ) -> List[PageResult]:
         concurrency = max(1, self.max_concurrent)
         total_pages = len(images)
@@ -1865,29 +2185,40 @@ class VlmDirectAsyncConverter(BaseConverter):
                 batch_end = min(batch_start + concurrency, total_pages)
                 batch_images = images[batch_start:batch_end]
 
-                logger.info(f"[VLM][LM Studio] Processing batch {batch_start//concurrency + 1}: pages {batch_start+1}-{batch_end}")
+                logger.info(
+                    f"[VLM][LM Studio] Processing batch {batch_start//concurrency + 1}: "
+                    f"pages {page_offset + batch_start + 1}-{page_offset + batch_end}"
+                )
 
                 tasks = [
-                    self._convert_page_async_no_semaphore(session, img, batch_start + idx + 1)
+                    self._convert_page_async_no_semaphore(session, img, page_offset + batch_start + idx + 1)
                     for idx, img in enumerate(batch_images)
                 ]
                 batch_results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 for idx, result in enumerate(batch_results):
-                    page_num = batch_start + idx + 1
-                    all_results.append(self._normalize_page_result(page_num, result))
+                    page_num = page_offset + batch_start + idx + 1
+                    page_result = self._normalize_page_result(page_num, result)
+                    all_results.append(page_result)
+                    self._emit_progress(
+                        event="page_done",
+                        page_num=page_num,
+                        ok=bool(page_result.ok),
+                        stage="processing",
+                    )
 
                 logger.info(f"[VLM][LM Studio] Batch completed: {len(batch_results)} pages")
 
         all_results.sort(key=lambda x: x.page_num)
         valid_results = [result for result in all_results if result.ok]
-        logger.info(f"[DEBUG] Total results: {len(all_results)}, Valid results: {len(valid_results)}")
+        logger.debug("Total results: %d, Valid results: %d", len(all_results), len(valid_results))
         return all_results
 
     async def _convert_all_pages_sliding_window_async(
         self,
         images: List[Image.Image],
         global_semaphore: Optional[asyncio.Semaphore] = None,
+        page_offset: int = 0,
     ) -> List[PageResult]:
         concurrency = max(1, self.max_concurrent)
         total_pages = len(images)
@@ -1895,14 +2226,21 @@ class VlmDirectAsyncConverter(BaseConverter):
         local_semaphore = asyncio.Semaphore(concurrency)
 
         async def run_page(session: aiohttp.ClientSession, idx: int, img: Image.Image):
-            page_num = idx + 1
+            page_num = page_offset + idx + 1
             semaphore = global_semaphore or local_semaphore
             async with semaphore:
                 try:
                     result = await self._convert_page_async_no_semaphore(session, img, page_num)
                 except Exception as e:
                     result = e
-            results[idx] = self._normalize_page_result(page_num, result)
+            page_result = self._normalize_page_result(page_num, result)
+            results[idx] = page_result
+            self._emit_progress(
+                event="page_done",
+                page_num=page_num,
+                ok=bool(page_result.ok),
+                stage="processing",
+            )
 
         async with aiohttp.ClientSession() as session:
             logger.info(f"[VLM] Processing {total_pages} pages with sliding-window concurrency={concurrency}")
@@ -1916,25 +2254,217 @@ class VlmDirectAsyncConverter(BaseConverter):
 
         ordered_results = [
             result if result is not None else self._error_page_result(
-                idx + 1,
+                page_offset + idx + 1,
                 self.api_provider,
                 "missing page result"
             )
             for idx, result in enumerate(results)
         ]
         valid_results = [result for result in ordered_results if result.ok]
-        logger.info(f"[DEBUG] Total results: {len(ordered_results)}, Valid results: {len(valid_results)}")
+        logger.debug("Total results: %d, Valid results: %d", len(ordered_results), len(valid_results))
         return ordered_results
 
     async def _convert_all_pages_async(
         self,
         images: List[Image.Image],
-        global_semaphore: Optional[asyncio.Semaphore] = None
+        global_semaphore: Optional[asyncio.Semaphore] = None,
+        page_offset: int = 0,
     ) -> List[PageResult]:
         """异步转换所有页面。"""
         if self._uses_strict_batch_page_scheduling():
-            return await self._convert_all_pages_strict_batches_async(images)
-        return await self._convert_all_pages_sliding_window_async(images, global_semaphore)
+            return await self._convert_all_pages_strict_batches_async(images, page_offset=page_offset)
+        return await self._convert_all_pages_sliding_window_async(images, global_semaphore, page_offset=page_offset)
+
+    async def _convert_pages_streaming_async(
+        self,
+        provider,
+        page_indices: List[int],
+        global_semaphore: Optional[asyncio.Semaphore] = None,
+    ) -> List[PageResult]:
+        total_pages = len(page_indices)
+        concurrency = max(1, self.max_concurrent)
+        results_by_page = self._load_checkpoint_results(total_pages)
+        self._emit_progress(event="pages_discovered", total_pages=total_pages, stage="preprocessing")
+        for restored_page_num in sorted(results_by_page):
+            restored = results_by_page[restored_page_num]
+            self._emit_progress(
+                event="page_done",
+                page_num=restored_page_num,
+                ok=bool(restored.ok),
+                stage="processing",
+            )
+
+        for batch_start in range(0, total_pages, concurrency):
+            batch_end = min(batch_start + concurrency, total_pages)
+            batch_page_nums = list(range(batch_start + 1, batch_end + 1))
+            missing_positions = [
+                pos for pos, page_num in enumerate(batch_page_nums, start=batch_start)
+                if page_num not in results_by_page or not results_by_page[page_num].ok
+            ]
+            if not missing_positions:
+                logger.info(f"[VLM] Batch pages {batch_start + 1}-{batch_end} already completed by checkpoint")
+                continue
+
+            runs: list[list[int]] = []
+            for pos in missing_positions:
+                if not runs or pos != runs[-1][-1] + 1:
+                    runs.append([pos])
+                else:
+                    runs[-1].append(pos)
+
+            for run in runs:
+                render_indices = [page_indices[pos] for pos in run]
+                start_page = run[0] + 1
+                end_page = run[-1] + 1
+                self._emit_progress(
+                    event="render_batch",
+                    start_page=start_page,
+                    end_page=end_page,
+                    stage="preprocessing",
+                )
+                logger.info(f"[VLM] Rendering streaming batch pages {start_page}-{end_page}")
+                images = provider.get_images(render_indices, self.dpi)
+
+                try:
+                    batch_results = await self._convert_all_pages_async(
+                        images,
+                        global_semaphore,
+                        page_offset=run[0],
+                    )
+                    for page_result in batch_results:
+                        results_by_page[page_result.page_num] = page_result
+                    self._save_checkpoint_results(total_pages, results_by_page)
+                finally:
+                    for img in images:
+                        try:
+                            img.close()
+                        except Exception:
+                            pass
+                    del images
+
+        return [
+            results_by_page.get(page_num)
+            or self._error_page_result(page_num, self.api_provider, "missing page result")
+            for page_num in range(1, total_pages + 1)
+        ]
+
+    async def _convert_sparse_pages_async(
+        self,
+        provider,
+        page_pairs: list[tuple[int, int]],
+        global_semaphore: Optional[asyncio.Semaphore] = None,
+    ) -> list[PageResult]:
+        """Convert sparse PDF pages while preserving absolute logical page numbers."""
+        if not page_pairs:
+            return []
+
+        old_max_concurrent = self.max_concurrent
+        self.max_concurrent = max(1, self.repair_max_concurrent)
+        results: list[PageResult] = []
+        concurrency = self.max_concurrent
+
+        try:
+            for batch_start in range(0, len(page_pairs), concurrency):
+                batch_pairs = page_pairs[batch_start:batch_start + concurrency]
+                logical_nums = [logical for _, logical in batch_pairs]
+                logger.info(f"[VLM Repair] Rendering sparse pages: {logical_nums}")
+                self._emit_progress(
+                    event="repair_batch",
+                    pages=logical_nums,
+                    stage="repairing",
+                )
+                images = provider.get_images([pdf_index for pdf_index, _ in batch_pairs], self.dpi)
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        tasks = [
+                            self._convert_page_async_no_semaphore(session, img, logical_num)
+                            for img, (_, logical_num) in zip(images, batch_pairs)
+                        ]
+                        batch_raw = await asyncio.gather(*tasks, return_exceptions=True)
+                    for (_, logical_num), raw_result in zip(batch_pairs, batch_raw):
+                        result = self._normalize_page_result(logical_num, raw_result)
+                        results.append(result)
+                        self._emit_progress(
+                            event="page_done",
+                            page_num=logical_num,
+                            ok=bool(result.ok),
+                            stage="repairing",
+                        )
+                finally:
+                    for img in images:
+                        try:
+                            img.close()
+                        except Exception:
+                            pass
+                    del images
+        finally:
+            self.max_concurrent = old_max_concurrent
+
+        return results
+
+    async def _auto_repair_failed_results_async(
+        self,
+        provider,
+        page_indices: list[int],
+        raw_outputs: list[PageResult],
+        global_semaphore: Optional[asyncio.Semaphore] = None,
+    ) -> list[PageResult]:
+        if not self.auto_repair_failed_pages or self.repair_rounds <= 0:
+            return raw_outputs
+
+        results_by_page = {int(result.page_num): result for result in raw_outputs}
+        total_pages = len(page_indices)
+
+        for round_idx in range(1, self.repair_rounds + 1):
+            failed_pages = [
+                page_num
+                for page_num in range(1, total_pages + 1)
+                if page_num not in results_by_page
+                or not results_by_page[page_num].ok
+                or results_by_page[page_num].content_kind != "json"
+            ]
+            if not failed_pages:
+                logger.info(f"[VLM Repair] No failed pages before repair round {round_idx}")
+                break
+
+            logger.info(
+                f"[VLM Repair] Round {round_idx}/{self.repair_rounds}: retrying {len(failed_pages)} pages "
+                f"with concurrency={self.repair_max_concurrent}: {failed_pages}"
+            )
+            self._emit_progress(
+                event="repair_start",
+                round=round_idx,
+                total_rounds=self.repair_rounds,
+                failed_pages=failed_pages,
+                stage="repairing",
+            )
+
+            page_pairs = [(page_indices[page_num - 1], page_num) for page_num in failed_pages]
+            repaired_results = await self._convert_sparse_pages_async(provider, page_pairs, global_semaphore)
+            for repaired in repaired_results:
+                if repaired.ok and repaired.content_kind == "json":
+                    results_by_page[int(repaired.page_num)] = repaired
+
+            remaining = [
+                page_num
+                for page_num in failed_pages
+                if page_num not in results_by_page
+                or not results_by_page[page_num].ok
+                or results_by_page[page_num].content_kind != "json"
+            ]
+            self._emit_progress(
+                event="repair_done",
+                round=round_idx,
+                repaired_pages=len(failed_pages) - len(remaining),
+                remaining_failed_pages=remaining,
+                stage="repairing",
+            )
+
+        return [
+            results_by_page.get(page_num)
+            or self._error_page_result(page_num, self.api_provider, "missing page result after repair")
+            for page_num in range(1, total_pages + 1)
+        ]
 
     def __call__(self, filepath: str, global_semaphore: Optional[asyncio.Semaphore] = None):
         """
@@ -1952,7 +2482,8 @@ class VlmDirectAsyncConverter(BaseConverter):
 
         # 1. 加载文档
         provider_cls = provider_from_filepath(filepath)
-        provider = provider_cls(filepath, self.config)
+        provider_config = {**self.config, "force_ocr": True}
+        provider = provider_cls(filepath, provider_config)
 
         # 2. 获取所有页面图像（支持页码范围过滤）
         num_pages = len(provider)
@@ -1962,78 +2493,32 @@ class VlmDirectAsyncConverter(BaseConverter):
             logger.info(f"[VlmDirectAsyncConverter] Page range: {self.page_start}-{actual_end} (total {num_pages} pages)")
         else:
             page_indices = list(range(num_pages))
-        images = provider.get_images(page_indices, self.dpi)
 
-        logger.info(f"[VlmDirectAsyncConverter] Loaded {len(images)} pages")
         logger.info(f"[VlmDirectAsyncConverter] Using {self.max_concurrent} concurrent workers")
 
         # 3. 异步并发转换（传递全局信号量）
         start_time = time.time()
-        raw_outputs = asyncio.run(self._convert_all_pages_async(images, global_semaphore))
+        if self.streaming_batches:
+            raw_outputs = asyncio.run(self._convert_pages_streaming_async(provider, page_indices, global_semaphore))
+            images = [None] * len(page_indices)
+        else:
+            images = provider.get_images(page_indices, self.dpi)
+            logger.info(f"[VlmDirectAsyncConverter] Loaded {len(images)} pages")
+            self._emit_progress(event="pages_loaded", total_pages=len(images), stage="processing")
+            raw_outputs = asyncio.run(self._convert_all_pages_async(images, global_semaphore))
         elapsed_time = time.time() - start_time
 
-        # 3.5 根据输出模式处理（JSON或Markdown）
         if self.output_mode == "json":
-            markdown_pages, printed_pages, _ = self._process_json_outputs(raw_outputs)
-        else:
-            # Markdown模式（向后兼容）
-            markdown_pages = [result.cleaned_text for result in raw_outputs]
-            printed_pages = None
-            logger.info(f"[VlmDirectAsyncConverter] Markdown mode: {len(markdown_pages)} pages")
-
-        # 🔍 DEBUG: 检查处理后的内容
-        logger.info(f"[DEBUG] After processing: {len(markdown_pages)} pages")
-        for i, page in enumerate(markdown_pages):
-            logger.info(f"[DEBUG] Page {i+1} length: {len(page)} chars")
-            if len(page) < 200:
-                logger.info(f"[DEBUG] Page {i+1} content: {repr(page[:500])}")
-
-        # 4. 提取印刷页码（如果启用且JSON模式未提供）
-        if self.printed_page_extractor and printed_pages is None:
-            logger.info(f"[VlmDirectAsyncConverter] Extracting printed pages...")
-            markdown_pages, printed_pages = self.printed_page_extractor.extract_batch(markdown_pages)
-            found_count = sum(1 for p in printed_pages if p is not None)
-            logger.info(f"[VlmDirectAsyncConverter] Found {found_count} printed pages")
-            # 🔍 DEBUG
-            for i, page in enumerate(markdown_pages):
-                logger.info(f"[DEBUG] After extract, Page {i+1}: {len(page)} chars")
-
-        # 5. 清理页面分隔符（避免嵌套）
-        logger.info(f"[VlmDirectAsyncConverter] Cleaning page separators...")
-        markdown_pages = self._clean_page_separators(markdown_pages)
-        markdown_pages = self._postprocess_markdown_pages(markdown_pages)
-        # 🔍 DEBUG
-        for i, page in enumerate(markdown_pages):
-            logger.info(f"[DEBUG] After clean, Page {i+1}: {len(page)} chars")
-
-        # 6. 添加页码锚点（如果启用）
-        if self.page_anchor_plugin.enabled:
-            logger.info(f"[VlmDirectAsyncConverter] Adding page anchors...")
-            markdown_pages = self.page_anchor_plugin.process_pages(markdown_pages, printed_pages)
-
-        # 存储Markdown格式（新增）
-        self._last_markdown_pages = markdown_pages
-        logger.info(f"[VlmDirectAsyncConverter] Stored {len(markdown_pages)} Markdown pages")
-
-        # 7. 拼接所有页面
-        full_markdown = self.page_separator.join(markdown_pages)
-
-        # 添加文档末尾的额外锚点（用于区间提取）
-        if self.page_anchor_plugin.enabled:
-            page_count = len(images)
-            final_anchor = f"{{{page_count}}}"
-            full_markdown += f"\n\n{final_anchor}"
-            logger.info(f"[VlmDirectAsyncConverter] Added final anchor: {final_anchor}")
+            raw_outputs = asyncio.run(
+                self._auto_repair_failed_results_async(provider, page_indices, raw_outputs, global_semaphore)
+            )
+        markdown_pages, printed_pages = self._prepare_markdown_pages(raw_outputs)
+        full_markdown = self._finalize_markdown_pages(markdown_pages, printed_pages, len(page_indices))
 
         logger.info(f"[VlmDirectAsyncConverter] Conversion complete in {elapsed_time:.1f}s")
         logger.info(f"[VlmDirectAsyncConverter] Total: {len(full_markdown)} chars")
-        logger.info(f"[VlmDirectAsyncConverter] Speed: {len(images) / elapsed_time:.2f} pages/sec")
-
-        # 生成HTML格式（新增）
-        if "html" in self.final_output_formats:
-            from aih_contexture.utils.vlm_json_output import markdown_to_html
-            self._last_clean_html_pages = [markdown_to_html(page) for page in self._last_markdown_pages]
-            logger.info(f"[VlmDirectAsyncConverter] Generated {len(self._last_clean_html_pages)} HTML pages")
+        logger.info(f"[VlmDirectAsyncConverter] Speed: {len(page_indices) / elapsed_time:.2f} pages/sec")
+        self._emit_progress(event="file_done", stage="saving")
 
         # 8. 如果启用了渲染器,转换为Document并渲染
         if self.use_markdown_builder and self.markdown_builder:
@@ -2069,7 +2554,8 @@ class VlmDirectAsyncConverter(BaseConverter):
 
         # 1. 加载文档（同步操作，但在单线程中执行）
         provider_cls = provider_from_filepath(filepath)
-        provider = provider_cls(filepath, self.config)
+        provider_config = {**self.config, "force_ocr": True}
+        provider = provider_cls(filepath, provider_config)
 
         # 2. 获取所有页面图像（支持页码范围过滤）
         num_pages = len(provider)
@@ -2079,66 +2565,28 @@ class VlmDirectAsyncConverter(BaseConverter):
             logger.info(f"[VlmDirectAsyncConverter] Page range: {self.page_start}-{actual_end} (total {num_pages} pages)")
         else:
             page_indices = list(range(num_pages))
-        images = provider.get_images(page_indices, self.dpi)
 
-        logger.info(f"[VlmDirectAsyncConverter] Loaded {len(images)} pages")
         logger.info(f"[VlmDirectAsyncConverter] Using {self.max_concurrent} concurrent workers")
 
         # 3. 异步并发转换
         start_time = time.time()
-        raw_outputs = await self._convert_all_pages_async(images, global_semaphore)
+        if self.streaming_batches:
+            raw_outputs = await self._convert_pages_streaming_async(provider, page_indices, global_semaphore)
+        else:
+            images = provider.get_images(page_indices, self.dpi)
+            logger.info(f"[VlmDirectAsyncConverter] Loaded {len(images)} pages")
+            self._emit_progress(event="pages_loaded", total_pages=len(images), stage="processing")
+            raw_outputs = await self._convert_all_pages_async(images, global_semaphore)
         elapsed_time = time.time() - start_time
 
         if self.output_mode == "json":
-            markdown_pages, printed_pages, _ = self._process_json_outputs(raw_outputs)
-        else:
-            markdown_pages = [result.cleaned_text for result in raw_outputs]
-            printed_pages = None
-
-        # 4. 后处理（与同步版本相同）
-        logger.info(f"[DEBUG] After API call: {len(markdown_pages)} pages")
-        for i, page in enumerate(markdown_pages):
-            logger.info(f"[DEBUG] Page {i+1} raw length: {len(page)} chars")
-            if len(page) < 200:
-                logger.info(f"[DEBUG] Page {i+1} content: {repr(page[:500])}")
-
-        # 提取印刷页码（仅在非JSON模式下使用）
-        if self.printed_page_extractor and printed_pages is None:
-            logger.info(f"[VlmDirectAsyncConverter] Extracting printed pages...")
-            markdown_pages, printed_pages = self.printed_page_extractor.extract_batch(markdown_pages)
-            found_count = sum(1 for p in printed_pages if p is not None)
-            logger.info(f"[VlmDirectAsyncConverter] Found {found_count} printed pages")
-
-        # 清理页面分隔符
-        logger.info(f"[VlmDirectAsyncConverter] Cleaning page separators...")
-        markdown_pages = self._clean_page_separators(markdown_pages)
-        markdown_pages = self._postprocess_markdown_pages(markdown_pages)
-
-        # 添加页码锚点
-        if self.page_anchor_plugin.enabled:
-            logger.info(f"[VlmDirectAsyncConverter] Adding page anchors...")
-            markdown_pages = self.page_anchor_plugin.process_pages(markdown_pages, printed_pages)
-
-        self._last_markdown_pages = markdown_pages
-        logger.info(f"[VlmDirectAsyncConverter] Stored {len(markdown_pages)} Markdown pages")
-
-        if "html" in self.final_output_formats:
-            from aih_contexture.utils.vlm_json_output import markdown_to_html
-            self._last_clean_html_pages = [markdown_to_html(page) for page in self._last_markdown_pages]
-            logger.info(f"[VlmDirectAsyncConverter] Generated {len(self._last_clean_html_pages)} HTML pages")
-
-        # 拼接所有页面
-        full_markdown = self.page_separator.join(markdown_pages)
-
-        # 添加文档末尾锚点
-        if self.page_anchor_plugin.enabled:
-            page_count = len(images)
-            final_anchor = f"{{{page_count}}}"
-            full_markdown += f"\n\n{final_anchor}"
-            logger.info(f"[VlmDirectAsyncConverter] Added final anchor: {final_anchor}")
+            raw_outputs = await self._auto_repair_failed_results_async(provider, page_indices, raw_outputs, global_semaphore)
+        markdown_pages, printed_pages = self._prepare_markdown_pages(raw_outputs)
+        full_markdown = self._finalize_markdown_pages(markdown_pages, printed_pages, len(page_indices))
 
         logger.info(f"[VlmDirectAsyncConverter] Conversion complete in {elapsed_time:.1f}s")
         logger.info(f"[VlmDirectAsyncConverter] Total: {len(full_markdown)} chars")
-        logger.info(f"[VlmDirectAsyncConverter] Speed: {len(images) / elapsed_time:.2f} pages/sec")
+        logger.info(f"[VlmDirectAsyncConverter] Speed: {len(page_indices) / elapsed_time:.2f} pages/sec")
+        self._emit_progress(event="file_done", stage="saving")
 
         return full_markdown

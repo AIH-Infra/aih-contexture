@@ -1,0 +1,39 @@
+{
+  "name": "contexture-layout-smoke",
+  "version": 1,
+  "min_blocks": 1,
+  "cases": [
+    {
+      "id": "modern-native-text",
+      "path": "outputs/surya/modern_native_text_middle.json",
+      "backend": "surya",
+      "document_type": "modern_pdf_native_text",
+      "required_block_types": ["Text"],
+      "notes": "Modern born-digital PDF. Verifies native text + layout + ocr:none path."
+    },
+    {
+      "id": "footnote-heavy",
+      "path": "outputs/mineru/footnote_heavy_middle.json",
+      "backend": "mineru_pp_doclayout_v2",
+      "document_type": "humanities_footnotes",
+      "required_block_types": ["Text", "Footnote"],
+      "notes": "Legacy MinerU pipeline import sample; used for middle/provenance compatibility only."
+    },
+    {
+      "id": "marginalia-or-aside",
+      "path": "outputs/paddle/marginalia_middle.json",
+      "backend": "paddle_pp_doclayout_plus_l",
+      "document_type": "marginalia_or_aside",
+      "required_block_types": ["Text", "MarginalNote"],
+      "notes": "Layout with side notes, marginal comments, or aside text."
+    },
+    {
+      "id": "public-domain-book",
+      "path": "outputs/paddle_v3/public_domain_book_middle.json",
+      "backend": "paddle_pp_doclayout_v3",
+      "document_type": "public_domain_book_pdf",
+      "required_block_types": ["Text"],
+      "notes": "Long-form public-domain book PDF for humanities-style prose layout."
+    }
+  ]
+}

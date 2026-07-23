@@ -8,6 +8,7 @@ set "PIP_NO_INDEX="
 set "PIP_REQUIRE_HASHES="
 set "PIP_FIND_LINKS="
 set "PIP_CACHE_DIR="
+set "PIP_EXTRA_INDEX_URL="
 
 :: ============================================
 ::   AIH-Contexture Environment Setup (Windows)
@@ -218,43 +219,28 @@ echo [4/5] Installing PyTorch...
 echo.
 
 if %HAS_NVIDIA%==1 (
-    echo NVIDIA GPU detected. Select CUDA version:
-    echo.
-    echo   [1] CUDA 12.6 (Recommended)
-    echo   [2] CUDA 12.8
-    echo   [3] CUDA 13.0 (Latest)
-    echo   [4] CPU only
-    echo.
-    set /p CUDA_CHOICE="Select [1-4, default=1]: "
-    if "!CUDA_CHOICE!"=="" set CUDA_CHOICE=1
-
-    if "!CUDA_CHOICE!"=="1" (
-        echo Installing PyTorch with CUDA 12.6...
-        ".venv\Scripts\python.exe" -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu126
-    ) else if "!CUDA_CHOICE!"=="2" (
-        echo Installing PyTorch with CUDA 12.8...
-        ".venv\Scripts\python.exe" -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu128
-    ) else if "!CUDA_CHOICE!"=="3" (
-        echo Installing PyTorch with CUDA 13.0...
-        ".venv\Scripts\python.exe" -m pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cu130
-    ) else (
-        echo Installing PyTorch CPU version...
-        ".venv\Scripts\python.exe" -m pip install --no-cache-dir torch torchvision
-    )
+    call :install_gpu_torch
 ) else (
-    echo Installing PyTorch CPU version...
-    ".venv\Scripts\python.exe" -m pip install --no-cache-dir torch torchvision
+    call :install_cpu_torch
 )
 
 if !errorlevel! neq 0 (
     echo.
-    echo [Error] PyTorch installation failed
-    echo Please check your network connection
+    echo [Error] PyTorch installation or device verification failed
+    echo No CPU fallback was performed. Check the selected profile, NVIDIA driver, and network.
     pause
     exit /b 1
 )
 
-echo [OK] PyTorch installed
+call :verify_torch
+if !errorlevel! neq 0 (
+    echo.
+    echo [Error] The installed PyTorch build does not match the selected profile
+    pause
+    exit /b 1
+)
+
+echo [OK] PyTorch profile verified: !TORCH_PROFILE!
 echo.
 
 :: ============================================
@@ -272,6 +258,67 @@ if !errorlevel! neq 0 (
     exit /b 1
 )
 
+call :verify_torch
+if !errorlevel! neq 0 (
+    echo.
+    echo [Error] Project dependency installation changed the verified PyTorch profile
+    echo Re-run install.bat and keep the displayed verification error for diagnosis.
+    pause
+    exit /b 1
+)
+
+echo.
+echo Registering local Contexture command-line entry points...
+".venv\Scripts\python.exe" -m pip install --no-cache-dir -e . --no-deps
+
+if !errorlevel! neq 0 (
+    echo.
+    echo [Error] Failed to register local package
+    pause
+    exit /b 1
+)
+
+".venv\Scripts\python.exe" -c "import streamlit, aih_contexture; from aih_contexture.scripts.doctor import doctor_cli" >nul 2>nul
+if !errorlevel! neq 0 (
+    echo.
+    echo [Error] Installation validation failed
+    echo Please check the dependency installation log above
+    pause
+    exit /b 1
+)
+
+echo.
+echo [Optional] Checking Tesseract OCR...
+set TESS_FOUND=0
+where tesseract >nul 2>&1
+if !errorlevel!==0 (
+    for /f "tokens=*" %%t in ('where tesseract 2^>nul') do (
+        echo [Found] %%t
+        set TESS_FOUND=1
+        goto :tess_done
+    )
+)
+if exist "C:\Program Files\Tesseract-OCR\tesseract.exe" (
+    echo [Found] C:\Program Files\Tesseract-OCR\tesseract.exe
+    set TESS_FOUND=1
+)
+:tess_done
+if "!TESS_FOUND!"=="0" (
+    echo [Info] Tesseract is optional and was not found.
+    echo        The Tesseract OCR backend will stay unavailable until installed.
+    where winget >nul 2>&1
+    if !errorlevel!==0 (
+        set /p INSTALL_TESS="Try installing Tesseract with winget now? (y/N): "
+        if /i "!INSTALL_TESS!"=="y" (
+            winget install --id UB-Mannheim.TesseractOCR -e
+            echo [Info] If installation succeeded, restart this terminal before using Tesseract.
+        )
+    ) else (
+        echo        Manual install: https://github.com/UB-Mannheim/tesseract/wiki
+        echo        Or set CONTEXTURE_TESSERACT_CMD to tesseract.exe.
+    )
+)
+
 echo.
 echo ============================================================
 echo    Setup complete!
@@ -280,9 +327,80 @@ echo.
 echo    Start: double-click start.bat, or run start.bat in a terminal
 echo    The app will choose an available port starting from 8501
 echo    The default install covers the main PDF/image workflow
+echo    Optional backend check: .venv\Scripts\contexture_doctor.exe
 echo    First Pipeline / Surya use may download models and take longer
 echo.
 echo ============================================================
 echo.
 
 pause
+exit /b 0
+
+:: ============================================
+:: PyTorch profile helpers
+:: ============================================
+:install_gpu_torch
+:torch_choice_loop
+set "CUDA_CHOICE="
+set "TORCH_PROFILE="
+set "TORCH_CUDA_EXPECTED="
+echo NVIDIA GPU detected. Select a verified PyTorch profile:
+echo.
+echo   [1] CUDA 12.6 (Recommended for broad NVIDIA compatibility)
+echo   [2] CUDA 13.0 (Requires an NVIDIA driver compatible with CUDA 13.0)
+echo   [3] CUDA 13.2 (Requires an NVIDIA driver compatible with CUDA 13.2)
+echo   [4] CPU only
+echo.
+set /p CUDA_CHOICE="Select [1-4, default=1]: "
+if "!CUDA_CHOICE!"=="" set "CUDA_CHOICE=1"
+
+if "!CUDA_CHOICE!"=="1" (
+    set "TORCH_PROFILE=CUDA 12.6"
+    set "TORCH_CUDA_EXPECTED=12.6"
+    call :install_torch_from_index "https://download.pytorch.org/whl/cu126"
+    exit /b !errorlevel!
+)
+if "!CUDA_CHOICE!"=="2" (
+    set "TORCH_PROFILE=CUDA 13.0"
+    set "TORCH_CUDA_EXPECTED=13.0"
+    call :install_torch_from_index "https://download.pytorch.org/whl/cu130"
+    exit /b !errorlevel!
+)
+if "!CUDA_CHOICE!"=="3" (
+    set "TORCH_PROFILE=CUDA 13.2"
+    set "TORCH_CUDA_EXPECTED=13.2"
+    call :install_torch_from_index "https://download.pytorch.org/whl/cu132"
+    exit /b !errorlevel!
+)
+if "!CUDA_CHOICE!"=="4" (
+    call :install_cpu_torch
+    exit /b !errorlevel!
+)
+
+echo [Error] Invalid selection "!CUDA_CHOICE!". Enter exactly 1, 2, 3, or 4.
+echo.
+goto :torch_choice_loop
+
+:install_cpu_torch
+set "TORCH_PROFILE=CPU"
+set "TORCH_CUDA_EXPECTED="
+call :install_torch_from_index "https://download.pytorch.org/whl/cpu"
+exit /b !errorlevel!
+
+:install_torch_from_index
+set "TORCH_INDEX=%~1"
+set "TORCH_VERSION=2.13.0"
+set "TORCHVISION_VERSION=0.28.0"
+echo Installing PyTorch profile: !TORCH_PROFILE!
+echo Source: !TORCH_INDEX!
+echo Required versions: torch !TORCH_VERSION!, torchvision !TORCHVISION_VERSION!
+".venv\Scripts\python.exe" -m pip install --isolated --no-cache-dir --upgrade --force-reinstall --index-url "!TORCH_INDEX!" "torch==!TORCH_VERSION!" "torchvision==!TORCHVISION_VERSION!"
+exit /b !errorlevel!
+
+:verify_torch
+if defined TORCH_CUDA_EXPECTED (
+    ".venv\Scripts\python.exe" -c "import sys, torch, torchvision; expected='!TORCH_CUDA_EXPECTED!'; torch_ok=torch.__version__.split('+', 1)[0] == '2.13.0'; vision_ok=torchvision.__version__.split('+', 1)[0] == '0.28.0'; actual=torch.version.cuda; available=torch.cuda.is_available(); print(f'torch={torch.__version__}; torchvision={torchvision.__version__}; cuda_build={actual}; cuda_available={available}'); sys.exit(0 if torch_ok and vision_ok and actual == expected and available else 1)"
+) else (
+    ".venv\Scripts\python.exe" -c "import sys, torch, torchvision; torch_ok=torch.__version__.split('+', 1)[0] == '2.13.0'; vision_ok=torchvision.__version__.split('+', 1)[0] == '0.28.0'; actual=torch.version.cuda; available=torch.cuda.is_available(); print(f'torch={torch.__version__}; torchvision={torchvision.__version__}; cuda_build={actual}; cuda_available={available}'); sys.exit(0 if torch_ok and vision_ok and actual is None and not available else 1)"
+)
+exit /b !errorlevel!

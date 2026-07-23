@@ -9,6 +9,7 @@ from markdownify import MarkdownConverter, re_whitespace
 from aih_contexture.logger import get_logger
 from pydantic import BaseModel
 
+from aih_contexture.config.marginal_output import normalize_marginal_output_mode
 from aih_contexture.renderers.html import HTMLRenderer
 from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.document import Document
@@ -38,6 +39,76 @@ def sanitize_page_comment_text(text):
     if not text:
         return ""
     return re.sub(r"\s+", " ", str(text)).replace("--", "- -").strip()
+
+
+def margin_side_from_aside(element):
+    position = str(element.get("data-position") or "").strip().lower().replace("-", "_")
+    if "left" in position:
+        return "left"
+    if "right" in position:
+        return "right"
+    return "unknown"
+
+
+def is_plain_margin_marker(text):
+    return re.fullmatch(r"[0-9]{1,4}", text.strip()) is not None
+
+
+APPARATUS_INDEX_FORMULA_RE = re.compile(
+    r"^[\s\|\:/,.;~\-\u2013\u2014\u2016\u2225\\_\^\{\}\(\)\[\]"
+    r"0-9A-Za-z\u00b9\u00b2\u00b3\u2070-\u2079\u2080-\u2089"
+    r"\u1d43-\u1d4d\u1d50-\u1d5c\u1d62-\u1d6a"
+    r"\u02b0-\u02b8\u02e1-\u02e4"
+    r"\u00a0\u202f\u2009\u200a\u200b]+$"
+)
+APPARATUS_INDEX_STRONG_MATH_RE = re.compile(
+    r"(?:=|[+\u2212*/<>]|\\(?:frac|sqrt|sum|int|prod|lim|begin|end|alpha|beta|gamma|delta|theta|lambda|mu|pi|sigma|omega)\b)"
+)
+SCHOLARLY_NUMBERED_PARAGRAPH_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<number>\d{1,4})(?P<marker>[.)])(?P<space>\s+)(?P<body>\S.*)$",
+    re.MULTILINE,
+)
+SCHOLARLY_BULLET_NUMBERED_PARAGRAPH_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?P<bullet>[-+*])\s+(?P<number>\d{1,4})(?P<marker>[.)])(?P<space>\s+)(?P<body>\S.*)$",
+    re.MULTILINE,
+)
+SCHOLARLY_NUMBERED_LINE_RE = re.compile(
+    r"^(?P<indent>[ \t]*)(?:(?P<bullet>[-+*])\s+)?(?P<number>\d{1,4})(?P<escape>\\?)(?P<marker>[.)])(?P<space>\s+)(?P<body>\S.*)$"
+)
+REFERENCE_CONTEXT_SUPERSCRIPT_RE = re.compile(
+    r"(?P<context>\b(?:paragraphs?|para\.?|chap\.?|chapter|book|sec\.?|section|page|pp\.?|line|vol\.?|volume|no\.?|number|§)\s+)"
+    r"<sup>\s*(?P<marker>[0-9]{1,4}|[ivxlcdmIVXLCDM]{1,12})\s*</sup>",
+    re.IGNORECASE,
+)
+
+
+def is_apparatus_index_formula(text):
+    stripped = str(text or "").strip()
+    if not stripped or len(stripped) > 48:
+        return False
+    if APPARATUS_INDEX_STRONG_MATH_RE.search(stripped):
+        return False
+    if not any(ch.isdigit() for ch in stripped) and not re.search(r"[A-Z][0-9\u00b9\u00b2\u00b3\u2070-\u2079]|\|", stripped):
+        return False
+    return APPARATUS_INDEX_FORMULA_RE.fullmatch(stripped) is not None
+
+
+def should_render_equation_as_plain_text(text, mode):
+    normalized = str(mode or "humanities_safe").strip().lower().replace("-", "_")
+    if normalized in {"math", "latex", "preserve", "keep"}:
+        return False
+    if normalized in {"plain", "text", "disable", "disabled", "off", "all_plain"}:
+        return True
+    return is_apparatus_index_formula(text)
+
+
+def should_skip_margin_aside(element, text):
+    position = str(element.get("data-position") or "").strip().lower().replace("-", "_")
+    if position in {"top_margin", "bottom_margin"}:
+        return True
+    if is_plain_margin_marker(text):
+        return False
+    return len(text.strip()) > 40
 
 
 def get_formatted_table_text(element):
@@ -81,8 +152,11 @@ class Markdownify(MarkdownConverter):
         custom_id_injector=None,
         emit_page_header_comment=False,
         emit_page_footer_comment=False,
+        marginal_output_mode="line_markers",
+        equation_output_mode="humanities_safe",
         **kwargs,
     ):
+        kwargs.setdefault("escape_dollars", True)
         super().__init__(**kwargs)
         self.paginate_output = paginate_output
         self.page_separator = page_separator
@@ -93,6 +167,11 @@ class Markdownify(MarkdownConverter):
         self.custom_id_injector = custom_id_injector
         self.emit_page_header_comment = emit_page_header_comment
         self.emit_page_footer_comment = emit_page_footer_comment
+        self.marginal_output_mode = normalize_marginal_output_mode(
+            marginal_output_mode,
+            enable_marginal_detection=True,
+        )
+        self.equation_output_mode = equation_output_mode
         self.page_image_description_counts = defaultdict(int)
 
     def convert_div(self, el, text, parent_tags):
@@ -125,12 +204,12 @@ class Markdownify(MarkdownConverter):
                 normalized_header = normalize_page_comment_text(page_header_text)
                 if normalized_header and normalized_header != normalized_printed_page:
                     seen_comments.add(normalized_header)
-                    comment_lines.append(f"<!-- page-header: {page_header_text} -->")
+                    comment_lines.append(f"<!-- PageHeader: {page_header_text} -->")
 
             if self.emit_page_footer_comment and page_footer_text:
                 normalized_footer = normalize_page_comment_text(page_footer_text)
                 if normalized_footer and normalized_footer != normalized_printed_page and normalized_footer not in seen_comments:
-                    comment_lines.append(f"<!-- page-footer: {page_footer_text} -->")
+                    comment_lines.append(f"<!-- PageFooter: {page_footer_text} -->")
 
             comment_block = ""
             if comment_lines:
@@ -144,15 +223,60 @@ class Markdownify(MarkdownConverter):
         else:
             return text
 
+    def convert_aside(self, el, text, parent_tags):
+        classes = el.get("class", [])
+        if isinstance(classes, str):
+            classes = classes.split()
+        if "marginal-annotation" not in classes:
+            return f"\n\n{text.strip()}\n\n" if text.strip() else ""
+
+        margin_text = sanitize_page_comment_text(text)
+        if not margin_text:
+            return ""
+        if self.marginal_output_mode == "drop":
+            return ""
+        if self.marginal_output_mode == "plain":
+            return f"\n\n{margin_text}\n\n"
+        if should_skip_margin_aside(el, margin_text):
+            return ""
+
+        side = margin_side_from_aside(el)
+        side_suffix = "" if side == "unknown" else f":{side}"
+        if self.marginal_output_mode == "line_markers" and is_plain_margin_marker(margin_text):
+            return f"\n\n<!-- Line: {margin_text} -->\n\n"
+        return f"\n\n<!-- Margin{side_suffix}: {margin_text} -->\n\n"
+
     def convert_p(self, el, text, parent_tags):
+        block_type = el.get("block-type")
+        if block_type == BlockTypes.Equation.name and should_render_equation_as_plain_text(text, self.equation_output_mode):
+            raw_text = el.get_text("", strip=True)
+            return f"{raw_text}\n\n" if raw_text else ""
+
         if el.get("role") == "img" and el.get("data-original-image-id"):
             page_key = self._current_page_key(el)
             self.page_image_description_counts[page_key] += 1
             image_index = self.page_image_description_counts[page_key]
+            block_id = sanitize_page_comment_text(el.get("data-original-image-id", ""))
             description_text = sanitize_page_comment_text(text)
             if not description_text:
                 return ""
-            return f"\n\n<!-- image-description-{image_index}: {description_text} -->\n\n"
+
+            if page_key.isdigit():
+                page_index = int(page_key)
+                anchor_attr = f" anchors={{{page_index}}}-{{{page_index + 1}}}"
+                page_attr = f" page_index={page_index}"
+            else:
+                anchor_attr = ""
+                page_attr = ""
+
+            block_attr = f" block={block_id}" if block_id else ""
+            id_attr = f' id="{block_id}"' if block_id else ""
+            return (
+                f"\n\n<!-- ImageDescription:{id_attr}{page_attr}{anchor_attr}{block_attr} "
+                f'target="image-{image_index}" -->\n'
+                f"{description_text}\n"
+                "<!-- /ImageDescription -->\n\n"
+            )
 
         hyphens = r"-—¬"
         has_continuation = el.has_attr("class") and "has-continuation" in el["class"]
@@ -180,11 +304,14 @@ class Markdownify(MarkdownConverter):
 
     def convert_math(self, el, text, parent_tags):
         block = el.has_attr("display") and el["display"] == "block"
+        stripped = text.strip()
         if block:
+            if should_render_equation_as_plain_text(stripped, self.equation_output_mode):
+                return "\n" + stripped + "\n"
             return (
                 "\n"
                 + self.block_math_delimiters[0]
-                + text.strip()
+                + stripped
                 + self.block_math_delimiters[1]
                 + "\n"
             )
@@ -370,7 +497,16 @@ class MarkdownFormatter:
         # 4. 修正表格
         markdown_text = self._fix_tables(markdown_text)
 
-        # 5. 统一空行
+        # 5. 归一化人文学术高频脚注标记
+        markdown_text = self._fix_scholarly_superscripts(markdown_text)
+
+        # 6. 解包明确的正文引用编号误上标，如 "paragraph <sup>121</sup>"
+        markdown_text = self._unwrap_reference_context_superscripts(markdown_text)
+
+        # 7. 避免学术段落编号被 Markdown 误渲染为有序列表
+        markdown_text = self._escape_scholarly_numbered_paragraphs(markdown_text)
+
+        # 8. 统一空行
         markdown_text = self._normalize_spacing(markdown_text)
 
         return markdown_text
@@ -385,8 +521,25 @@ class MarkdownFormatter:
 
     def _fix_lists(self, text: str) -> str:
         """确保列表标记后有空格"""
-        # 无序列表
-        text = re.sub(r'^(\s*[-*+])([^\s])', r'\1 \2', text, flags=re.MULTILINE)
+        text = re.sub(
+            r"^(\s*)\*\s+\*([^*\n]+)\*\*",
+            r"\1**\2**",
+            text,
+            flags=re.MULTILINE,
+        )
+        # 无序列表：不要把行首 bold/italic 标记误判为列表符号。
+        text = re.sub(
+            r'^(?!\s*(?:-{3,}|\*{3,}|_{3,})\s*$)(\s*[-+])([^\s])',
+            r'\1 \2',
+            text,
+            flags=re.MULTILINE,
+        )
+        text = re.sub(
+            r'^(?!\s*(?:-{3,}|\*{3,}|_{3,})\s*$)(?!\s*\*\*)(?!\s*\*[^*\n]+\*)(\s*\*)([^\s*])',
+            r'\1 \2',
+            text,
+            flags=re.MULTILINE,
+        )
         # 有序列表
         text = re.sub(r'^(\s*\d+\.)([^\s])', r'\1 \2', text, flags=re.MULTILINE)
         return text
@@ -404,6 +557,95 @@ class MarkdownFormatter:
         text = re.sub(r'\|([^\s|])', r'| \1', text)
         text = re.sub(r'([^\s|])\|', r'\1 |', text)
         return text
+
+    def _fix_scholarly_superscripts(self, text: str) -> str:
+        """Normalize legacy footnote superscripts to Contexture scholarly Markdown."""
+        text = re.sub(
+            r"<sup>\s*&(?:amp;)?\s*</sup>\s*lt;sup(?:&gt;|>)\s*([0-9]{1,4}|[ivxlcdmIVXLCDM]{1,12}|\*+)\s*</sup>",
+            r"<sup>\1</sup>",
+            text,
+        )
+        text = re.sub(
+            r"&lt;sup(?:&gt;|>)\s*([0-9]{1,4}|[ivxlcdmIVXLCDM]{1,12}|\*+)\s*(?:&lt;/sup(?:&gt;|>)|</sup>)",
+            r"<sup>\1</sup>",
+            text,
+        )
+        return re.sub(
+            r"<sup>\s*([0-9]{1,4}|[ivxlcdmIVXLCDM]{1,12}|\*+)\s*\)</sup>",
+            r"<sup>\1</sup>",
+            text,
+        )
+
+    def _unwrap_reference_context_superscripts(self, text: str) -> str:
+        """Unwrap superscripts that are ordinary scholarly reference numbers."""
+        return REFERENCE_CONTEXT_SUPERSCRIPT_RE.sub(r"\g<context>\g<marker>", text)
+
+    def _escape_scholarly_numbered_paragraphs(self, text: str) -> str:
+        """Keep scholarly paragraph numbers from becoming Markdown lists."""
+        sequence_lines = self._numbered_sequence_lines(text)
+
+        def escaped_marker(marker: str) -> str:
+            return r"\)" if marker == ")" else r"\."
+
+        def should_escape(number: str, body: str, line_start: int) -> bool:
+            if line_start in sequence_lines:
+                return True
+            value = int(number)
+            if value == 1 and len(body) < 80:
+                return False
+            if body.startswith(("{", "<!--", "---")):
+                return False
+            if value < 10 and len(body) < 24:
+                return False
+            return True
+
+        def replace_bulleted(match: re.Match) -> str:
+            number = match.group("number")
+            body = match.group("body")
+            if not should_escape(number, body, match.start()):
+                return match.group(0)
+            return f"{number}{escaped_marker(match.group('marker'))}{match.group('space')}{body}"
+
+        def replace_plain(match: re.Match) -> str:
+            number = match.group("number")
+            body = match.group("body")
+            if not should_escape(number, body, match.start()):
+                return match.group(0)
+            return f"{number}{escaped_marker(match.group('marker'))}{match.group('space')}{body}"
+
+        text = SCHOLARLY_BULLET_NUMBERED_PARAGRAPH_RE.sub(replace_bulleted, text)
+        return SCHOLARLY_NUMBERED_PARAGRAPH_RE.sub(replace_plain, text)
+
+    def _numbered_sequence_lines(self, text: str) -> set[int]:
+        """Return start offsets for lines that belong to a local numbered sequence."""
+        lines = text.splitlines(keepends=True)
+        entries: list[tuple[int, int]] = []
+        offset = 0
+        for line in lines:
+            stripped = line.rstrip("\r\n")
+            if not stripped.strip():
+                offset += len(line)
+                continue
+            match = SCHOLARLY_NUMBERED_LINE_RE.match(stripped)
+            if match and not match.group("body").startswith(("{", "<!--", "---")):
+                entries.append((offset, int(match.group("number"))))
+            offset += len(line)
+
+        sequence_offsets: set[int] = set()
+        idx = 0
+        while idx < len(entries):
+            start = idx
+            while (
+                idx + 1 < len(entries)
+                and entries[idx][1] > 0
+                and entries[idx + 1][1] == entries[idx][1] + 1
+            ):
+                idx += 1
+            if idx > start:
+                for run_idx in range(start, idx + 1):
+                    sequence_offsets.add(entries[run_idx][0])
+            idx += 1
+        return sequence_offsets
 
     def _normalize_spacing(self, text: str) -> str:
         """统一空行"""
@@ -431,6 +673,12 @@ class MarkdownRenderer(HTMLRenderer):
     html_tables_in_markdown: Annotated[
         bool, "Return tables formatted as HTML, instead of in markdown"
     ] = False
+    marginal_output_mode: Annotated[
+        str, "Marginal annotation markdown mode: line_markers, margin_comments, plain, or drop."
+    ] = "line_markers"
+    equation_output_mode: Annotated[
+        str, "Equation markdown mode: humanities_safe, plain, or math."
+    ] = "humanities_safe"
 
     # Markdown 格式化配置
     markdown_formatting_enabled: Annotated[
@@ -509,6 +757,8 @@ class MarkdownRenderer(HTMLRenderer):
             custom_id_injector=custom_id_injector,
             emit_page_header_comment=self.emit_page_header_comment,
             emit_page_footer_comment=self.emit_page_footer_comment,
+            marginal_output_mode=self.marginal_output_mode,
+            equation_output_mode=self.equation_output_mode,
         )
 
     def __call__(self, document: Document) -> MarkdownOutput:
@@ -530,9 +780,12 @@ class MarkdownRenderer(HTMLRenderer):
                 markdown += "\n\n"
 
             # 添加额外锚点（用于区间提取）
-            page_count = len(document.pages)
-            final_anchor = f"{{{page_count}}}"
+            final_anchor_index = max((int(page.page_id) for page in document.pages), default=-1) + 1
+            final_anchor = self.md_cls.page_anchor_formatter.format(final_anchor_index)
+            final_separator = str(self.page_separator or "").strip()
             markdown += f"\n\n{final_anchor}"
+            if final_separator:
+                markdown += f"\n\n{final_separator}"
 
         if self.markdown_postprocess_enabled:
             engine = MarkdownPostprocessEngine({

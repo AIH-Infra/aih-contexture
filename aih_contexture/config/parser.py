@@ -60,6 +60,454 @@ class ConfigParser:
             default=False,
             help="Disable image extraction.",
         )(fn)
+        fn = click.option(
+            "--layout_backend",
+            type=str,
+            default="surya",
+            help="Pipeline layout backend. Current implemented values: surya, vlm_layout, external_layout_sidecar, mineru_pp_doclayout_v2_direct, mineru_vl_layout, surya2_layout, paddle_pp_doclayout_plus_l, paddle_pp_doclayout_v3.",
+        )(fn)
+        fn = click.option(
+            "--surya_layout_quality",
+            type=click.Choice(["fast", "standard", "high"]),
+            default="fast",
+            help="Surya layout render quality preset. Ignored by non-Surya layout backends unless layout_dpi_override is set.",
+        )(fn)
+        fn = click.option(
+            "--layout_dpi_override",
+            type=int,
+            default=None,
+            help="Advanced override for layout render DPI.",
+        )(fn)
+        fn = click.option(
+            "--external_layout_json",
+            type=click.Path(exists=False),
+            default=None,
+            help="Path to a MinerU/Paddle/generic layout JSON file or Contexture Middle JSON file for external_layout_sidecar.",
+        )(fn)
+        fn = click.option(
+            "--external_layout_block_source",
+            type=str,
+            default="auto",
+            help="Block list to read from external layout JSON: auto, all, blocks, layout_bboxes, boxes, bboxes, layout, regions, para_blocks, preproc_blocks, or discarded_blocks.",
+        )(fn)
+        fn = click.option(
+            "--external_layout_backend_name",
+            type=str,
+            default="external_layout_sidecar",
+            help="Backend name recorded in provenance when importing raw external layout JSON.",
+        )(fn)
+        fn = click.option(
+            "--external_layout_model",
+            type=str,
+            default=None,
+            help="Model name recorded in provenance when importing raw external layout JSON.",
+        )(fn)
+        fn = click.option(
+            "--external_layout_allow_missing_pages",
+            is_flag=True,
+            default=False,
+            help="Allow sidecar JSON to omit pages; missing pages fall back to one full-page Text block.",
+        )(fn)
+        fn = click.option(
+            "--mineru_command",
+            type=str,
+            default=None,
+            help="Legacy MinerU executable path for full-pipeline diagnostic/import workflows. Not used by layout_backend=mineru_pp_doclayout_v2_direct.",
+        )(fn)
+        fn = click.option(
+            "--mineru_output_dir",
+            type=click.Path(exists=False),
+            default=None,
+            help="Directory for MinerU raw outputs. Defaults to a temporary directory.",
+        )(fn)
+        fn = click.option(
+            "--mineru_backend",
+            type=str,
+            default="pipeline",
+            help="MinerU backend passed to -b. Default: pipeline.",
+        )(fn)
+        fn = click.option(
+            "--mineru_method",
+            type=str,
+            default="txt",
+            help="MinerU parse method passed to -m: txt, ocr, or auto. Default: txt.",
+        )(fn)
+        fn = click.option(
+            "--mineru_lang",
+            type=str,
+            default="ch",
+            help="MinerU language passed to -l. Default: ch.",
+        )(fn)
+        fn = click.option(
+            "--mineru_api_url",
+            type=str,
+            default=None,
+            help="Optional MinerU API URL passed to --api-url.",
+        )(fn)
+        fn = click.option(
+            "--mineru_server_url",
+            type=str,
+            default=None,
+            help="Optional MinerU VLM/hybrid server URL passed to -u.",
+        )(fn)
+        fn = click.option(
+            "--mineru_timeout",
+            type=int,
+            default=3600,
+            help="MinerU CLI timeout in seconds.",
+        )(fn)
+        fn = click.option(
+            "--mineru_extra_args",
+            type=str,
+            default=None,
+            help="Extra arguments appended to the MinerU CLI command.",
+        )(fn)
+        fn = click.option(
+            "--mineru_layout_python",
+            type=click.Path(exists=False),
+            default=None,
+            help="Optional MinerU sidecar Python executable for mineru_pp_doclayout_v2_direct. Defaults to CONTEXTURE_MINERU_PYTHON.",
+        )(fn)
+        fn = click.option(
+            "--mineru_layout_model_dir",
+            type=click.Path(exists=False),
+            default=None,
+            help="Optional local MinerU PP-DocLayoutV2 model directory.",
+        )(fn)
+        fn = click.option(
+            "--mineru_layout_device",
+            type=str,
+            default=None,
+            help="Optional MinerU direct layout device, e.g. cpu, cuda, cuda:0.",
+        )(fn)
+        fn = click.option(
+            "--mineru_layout_batch_size",
+            type=int,
+            default=None,
+            help="Batch size for MinerU PP-DocLayoutV2 direct layout inference.",
+        )(fn)
+        fn = click.option(
+            "--mineru_layout_use_paddlex_filter_boxes/--no_mineru_layout_use_paddlex_filter_boxes",
+            default=None,
+            help="Enable or disable MinerU/PaddleX-style layout box filtering for direct layout inference.",
+        )(fn)
+        fn = click.option(
+            "--mineru_layout_timeout",
+            type=int,
+            default=None,
+            help="MinerU direct layout sidecar timeout in seconds.",
+        )(fn)
+        fn = click.option("--mineru_vl_endpoint", type=str, default=None, help="MinerU-VL layout/OCR endpoint.")(fn)
+        fn = click.option("--mineru_vl_api_key", type=str, default=None, help="MinerU-VL API key.")(fn)
+        fn = click.option("--mineru_vl_api_style", type=str, default=None, help="MinerU-VL API style: openai or lmstudio-native.")(fn)
+        fn = click.option("--mineru_vl_version", type=str, default=None, help="MinerU-VL model version, e.g. 2.5pro-2605.")(fn)
+        fn = click.option("--mineru_vl_quant", type=str, default=None, help="MinerU-VL model quant/spec, e.g. 1.2b.")(fn)
+        fn = click.option("--mineru_vl_model", type=str, default=None, help="MinerU-VL model name.")(fn)
+        fn = click.option("--mineru_vl_layout_timeout", type=int, default=None, help="MinerU-VL layout request timeout in seconds.")(fn)
+        fn = click.option("--mineru_vl_layout_max_tokens", type=int, default=None, help="MinerU-VL layout max output tokens.")(fn)
+        fn = click.option("--mineru_vl_layout_concurrency", type=int, default=None, help="MinerU-VL layout request concurrency.")(fn)
+        fn = click.option("--mineru_vl_request_concurrency", type=int, default=None, help="MinerU-VL VLM request concurrency.")(fn)
+        fn = click.option("--mineru_vl_image_quality", type=int, default=None, help="MinerU-VL image quality for encoded requests.")(fn)
+        fn = click.option("--surya2_endpoint", type=str, default=None, help="Surya 2 OpenAI-compatible layout/OCR endpoint.")(fn)
+        fn = click.option("--surya2_api_key", type=str, default=None, help="Surya 2 API key.")(fn)
+        fn = click.option("--surya2_api_style", type=str, default=None, help="Surya 2 API style: openai or lmstudio-native.")(fn)
+        fn = click.option("--surya2_version", type=str, default=None, help="Surya 2 model version. Default: 2.0.")(fn)
+        fn = click.option("--surya2_model", type=str, default=None, help="Surya 2 model name. Default: surya-ocr-2-lmstudio.")(fn)
+        fn = click.option("--surya2_layout_timeout", type=int, default=None, help="Surya 2 layout request timeout in seconds.")(fn)
+        fn = click.option("--surya2_layout_max_tokens", type=int, default=None, help="Surya 2 layout max output tokens.")(fn)
+        fn = click.option("--surya2_layout_concurrency", type=int, default=None, help="Surya 2 layout request concurrency. Recommended: 4-6 for LM Studio.")(fn)
+        fn = click.option("--surya2_request_concurrency", type=int, default=None, help="Surya 2 VLM request concurrency. Recommended: 4-6 for layout-only LM Studio tests.")(fn)
+        fn = click.option("--surya2_block_concurrency", type=int, default=None, help="Surya 2 block OCR crop concurrency.")(fn)
+        fn = click.option("--surya2_image_format", type=str, default=None, help="Image transport format for Surya 2 requests, e.g. PNG or JPEG.")(fn)
+        fn = click.option("--surya2_image_quality", type=int, default=None, help="Image quality for JPEG/WEBP Surya 2 requests.")(fn)
+        fn = click.option("--surya2_crop_padding_px", type=int, default=None, help="Pixel padding around Pipeline layout block crops for Surya 2 OCR.")(fn)
+        fn = click.option("--surya2_crop_padding_frac", type=float, default=None, help="Fractional padding around Pipeline layout block crops for Surya 2 OCR.")(fn)
+        fn = click.option("--mineru_ocr_python", type=click.Path(exists=False), default=None, help="Optional MinerU sidecar Python executable for ocr_backend=mineru_pytorch_paddle_ocr.")(fn)
+        fn = click.option("--mineru_ocr_lang", type=str, default=None, help="MinerU PytorchPaddleOCR language code. Default: ch.")(fn)
+        fn = click.option("--mineru_ocr_device", type=str, default=None, help="Optional MinerU OCR device via MINERU_DEVICE_MODE, e.g. cpu, cuda, cuda:0.")(fn)
+        fn = click.option("--mineru_ocr_timeout", type=int, default=None, help="MinerU OCR sidecar timeout in seconds.")(fn)
+        fn = click.option(
+            "--paddle_layout_python",
+            type=click.Path(exists=False),
+            default=None,
+            help="Optional external Python executable for Paddle layout sidecar. Defaults to CONTEXTURE_PADDLE_PYTHON.",
+        )(fn)
+        fn = click.option(
+            "--paddle_layout_model_name",
+            type=str,
+            default=None,
+            help="PaddleOCR LayoutDetection model name. Defaults to PP-DocLayout_plus-L or PP-DocLayoutV3 from --layout_backend.",
+        )(fn)
+        fn = click.option(
+            "--paddle_layout_model_dir",
+            type=click.Path(exists=False),
+            default=None,
+            help="Optional local PaddleOCR layout model directory.",
+        )(fn)
+        fn = click.option(
+            "--paddle_layout_device",
+            type=str,
+            default=None,
+            help="Optional PaddleOCR device, e.g. cpu, gpu, gpu:0.",
+        )(fn)
+        fn = click.option(
+            "--paddle_layout_engine",
+            type=str,
+            default=None,
+            help="Optional PaddleOCR inference engine, e.g. paddle, paddle_static, or paddle_dynamic.",
+        )(fn)
+        fn = click.option(
+            "--paddle_layout_enable_mkldnn/--no_paddle_layout_enable_mkldnn",
+            default=None,
+            help="Enable or disable PaddleOCR MKL-DNN acceleration for layout detection. Defaults to disabled for runtime stability.",
+        )(fn)
+        fn = click.option(
+            "--paddle_layout_cpu_threads",
+            type=int,
+            default=None,
+            help="Optional CPU thread count for PaddleOCR layout detection.",
+        )(fn)
+        fn = click.option(
+            "--paddle_layout_threshold",
+            type=float,
+            default=None,
+            help="Optional PaddleOCR layout confidence threshold.",
+        )(fn)
+        fn = click.option(
+            "--paddle_layout_img_size",
+            type=int,
+            default=None,
+            help="Optional PaddleOCR layout input image size.",
+        )(fn)
+        fn = click.option(
+            "--ocr_backend",
+            type=str,
+            default="surya",
+            help="Pipeline OCR backend. Current implemented values: surya, chrome_screenai, calamari, vlm_ocr, paddle_ocr_v5, paddleocr_vl_ocr, surya2_ocr, mineru_pytorch_paddle_ocr, tesseract, none. chrome_screenai first writes a searchable PDF, then re-enters Pipeline through embedded PDF text. Use none or --disable_ocr for the embedded PDF text layer.",
+        )(fn)
+        fn = click.option(
+            "--ocr_quality",
+            type=click.Choice(["auto", "low", "medium", "high"]),
+            default="auto",
+            help="OCR render quality preset. auto uses backend defaults: Surya/Paddle low, Tesseract/Calamari medium.",
+        )(fn)
+        fn = click.option(
+            "--ocr_dpi_override",
+            type=int,
+            default=None,
+            help="Advanced override for OCR render DPI.",
+        )(fn)
+        fn = click.option(
+            "--ocr_preprocess_backend",
+            type=str,
+            default="none",
+            help="Compatibility option for hidden OCR preprocessing. Current implemented values: none, chrome_screenai_searchable_pdf. Prefer --ocr_backend=chrome_screenai.",
+        )(fn)
+        fn = click.option(
+            "--chrome_screenai_light/--no_chrome_screenai_light",
+            default=False,
+            help="Enable Chrome ScreenAI light/fast mode for OCR preprocessing.",
+        )(fn)
+        fn = click.option(
+            "--chrome_preprocess_mode",
+            type=str,
+            default="native",
+            help="Chrome ScreenAI PDF preprocessing mode: native, strip_existing_ocr, rasterize_pdf, or strip_then_rasterize.",
+        )(fn)
+        fn = click.option(
+            "--chrome_workers",
+            type=int,
+            default=2,
+            help="Chrome ScreenAI OCR worker count for searchable-PDF preprocessing.",
+        )(fn)
+        fn = click.option(
+            "--chrome_chunk_pages",
+            type=int,
+            default=4,
+            help="Chrome ScreenAI page chunk size for searchable-PDF preprocessing.",
+        )(fn)
+        fn = click.option(
+            "--chrome_emit_searchable_pdf/--no_chrome_emit_searchable_pdf",
+            default=False,
+            help="Export the intermediate Chrome ScreenAI searchable PDF as a pipeline artifact.",
+        )(fn)
+        fn = click.option(
+            "--chrome_rasterize_dpi",
+            type=int,
+            default=144,
+            help="Rasterization DPI when Chrome ScreenAI preprocessing mode uses rasterized PDF pages.",
+        )(fn)
+        fn = click.option(
+            "--chrome_model_dir",
+            type=click.Path(exists=False),
+            default=None,
+            help="Optional local Chrome ScreenAI model directory.",
+        )(fn)
+        fn = click.option("--tesseract_cmd", type=str, default=None, help="Optional Tesseract executable path. Defaults to CONTEXTURE_TESSERACT_CMD or PATH.")(fn)
+        fn = click.option("--tesseract_lang", type=str, default=None, help="Tesseract language expression, e.g. eng or chi_sim+eng.")(fn)
+        fn = click.option("--tesseract_oem", type=int, default=None, help="Tesseract OCR Engine Mode. Default: 1.")(fn)
+        fn = click.option("--tesseract_psm", type=int, default=None, help="Tesseract Page Segmentation Mode. Default: 7 for line crops.")(fn)
+        fn = click.option("--tesseract_timeout", type=int, default=None, help="Tesseract per-line timeout in seconds.")(fn)
+        fn = click.option("--tesseract_omp_thread_limit", type=int, default=None, help="OMP_THREAD_LIMIT for Tesseract subprocesses.")(fn)
+        fn = click.option("--tesseract_tessdata_prefix", type=str, default=None, help="Optional TESSDATA_PREFIX for Tesseract language data.")(fn)
+        fn = click.option("--ocr_crop_preprocess", type=str, default=None, help="Line crop preprocessing for OCR: none, otsu, adaptive.")(fn)
+        fn = click.option(
+            "--paddle_ocr_python",
+            type=click.Path(exists=False),
+            default=None,
+            help="Optional external Python executable for Paddle OCR sidecar. Defaults to CONTEXTURE_PADDLE_PYTHON.",
+        )(fn)
+        fn = click.option(
+            "--paddle_ocr_lang",
+            type=str,
+            default=None,
+            help="PaddleOCR language for ocr_backend=paddle_ocr_v5. Default: ch.",
+        )(fn)
+        fn = click.option(
+            "--paddle_ocr_version",
+            type=str,
+            default=None,
+            help="PaddleOCR version for ocr_backend=paddle_ocr_v5. Default: PP-OCRv5.",
+        )(fn)
+        fn = click.option(
+            "--paddle_ocr_device",
+            type=str,
+            default=None,
+            help="Optional PaddleOCR device, e.g. cpu, gpu, gpu:0.",
+        )(fn)
+        fn = click.option(
+            "--paddle_ocr_engine",
+            type=str,
+            default=None,
+            help="Optional PaddleOCR inference engine.",
+        )(fn)
+        fn = click.option(
+            "--paddle_ocr_enable_mkldnn/--no_paddle_ocr_enable_mkldnn",
+            default=None,
+            help="Enable or disable PaddleOCR MKL-DNN acceleration. Defaults to disabled for runtime stability.",
+        )(fn)
+        fn = click.option(
+            "--paddle_ocr_cpu_threads",
+            type=int,
+            default=None,
+            help="Optional CPU thread count for PaddleOCR.",
+        )(fn)
+        fn = click.option(
+            "--paddle_ocr_use_doc_orientation_classify/--no_paddle_ocr_use_doc_orientation_classify",
+            default=None,
+            help="Enable or disable PaddleOCR document orientation classifier. Defaults to disabled.",
+        )(fn)
+        fn = click.option(
+            "--paddle_ocr_use_doc_unwarping/--no_paddle_ocr_use_doc_unwarping",
+            default=None,
+            help="Enable or disable PaddleOCR document unwarping. Defaults to disabled.",
+        )(fn)
+        fn = click.option(
+            "--paddle_ocr_use_textline_orientation/--no_paddle_ocr_use_textline_orientation",
+            default=None,
+            help="Enable or disable PaddleOCR text-line orientation classifier. Defaults to disabled.",
+        )(fn)
+        fn = click.option("--paddleocr_vl_endpoint", type=str, default=None, help="PaddleOCR-VL OpenAI-compatible endpoint for VLM prompt or ocr_backend=paddleocr_vl_ocr.")(fn)
+        fn = click.option("--paddleocr_vl_layout_parsing_url", type=str, default=None, help="Official PaddleOCR-VL /layout-parsing endpoint for vlm_specialized:paddleocr_vl.")(fn)
+        fn = click.option("--paddleocr_vl_model", type=str, default=None, help="PaddleOCR-VL model name for prompt-based VLM/OCR calls.")(fn)
+        fn = click.option("--paddleocr_vl_api_key", type=str, default=None, help="PaddleOCR-VL API key.")(fn)
+        fn = click.option("--paddleocr_vl_api_style", type=str, default=None, help="PaddleOCR-VL API style: openai or lmstudio-native.")(fn)
+        fn = click.option("--paddleocr_vl_mode", type=str, default=None, help="PaddleOCR-VL mode: auto, layout_parsing, or vl_prompt.")(fn)
+        fn = click.option("--paddleocr_vl_version", type=str, default=None, help="PaddleOCR-VL model version, e.g. 1.5 or 1.6.")(fn)
+        fn = click.option("--paddleocr_vl_request_concurrency", type=int, default=None, help="Concurrent PaddleOCR-VL VLM/API requests.")(fn)
+        fn = click.option("--paddleocr_vl_block_concurrency", type=int, default=None, help="Concurrent PaddleOCR-VL block OCR requests.")(fn)
+        fn = click.option("--paddleocr_vl_prompt_label", type=str, default=None, help="PaddleOCR-VL prompt task label for prompt fallback: layout_detection, ocr, table, formula, chart, seal, or spotting.")(fn)
+        fn = click.option("--paddleocr_vl_image_format", type=str, default=None, help="Image transport format for PaddleOCR-VL prompt/layout requests, e.g. JPEG or PNG.")(fn)
+        fn = click.option("--paddleocr_vl_image_quality", type=int, default=None, help="Image quality for JPEG/WEBP PaddleOCR-VL requests.")(fn)
+        fn = click.option("--paddleocr_vl_crop_padding_px", type=int, default=None, help="Pixel padding around Pipeline layout block crops for PaddleOCR-VL OCR.")(fn)
+        fn = click.option("--paddleocr_vl_crop_padding_frac", type=float, default=None, help="Fractional padding around Pipeline layout block crops for PaddleOCR-VL OCR.")(fn)
+        fn = click.option(
+            "--disable_ocr",
+            is_flag=True,
+            default=False,
+            help="Disable OCR and use embedded PDF text where available.",
+        )(fn)
+        fn = click.option(
+            "--emit_middle_json",
+            is_flag=True,
+            default=False,
+            help="Emit the core Contexture Middle JSON alongside the selected output.",
+        )(fn)
+        fn = click.option(
+            "--emit_middle_report",
+            is_flag=True,
+            default=False,
+            help="Emit a Middle JSON validation report.",
+        )(fn)
+        fn = click.option(
+            "--emit_middle_debug",
+            is_flag=True,
+            default=False,
+            help="Emit a debug Markdown rendering of Middle JSON.",
+        )(fn)
+        fn = click.option(
+            "--emit_middle_scholarly",
+            is_flag=True,
+            default=False,
+            help="Emit scholarly Markdown rendered from Middle JSON.",
+        )(fn)
+        fn = click.option(
+            "--emit_middle_scholarly_report",
+            is_flag=True,
+            default=False,
+            help="Emit a quality report for scholarly Markdown rendered from Middle JSON.",
+        )(fn)
+        fn = click.option(
+            "--emit_layout_overlay",
+            is_flag=True,
+            default=False,
+            help="Emit layout bbox overlay PNG/PDF artifacts when Middle JSON is available.",
+        )(fn)
+        fn = click.option(
+            "--emit_span_overlay",
+            is_flag=True,
+            default=False,
+            help="Emit span bbox overlay PNG/PDF artifacts when Middle JSON spans are available.",
+        )(fn)
+        fn = click.option(
+            "--emit_middle_full_json",
+            is_flag=True,
+            default=False,
+            help="Emit a full Middle JSON artifact including spans for diagnostics.",
+        )(fn)
+        fn = click.option(
+            "--enable_marginal_detection",
+            is_flag=True,
+            default=False,
+            help="Enable marginal line-number and marginal annotation detection.",
+        )(fn)
+        fn = click.option(
+            "--native_marginalia_enabled/--no_native_marginalia_enabled",
+            default=None,
+            help="Receive backend-native marginalia labels separately from heuristic recovery.",
+        )(fn)
+        fn = click.option(
+            "--heuristic_marginal_detection_enabled/--no_heuristic_marginal_detection_enabled",
+            default=None,
+            help="Enable coordinate heuristic recovery of marginalia from Text blocks.",
+        )(fn)
+        fn = click.option(
+            "--marginal_output_mode",
+            type=click.Choice(["line_markers", "margin_comments", "plain", "drop"]),
+            default=None,
+            help="Markdown output mode for recognized marginalia: line_markers, margin_comments, plain, or drop.",
+        )(fn)
+        fn = click.option("--left_margin_threshold", type=float, default=None, help="Left marginal region width as a page-width fraction.")(fn)
+        fn = click.option("--right_margin_threshold", type=float, default=None, help="Right marginal region start as a page-width fraction.")(fn)
+        fn = click.option("--top_margin_threshold", type=float, default=None, help="Top marginal region height as a page-height fraction.")(fn)
+        fn = click.option("--bottom_margin_threshold", type=float, default=None, help="Bottom marginal region start as a page-height fraction.")(fn)
+        fn = click.option("--vertical_center_tolerance", type=float, default=None, help="Vertical-center tolerance for marginal code detection.")(fn)
+        fn = click.option(
+            "--equation_output_mode",
+            type=click.Choice(["humanities_safe", "plain", "math"]),
+            default=None,
+            help="Markdown output mode for Equation blocks: humanities_safe, plain, or math.",
+        )(fn)
         # these are options that need a list transformation, i.e splitting/parsing a string
         fn = click.option(
             "--page_range",
@@ -107,12 +555,53 @@ class ConfigParser:
                     config["pdftext_workers"] = 1
                 case "disable_image_extraction":
                     config["extract_images"] = False
+                case "disable_ocr":
+                    if v:
+                        config["disable_ocr"] = True
+                    else:
+                        config.setdefault("disable_ocr", False)
+                case "emit_layout_overlay":
+                    config["emit_layout_overlay"] = bool(v)
+                    if v:
+                        config["emit_middle_json"] = True
+                case "emit_span_overlay":
+                    config["emit_span_overlay"] = bool(v)
+                    if v:
+                        config["emit_middle_json"] = True
+                case "emit_middle_report" | "emit_middle_debug" | "emit_middle_scholarly" | "emit_middle_scholarly_report" | "emit_middle_full_json":
+                    config[k] = bool(v)
+                    if v:
+                        config["emit_middle_json"] = True
+                case "ocr_backend":
+                    if str(v).strip().lower() == "none":
+                        config["ocr_backend"] = "surya"
+                        config["disable_ocr"] = True
+                    else:
+                        config["ocr_backend"] = v
                 case _:
                     config[k] = v
 
         # Backward compatibility for google_api_key
         if settings.GOOGLE_API_KEY:
             config["gemini_api_key"] = settings.GOOGLE_API_KEY
+
+        ocr_backend = str(config.get("ocr_backend") or "surya").strip().lower().replace("-", "_")
+        preprocess_backend = str(config.get("ocr_preprocess_backend") or "none").strip().lower().replace("-", "_")
+        if preprocess_backend == "chrome_screenai":
+            preprocess_backend = "chrome_screenai_searchable_pdf"
+        if ocr_backend == "chrome_screenai" and preprocess_backend == "none":
+            preprocess_backend = "chrome_screenai_searchable_pdf"
+        if preprocess_backend != "none":
+            config["ocr_preprocess_backend"] = preprocess_backend
+            config["disable_ocr"] = True
+        config["ocr_backend"] = "surya" if ocr_backend == "none" else ocr_backend
+        disable_ocr = bool(config.get("disable_ocr", False))
+        if disable_ocr:
+            config["force_ocr"] = False
+        else:
+            config["force_ocr"] = True
+            if ocr_backend == "calamari":
+                config["ocr_line_source"] = "tesseract"
 
         return config
 

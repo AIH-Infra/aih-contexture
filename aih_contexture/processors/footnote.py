@@ -30,16 +30,39 @@ class FootnoteProcessor(BaseProcessor):
         )
 
     def push_footnotes_to_bottom(self, page: PageGroup, document: Document):
-        footnote_blocks = page.contained_blocks(document, self.block_types)
+        footnote_blocks = sorted(
+            page.contained_blocks(document, self.block_types),
+            key=self._block_position_key,
+        )
         moved_footnotes = 0
 
         for block in footnote_blocks:
             if block.id in page.structure:
                 page.structure.remove(block.id)
-                page.add_structure(block)
+                moved_footnotes += 1
+            elif self._remove_from_nested_structures(page, block):
                 moved_footnotes += 1
 
+        for block in footnote_blocks:
+            if block.id not in page.structure:
+                page.add_structure(block)
+
         return moved_footnotes
+
+    def _remove_from_nested_structures(self, page: PageGroup, block) -> bool:
+        removed = False
+        for candidate in page.current_children:
+            structure = getattr(candidate, "structure", None)
+            if structure and block.id in structure:
+                structure.remove(block.id)
+                removed = True
+        return removed
+
+    def _block_position_key(self, block):
+        bbox = getattr(getattr(block, "polygon", None), "bbox", None)
+        if not bbox or len(bbox) != 4:
+            return (float("inf"), float("inf"))
+        return (float(bbox[1]), float(bbox[0]))
 
     def assign_superscripts(self, page: PageGroup, document: Document):
         footnote_blocks = page.contained_blocks(document, self.block_types)

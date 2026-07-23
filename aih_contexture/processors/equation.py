@@ -1,4 +1,4 @@
-from typing import Annotated, List, Tuple
+from typing import Annotated, Any, List, Tuple
 from PIL import Image
 import re
 from bs4 import BeautifulSoup
@@ -6,7 +6,6 @@ from bs4 import BeautifulSoup
 from aih_contexture.logger import get_logger
 
 from ftfy import fix_text, TextFixerConfig
-from surya.recognition import RecognitionPredictor, OCRResult
 
 from aih_contexture.processors import BaseProcessor
 from aih_contexture.schema import BlockTypes
@@ -41,7 +40,7 @@ class EquationProcessor(BaseProcessor):
     ] = False
     drop_repeated_text: Annotated[bool, "Drop repeated text in OCR results."] = False
 
-    def __init__(self, recognition_model: RecognitionPredictor, config=None):
+    def __init__(self, recognition_model: Any, config=None):
         super().__init__(config)
 
         self.recognition_model = recognition_model
@@ -140,7 +139,7 @@ class EquationProcessor(BaseProcessor):
         bboxes: List[List[List[float]]],
     ):
         self.recognition_model.disable_tqdm = self.disable_tqdm
-        predictions: List[OCRResult] = self.recognition_model(
+        predictions: List[Any] = self.recognition_model(
             images=page_images,
             bboxes=bboxes,
             task_names=["ocr_with_boxes"] * len(page_images),

@@ -185,6 +185,9 @@ class LMStudioNativeService(BaseService):
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.lmstudio_api_key or 'lm-studio'}",
+            "Cache-Control": "no-cache, no-store",
+            "Pragma": "no-cache",
+            "X-Accel-Buffering": "no",
         }
         image_parts = self.format_image_for_llm(image)
         prompt_text = self._build_prompt(prompt, response_schema)

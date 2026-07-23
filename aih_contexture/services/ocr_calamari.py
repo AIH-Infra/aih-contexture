@@ -37,6 +37,9 @@ class CalamariOcrService(BaseService):
     calamari_fallback_to_sequential_on_ordering_failure: Annotated[
         bool, "Fallback to sequential OCR for a batch if ordering cannot be guaranteed."
     ] = True
+    calamari_split_large_batches: Annotated[
+        bool, "Split large ordered batches by calamari_batch_size while preserving filename indices."
+    ] = True
 
     def __init__(self, config=None):
         super().__init__(config)
@@ -59,6 +62,9 @@ class CalamariOcrService(BaseService):
                 "calamari_fallback_to_sequential_on_ordering_failure",
                 self.calamari_fallback_to_sequential_on_ordering_failure,
             )
+        )
+        self.calamari_split_large_batches = bool(
+            config.get("calamari_split_large_batches", self.calamari_split_large_batches)
         )
 
         logger.info(
@@ -97,6 +103,9 @@ class CalamariOcrService(BaseService):
             f"global_start_index={global_start_index}"
         )
 
+        if self.calamari_split_large_batches and len(images) > self.calamari_batch_size:
+            return self._ocr_ordered_chunks(images, global_start_index=global_start_index)
+
         # 直接发送，使用全局索引
         return self._ocr_batch_single(images, global_start_index=global_start_index)
 
@@ -123,6 +132,25 @@ class CalamariOcrService(BaseService):
             results.extend(chunk_results)
             global_start += len(chunk)
 
+        return results
+
+    def _ocr_ordered_chunks(self, images: List[Image.Image], global_start_index: int) -> List[str]:
+        """Split a large logical batch without losing global filename ordering."""
+        results: List[str] = []
+        offset = 0
+        total = len(images)
+        logger.info(
+            f"[CalamariOcrService] Splitting ordered batch: total={total}, batch_size={self.calamari_batch_size}"
+        )
+        while offset < total:
+            chunk = images[offset : offset + self.calamari_batch_size]
+            chunk_start = global_start_index + offset
+            logger.info(
+                f"[CalamariOcrService] Ordered chunk: {offset + 1}-{offset + len(chunk)}/{total}, "
+                f"global_start_index={chunk_start}"
+            )
+            results.extend(self._ocr_batch_single(chunk, global_start_index=chunk_start))
+            offset += len(chunk)
         return results
 
     def _ocr_sequential(self, images: List[Image.Image]) -> List[str]:

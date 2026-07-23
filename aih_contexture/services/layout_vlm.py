@@ -8,6 +8,7 @@ import base64
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from typing import Annotated, Any, Dict, List, Optional
 
@@ -106,6 +107,11 @@ class VlmLayoutService(BaseLayoutService):
         "VLM 最大输出 token 数"
     ] = 4096
 
+    vlm_layout_max_concurrent: Annotated[
+        int,
+        "VLM Layout 最大并发请求数"
+    ] = 1
+
     def __init__(self, config: Optional[dict] = None):
         """
         初始化 VLM 版面识别服务。
@@ -167,6 +173,11 @@ class VlmLayoutService(BaseLayoutService):
         # === 版面识别特定配置 ===
         self.vlm_layout_timeout = int(config.get("vlm_layout_timeout", 120))
         self.vlm_layout_max_tokens = int(config.get("vlm_layout_max_tokens", 4096))
+        self.vlm_layout_max_concurrent = max(1, int(
+            config.get("vlm_layout_max_concurrent")
+            or config.get("vlm_layout_batch_size")
+            or 1
+        ))
 
         if config.get("confidence_threshold") is not None:
             self.confidence_threshold = float(config["confidence_threshold"])
@@ -328,7 +339,13 @@ class VlmLayoutService(BaseLayoutService):
                 label=normalized_label,
                 position=idx,
                 top_k={normalized_label: float(confidence)},
-                polygon=scaled_polygon
+                polygon=scaled_polygon,
+                metadata={
+                    "raw_label": label,
+                    "backend_label": label,
+                    "label_source": "backend_native",
+                    "native_layout_backend": "vlm_layout",
+                },
             ))
 
         return layout_boxes
@@ -348,24 +365,33 @@ class VlmLayoutService(BaseLayoutService):
         Returns:
             LayoutResult 列表，与输入图像一一对应
         """
-        results = []
-        client = self.get_client()
+        if self.vlm_layout_max_concurrent <= 1 or len(images) <= 1:
+            client = self.get_client()
+            return [self._detect_single_image_safely(client, img) for img in images]
 
-        for img in images:
-            try:
-                result = self._detect_single_image(client, img)
-                results.append(result)
-            except Exception as e:
-                logger.error(f"[VlmLayoutService] Layout detection failed: {e}")
-                # 返回空结果
-                w, h = img.size
-                results.append(LayoutResult(
-                    image_bbox=[0, 0, w, h],
-                    bboxes=[],
-                    sliced=False
-                ))
+        max_workers = min(self.vlm_layout_max_concurrent, len(images))
+        logger.info(f"[VlmLayoutService] Using concurrent layout requests: {max_workers}")
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            return list(executor.map(
+                lambda img: self._detect_single_image_safely(self.get_client(), img),
+                images,
+            ))
 
-        return results
+    def _detect_single_image_safely(
+        self,
+        client: openai.OpenAI,
+        img: Image.Image
+    ) -> LayoutResult:
+        try:
+            return self._detect_single_image(client, img)
+        except Exception as e:
+            logger.error(f"[VlmLayoutService] Layout detection failed: {e}")
+            w, h = img.size
+            return LayoutResult(
+                image_bbox=[0, 0, w, h],
+                bboxes=[],
+                sliced=False
+            )
 
     def _detect_single_image(
         self,

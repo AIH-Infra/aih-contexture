@@ -265,28 +265,6 @@ def main():
         print(f"[Validator] ⚠️  VLM backend test skipped: {e}")
         results["vlm"] = None
 
-    # 测试 3: YOLO Layout（如果服务可用）
-    yolo_base_url = os.environ.get("YOLO_BASE_URL", "http://localhost:11900")
-
-    print("\n" + "=" * 60)
-    print("Test 3: YOLO Layout Backend")
-    print("=" * 60)
-    print(f"[Validator] YOLO Config: {yolo_base_url}")
-    print("[Validator] Set YOLO_BASE_URL to test YOLO (requires Docker service)")
-
-    yolo_config = {
-        "layout_backend": "yolo",
-        "yolo_base_url": yolo_base_url,
-        "yolo_model": "doclayout_yolo",
-        "yolo_confidence_threshold": 0.25,
-    }
-
-    try:
-        results["yolo"] = test_backend("yolo", pdf_path, yolo_config)
-    except Exception as e:
-        print(f"[Validator] ⚠️  YOLO backend test skipped: {e}")
-        results["yolo"] = None
-
     # 汇总结果
     print("\n" + "=" * 60)
     print("Validation Summary")

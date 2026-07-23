@@ -59,7 +59,15 @@ class OpenAIService(BaseService):
         logger.info(f"[OpenAIService] Mode: vlm_response_mode={self.vlm_response_mode}, openai_use_stop={self.openai_use_stop}")
 
     def get_client(self) -> openai.OpenAI:
-        return openai.OpenAI(base_url=self.openai_base_url, api_key=self.openai_api_key or "lm-studio")
+        return openai.OpenAI(
+            base_url=self.openai_base_url,
+            api_key=self.openai_api_key or "lm-studio",
+            default_headers={
+                "Cache-Control": "no-cache, no-store",
+                "Pragma": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     def _resize_if_needed(self, img: Image.Image) -> Image.Image:
         w, h = img.size

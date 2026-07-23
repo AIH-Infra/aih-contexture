@@ -38,5 +38,20 @@ class OcrServiceFactory:
             from aih_contexture.services.ocr_churro import OcrChurroService
             logger.info("Creating Churro OCR service")
             return OcrChurroService(config)
+        elif backend in {"paddleocr_vl", "paddleocr_vl_ocr"}:
+            from aih_contexture.services.ocr_vlm_specialized import OcrPaddleOCRVLService
+            logger.info("Creating PaddleOCR-VL specialized service")
+            service_config = dict(config)
+            if backend == "paddleocr_vl_ocr":
+                service_config.setdefault("paddleocr_vl_backend_name", "paddleocr_vl_ocr")
+            return OcrPaddleOCRVLService(service_config)
+        elif backend == "mineru_vl":
+            from aih_contexture.services.ocr_vlm_specialized import OcrMinerUVLService
+            logger.info("Creating MinerU-VL specialized service")
+            return OcrMinerUVLService(config)
+        elif backend in {"surya2", "surya2_ocr"}:
+            from aih_contexture.services.ocr_vlm_specialized import OcrSurya2Service
+            logger.info("Creating Surya 2 specialized service")
+            return OcrSurya2Service(config)
         else:
             raise ValueError(f"Unsupported OCR backend: {backend}")

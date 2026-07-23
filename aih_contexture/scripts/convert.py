@@ -3,7 +3,12 @@ import os
 import time
 
 import psutil
-import torch
+try:
+    import torch
+    import torch.multiprocessing as mp
+except (ImportError, OSError):
+    torch = None
+    import multiprocessing as mp
 
 from aih_contexture.utils.batch import get_batch_sizes_worker_counts
 
@@ -24,7 +29,6 @@ import math
 import traceback
 
 import click
-import torch.multiprocessing as mp
 from tqdm import tqdm
 import gc
 
@@ -32,7 +36,10 @@ from aih_contexture.config.parser import ConfigParser
 from aih_contexture.config.printer import CustomClickPrinter
 from aih_contexture.logger import configure_logging, get_logger
 from aih_contexture.models import create_model_dict
-from aih_contexture.output import output_exists, save_output
+from aih_contexture.output import output_exists
+from aih_contexture.runtime.artifacts import save_contexture_result
+from aih_contexture.runtime.job import ContextureJob
+from aih_contexture.runtime.runner import run_job
 from aih_contexture.utils.gpu import GPUManager
 
 configure_logging()
@@ -52,6 +59,9 @@ def worker_init():
 def worker_exit():
     global model_refs
     try:
+        release_all = getattr(model_refs, "release_all", None)
+        if callable(release_all):
+            release_all()
         del model_refs
     except Exception:
         pass
@@ -60,8 +70,10 @@ def worker_exit():
 def process_single_pdf(args):
     page_count = 0
     fpath, cli_options = args
-    torch.set_num_threads(cli_options["total_torch_threads"])
-    del cli_options["total_torch_threads"]
+    cli_options = dict(cli_options)
+    total_torch_threads = cli_options.pop("total_torch_threads")
+    if torch is not None:
+        torch.set_num_threads(total_torch_threads)
 
     config_parser = ConfigParser(cli_options)
 
@@ -70,29 +82,27 @@ def process_single_pdf(args):
     if cli_options.get("skip_existing") and output_exists(out_folder, base_name):
         return page_count
 
-    converter_cls = config_parser.get_converter_cls()
-    config_dict = config_parser.generate_config_dict()
-    config_dict["disable_tqdm"] = True
-
     try:
         if cli_options.get("debug_print"):
             logger.debug(f"Converting {fpath}")
-        converter = converter_cls(
-            config=config_dict,
-            artifact_dict=model_refs,
-            processor_list=config_parser.get_processors(),
-            renderer=config_parser.get_renderer(),
-            llm_service=config_parser.get_llm_service(),
+        cli_options["disable_tqdm"] = True
+        output_format = cli_options.get("output_format", "markdown")
+        job = ContextureJob.from_dict(
+            {
+                "input_path": fpath,
+                "mode": "pipeline",
+                "output_formats": [output_format],
+                "page_range": cli_options.get("page_range"),
+                "config": cli_options,
+            }
         )
-        rendered = converter(fpath)
-        out_folder = config_parser.get_output_folder(fpath)
-        save_output(rendered, out_folder, base_name)
-        page_count = converter.page_count
+        result = run_job(job, artifact_dict=model_refs)
+        save_contexture_result(result, out_folder, base_name, output_format)
+        page_count = result.page_count
 
         if cli_options.get("debug_print"):
             logger.debug(f"Converted {fpath}")
-        del rendered
-        del converter
+        del result
     except Exception as e:
         logger.error(f"Error converting {fpath}: {e}")
         traceback.print_exc()

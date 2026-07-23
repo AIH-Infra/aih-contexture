@@ -177,3 +177,19 @@ cython_debug/
 .idea/
 
 .vscode/
+
+# Runtime-generated user state. Never publish profiles containing credentials.
+configs/_app_settings.json
+configs/api_profiles/
+output/
+uploads/
+conversion_results/
+debug_data/
+
+# Local release and test residue.
+.contexture_tmp/
+.tmp*/
+tmp*/
+.pytest-*/
+pytest-cache-files-*/
+manual_test_tmp*/

@@ -71,7 +71,7 @@ class LayoutTemplateConfig(BaseModel):
     # 后端选择
     layout_backend: str = Field(
         default="surya",
-        description="版面识别后端: surya, vlm, yolo, custom"
+        description="版面识别后端: surya, vlm, custom"
     )
 
     # 强制版面类型
@@ -112,20 +112,6 @@ class LayoutTemplateConfig(BaseModel):
     vlm_layout_timeout: int = Field(
         default=120,
         description="VLM 版面识别超时时间（秒）"
-    )
-
-    # YOLO 特定配置
-    yolo_base_url: str = Field(
-        default="http://localhost:11900",
-        description="YOLO 服务地址"
-    )
-    yolo_model: str = Field(
-        default="doclayout_yolo",
-        description="YOLO 模型名称"
-    )
-    yolo_confidence_threshold: float = Field(
-        default=0.25,
-        description="YOLO 检测置信度阈值"
     )
 
     class Config:
@@ -248,6 +234,11 @@ class DocumentTemplate(BaseModel):
         config = {}
 
         # 版面识别配置
+        if self.layout.layout_backend == "yolo":
+            raise ValueError(
+                "layout_backend='yolo' 已从 Contexture 主线移除。"
+                "请将模板迁移到 surya；后续强版面识别将通过 MinerU/Paddle layout adapter 接入。"
+            )
         config["layout_backend"] = self.layout.layout_backend
         if self.layout.force_layout_block:
             config["force_layout_block"] = self.layout.force_layout_block
@@ -260,12 +251,6 @@ class DocumentTemplate(BaseModel):
             if self.layout.vlm_layout_prompt:
                 config["vlm_layout_prompt"] = self.layout.vlm_layout_prompt
             config["vlm_layout_timeout"] = self.layout.vlm_layout_timeout
-
-        # YOLO 版面识别配置
-        if self.layout.layout_backend == "yolo":
-            config["yolo_base_url"] = self.layout.yolo_base_url
-            config["yolo_model"] = self.layout.yolo_model
-            config["yolo_confidence_threshold"] = self.layout.yolo_confidence_threshold
 
         # OCR 配置
         config["ocr_backend"] = self.ocr.ocr_backend

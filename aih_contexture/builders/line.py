@@ -1,12 +1,9 @@
 from copy import deepcopy
-from typing import Annotated, List, Tuple
+from typing import Annotated, Any, List, Tuple
 
 import numpy as np
 from PIL import Image
 import cv2
-
-from surya.detection import DetectionPredictor
-from surya.ocr_error import OCRErrorPredictor
 
 from aih_contexture.builders import BaseBuilder
 from aih_contexture.providers import ProviderOutput, ProviderPageLines
@@ -79,13 +76,17 @@ class LineBuilder(BaseBuilder):
         bool,
         "Disable OCR for the document. This will only use the lines from the provider.",
     ] = False
+    force_ocr: Annotated[
+        bool,
+        "Skip provider text-layer quality checks and run OCR line detection on all pages.",
+    ] = False
     keep_chars: Annotated[bool, "Keep individual characters."] = False
     detection_line_min_confidence: Annotated[float, "Minimum confidence for a detected line to be included"] = 0.8
 
     def __init__(
         self,
-        detection_model: DetectionPredictor,
-        ocr_error_model: OCRErrorPredictor,
+        detection_model: Any,
+        ocr_error_model: Any,
         config=None,
     ):
         super().__init__(config)
@@ -136,9 +137,27 @@ class LineBuilder(BaseBuilder):
         return detection_results
 
     def get_all_lines(self, document: Document, provider: PdfProvider):
-        ocr_error_detection_results = self.ocr_error_detection(
-            document.pages, provider.page_lines
-        )
+        if self.disable_ocr:
+            page_lines = {}
+            ocr_lines = {}
+            for document_page in document.pages:
+                document_page.text_extraction_method = "pdftext"
+                document_page.ocr_errors_detected = False
+                provider_lines = provider.page_lines.get(document_page.page_id, [])
+                for provider_line in provider_lines:
+                    provider_line.line.text_extraction_method = "pdftext"
+                page_lines[document_page.page_id] = provider_lines
+                ocr_lines[document_page.page_id] = []
+            return page_lines, ocr_lines
+
+        force_ocr = bool(self.force_ocr) and not bool(self.disable_ocr)
+        if force_ocr:
+            ocr_error_labels = ["bad"] * len(document.pages)
+        else:
+            ocr_error_detection_results = self.ocr_error_detection(
+                document.pages, provider.page_lines
+            )
+            ocr_error_labels = ocr_error_detection_results.labels
 
         boxes_to_ocr = {page.page_id: [] for page in document.pages}
         page_lines = {page.page_id: [] for page in document.pages}
@@ -147,22 +166,25 @@ class LineBuilder(BaseBuilder):
 
         layout_good = []
         for document_page, ocr_error_detection_label in zip(
-            document.pages, ocr_error_detection_results.labels
+            document.pages, ocr_error_labels
         ):
             document_page.ocr_errors_detected = ocr_error_detection_label == "bad"
             provider_lines: List[ProviderOutput] = provider.page_lines.get(
                 document_page.page_id, []
             )
-            provider_lines_good = all(
-                [
-                    bool(provider_lines),
-                    not document_page.ocr_errors_detected,
-                    self.check_layout_coverage(document_page, provider_lines),
-                    self.check_line_overlaps(
-                        document_page, provider_lines
-                    ),  # Ensure provider lines don't overflow the page or intersect
-                ]
-            )
+            if force_ocr:
+                provider_lines_good = False
+            else:
+                provider_lines_good = all(
+                    [
+                        bool(provider_lines),
+                        not document_page.ocr_errors_detected,
+                        self.check_layout_coverage(document_page, provider_lines),
+                        self.check_line_overlaps(
+                            document_page, provider_lines
+                        ),  # Ensure provider lines don't overflow the page or intersect
+                    ]
+                )
             if self.disable_ocr:
                 provider_lines_good = True
 

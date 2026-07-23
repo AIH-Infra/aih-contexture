@@ -13,7 +13,7 @@ tags:
   - "vertical"
 
 layout:
-  layout_backend: "surya"  # 可切换为 yolo 获得更好的古籍版面识别
+  layout_backend: "surya"  # 后续强版面识别将通过 MinerU/Paddle layout adapter 接入
   reading_direction: "ttb"  # 从上到下（竖排）
   column_layout: "single"
   expected_block_types:

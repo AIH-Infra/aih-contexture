@@ -1,0 +1,42 @@
+{
+  "name": "contexture-layout-smoke-online-sources",
+  "version": 1,
+  "sources": [
+    {
+      "id": "arxiv_attention",
+      "url": "https://arxiv.org/pdf/1706.03762",
+      "filename": "arxiv_attention_1706.03762.pdf",
+      "document_type": "modern_multicolumn_pdf",
+      "backend_targets": ["surya", "paddle_pp_doclayout_plus_l", "paddle_pp_doclayout_v3"],
+      "required_block_types": ["Text"],
+      "notes": "Born-digital multi-column academic paper. Useful for reading order, figures, tables, equations."
+    },
+    {
+      "id": "plos_semantic_publishing",
+      "url": "https://journals.plos.org/ploscompbiol/article/file?id=10.1371/journal.pcbi.1000361&type=printable",
+      "filename": "plos_semantic_publishing_pcbi.1000361.pdf",
+      "document_type": "open_access_article",
+      "backend_targets": ["surya", "paddle_pp_doclayout_plus_l", "paddle_pp_doclayout_v3"],
+      "required_block_types": ["Text", "Reference"],
+      "notes": "Open-access PLOS article. Useful for references, figures, tables, and dense scholarly layout."
+    },
+    {
+      "id": "purdue_apa_footnotes",
+      "url": "https://owl.purdue.edu/owl/research_and_citation/apa_style/apa_formatting_and_style_guide/documents/sample-paper-apa-footnotes-and-appendices.pdf",
+      "filename": "purdue_apa_footnotes_appendices.pdf",
+      "document_type": "footnote_appendix_sample",
+      "backend_targets": ["surya", "paddle_pp_doclayout_plus_l", "paddle_pp_doclayout_v3"],
+      "required_block_types": ["Text", "Footnote"],
+      "notes": "Purdue OWL sample paper with highlighted footnotes and appendices."
+    },
+    {
+      "id": "gutenberg_my_antonia",
+      "url": "https://www.gutenberg.org/files/19810/19810-pdf.pdf",
+      "filename": "gutenberg_my_antonia_19810.pdf",
+      "document_type": "public_domain_book_pdf",
+      "backend_targets": ["surya", "paddle_pp_doclayout_plus_l", "paddle_pp_doclayout_v3"],
+      "required_block_types": ["Text"],
+      "notes": "Project Gutenberg public-domain literary book PDF. Useful as a humanities-style long-form book sample."
+    }
+  ]
+}

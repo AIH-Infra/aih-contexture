@@ -1,6 +1,10 @@
 import os
 import subprocess
-import torch
+
+try:
+    import torch
+except (ImportError, OSError):
+    torch = None
 
 from aih_contexture.logger import get_logger
 from aih_contexture.settings import settings
@@ -27,9 +31,11 @@ class GPUManager:
 
     @staticmethod
     def using_cuda():
-        return "cuda" in settings.TORCH_DEVICE_MODEL
+        return torch is not None and "cuda" in settings.TORCH_DEVICE_MODEL
 
     def check_cuda_available(self) -> bool:
+        if torch is None:
+            return False
         if not torch.cuda.is_available():
             return False
         try:

@@ -128,13 +128,13 @@ PRESET_PROMPTS: Dict[str, Dict[str, str]] = {
 
     "handwriting": {
         "name": "手写识别模式",
-        "description": "手写文档识别，标记不确定字符",
+        "description": "手写文档识别，尽量忠实转写且不添加不确定标记",
         "prompt": """OCR this handwritten document and return structured JSON.
 
 ## Handwriting Recognition
 - Transcribe handwritten text as accurately as possible
-- Mark uncertain characters with [?] if confidence < 0.5
 - Preserve original writing style and spacing
+- If a character cannot be read confidently, omit it or leave the field empty instead of inventing markers
 
 ## Region Labels
 **Main:** Text, List-Group, Table, Figure
@@ -160,9 +160,10 @@ PRESET_PROMPTS: Dict[str, Dict[str, str]] = {
 
 ## Rules
 - **bbox:** [x0, y0, x1, y1] in pixels
-- **text:** Use [?] for illegible characters, `\\n` for line breaks
+- **text:** Preserve visible content only, use `\\n` for line breaks
 - **confidence:** Be conservative (0.5-0.8 typical for handwriting)
 - **Preserve:** Line breaks, spacing, writing style
+- **Do NOT:** Add emojis, commentary, or uncertainty markers such as [?], [不确定], [unknown]
 - **Output:** ONLY JSON, start with `{`, end with `}`"""
     }
 }

@@ -1,7 +1,4 @@
-from typing import Annotated, List
-
-from surya.layout import LayoutPredictor
-from surya.layout.schema import LayoutResult, LayoutBox
+from typing import Annotated, Any, List
 
 from aih_contexture.builders import BaseBuilder
 from aih_contexture.providers.pdf import PdfProvider
@@ -43,7 +40,7 @@ class LayoutBuilder(BaseBuilder):
         float, "The maximum fraction to expand the layout box bounds by"
     ] = 0.05
 
-    def __init__(self, layout_model: LayoutPredictor, config=None):
+    def __init__(self, layout_model: Any, config=None):
         self.layout_model = layout_model
 
         super().__init__(config)
@@ -64,7 +61,9 @@ class LayoutBuilder(BaseBuilder):
             return 12
         return 6
 
-    def forced_layout(self, pages: List[PageGroup]) -> List[LayoutResult]:
+    def forced_layout(self, pages: List[PageGroup]) -> List[Any]:
+        from surya.layout.schema import LayoutBox, LayoutResult
+
         layout_results = []
         for page in pages:
             layout_results.append(
@@ -83,7 +82,7 @@ class LayoutBuilder(BaseBuilder):
             )
         return layout_results
 
-    def surya_layout(self, pages: List[PageGroup]) -> List[LayoutResult]:
+    def surya_layout(self, pages: List[PageGroup]) -> List[Any]:
         self.layout_model.disable_tqdm = self.disable_tqdm
         layout_results = self.layout_model(
             [p.get_image(highres=False) for p in pages],
@@ -129,7 +128,7 @@ class LayoutBuilder(BaseBuilder):
                     ).fit_to_bounds((0, 0, *page_size))
 
     def add_blocks_to_pages(
-        self, pages: List[PageGroup], layout_results: List[LayoutResult]
+        self, pages: List[PageGroup], layout_results: List[Any]
     ):
         for page, layout_result in zip(pages, layout_results):
             layout_page_size = PolygonBox.from_bbox(layout_result.image_bbox).size
@@ -150,6 +149,8 @@ class LayoutBuilder(BaseBuilder):
                     for (label, prob) in bbox.top_k.items()
                     if label in BlockTypes.__members__
                 }
+                for key, value in dict(getattr(bbox, "metadata", {}) or {}).items():
+                    layout_block.set_internal_metadata(key, value)
                 page.add_structure(layout_block)
 
             # Ensure page has non-empty structure

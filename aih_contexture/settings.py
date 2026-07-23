@@ -1,10 +1,16 @@
-from typing import Optional
+from typing import Any, Optional
 
 from dotenv import find_dotenv
 from pydantic import computed_field
 from pydantic_settings import BaseSettings
-import torch
 import os
+
+try:
+    import torch
+    TORCH_IMPORT_ERROR: Exception | None = None
+except (ImportError, OSError) as exc:
+    torch = None
+    TORCH_IMPORT_ERROR = exc
 
 
 class Settings(BaseSettings):
@@ -36,6 +42,9 @@ class Settings(BaseSettings):
         if self.TORCH_DEVICE is not None:
             return self.TORCH_DEVICE
 
+        if torch is None:
+            return "cpu"
+
         if torch.cuda.is_available():
             return "cuda"
 
@@ -46,7 +55,9 @@ class Settings(BaseSettings):
 
     @computed_field
     @property
-    def MODEL_DTYPE(self) -> torch.dtype:
+    def MODEL_DTYPE(self) -> Any:
+        if torch is None:
+            return None
         if self.TORCH_DEVICE_MODEL == "cuda":
             return torch.bfloat16
         else:

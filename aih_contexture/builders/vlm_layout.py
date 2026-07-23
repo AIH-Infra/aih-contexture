@@ -79,8 +79,23 @@ class VlmLayoutBuilder(BaseBuilder):
 
         # 从 config 读取配置
         if isinstance(config, dict):
-            if config.get("vlm_layout_batch_size") is not None:
+            layout_backend = str(config.get("layout_backend") or "").strip().lower().replace("-", "_")
+            if layout_backend == "surya2_layout" and config.get("surya2_layout_batch_size") is not None:
+                self.vlm_layout_batch_size = int(config["surya2_layout_batch_size"])
+            elif layout_backend == "surya2_layout" and config.get("surya2_layout_concurrency") is not None:
+                self.vlm_layout_batch_size = int(config["surya2_layout_concurrency"])
+            elif config.get("vlm_layout_batch_size") is not None:
                 self.vlm_layout_batch_size = int(config["vlm_layout_batch_size"])
+            elif config.get("vlm_layout_max_concurrent") is not None:
+                self.vlm_layout_batch_size = int(config["vlm_layout_max_concurrent"])
+            elif config.get("mineru_vl_layout_batch_size") is not None:
+                self.vlm_layout_batch_size = int(config["mineru_vl_layout_batch_size"])
+            elif config.get("mineru_vl_layout_concurrency") is not None:
+                self.vlm_layout_batch_size = int(config["mineru_vl_layout_concurrency"])
+            elif config.get("surya2_layout_batch_size") is not None:
+                self.vlm_layout_batch_size = int(config["surya2_layout_batch_size"])
+            elif config.get("surya2_layout_concurrency") is not None:
+                self.vlm_layout_batch_size = int(config["surya2_layout_concurrency"])
             if config.get("force_layout_block") is not None:
                 self.force_layout_block = config["force_layout_block"]
             if config.get("max_expand_frac") is not None:
@@ -135,16 +150,26 @@ class VlmLayoutBuilder(BaseBuilder):
         Returns:
             版面识别结果列表
         """
-        # 获取低分辨率图像
-        images = [p.get_image(highres=False) for p in pages]
-
-        logger.info(f"[VlmLayoutBuilder] Sending {len(images)} images to VLM service")
-
-        # 调用 VLM 服务
-        layout_results = self.vlm_layout_service.detect_layout(
-            images,
-            batch_size=self.vlm_layout_batch_size
+        layout_results: list[LayoutResult] = []
+        batch_size = max(1, int(self.vlm_layout_batch_size or 1))
+        logger.info(
+            "[VlmLayoutBuilder] Sending %s pages to VLM service in chunks of %s",
+            len(pages),
+            batch_size,
         )
+
+        for start in range(0, len(pages), batch_size):
+            page_chunk = pages[start:start + batch_size]
+            images = [p.get_image(highres=False) for p in page_chunk]
+            try:
+                layout_results.extend(
+                    self.vlm_layout_service.detect_layout(
+                        images,
+                        batch_size=batch_size,
+                    )
+                )
+            finally:
+                del images
 
         # 统计识别结果
         total_boxes = sum(len(r.bboxes) for r in layout_results)
@@ -185,7 +210,7 @@ class _LayoutHelper(BaseBuilder):
     """
     版面处理辅助类。
 
-    封装 LayoutBuilder 的通用方法，供 VlmLayoutBuilder 和 YoloLayoutBuilder 复用。
+    封装 LayoutBuilder 的通用方法，供 VlmLayoutBuilder 复用。
     这些方法负责将版面识别结果转换为文档块并添加到页面中。
     """
 
@@ -265,6 +290,8 @@ class _LayoutHelper(BaseBuilder):
                     for (label, prob) in bbox.top_k.items()
                     if label in BlockTypes.__members__
                 }
+                for key, value in dict(getattr(bbox, "metadata", {}) or {}).items():
+                    layout_block.set_internal_metadata(key, value)
 
                 # 添加到页面结构
                 page.add_structure(layout_block)

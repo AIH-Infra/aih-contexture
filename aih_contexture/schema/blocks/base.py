@@ -136,6 +136,10 @@ class Block(BaseModel):
         if image is None:
             page = document.get_page(self.page_id)
             page_image = page.get_image(highres=highres, remove_blocks=remove_blocks)
+            if page_image is None and highres:
+                page_image = page.get_image(highres=False, remove_blocks=remove_blocks)
+            if page_image is None:
+                return None
 
             # Scale to the image size
             bbox = self.polygon.rescale(

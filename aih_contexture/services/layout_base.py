@@ -7,7 +7,7 @@
 
 from typing import Annotated, List, Dict, Any, Optional
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from aih_contexture.services import BaseService
 
@@ -26,6 +26,7 @@ class LayoutBox(BaseModel):
     position: int
     top_k: Dict[str, float]
     polygon: List[List[float]]
+    metadata: Dict[str, Any] = Field(default_factory=dict)
 
     class Config:
         # 允许任意类型（兼容 surya 的 LayoutBox）
@@ -77,7 +78,7 @@ class BaseLayoutService(BaseService):
     """
     版面识别服务基类。
 
-    所有版面识别后端（VLM、YOLO 等）都应继承此类并实现 detect_layout 方法。
+    所有版面识别后端（VLM、MinerU/Paddle adapter 等）都应继承此类并实现 detect_layout 方法。
     """
 
     # 服务超时时间（秒）
@@ -153,6 +154,12 @@ class BaseLayoutService(BaseService):
             "List": "ListItem",
             "Paragraph": "Text",
             "Body": "Text",
+            "Marginalannotation": "MarginalAnnotation",
+            "Marginalnote": "MarginalAnnotation",
+            "Aside": "MarginalAnnotation",
+            "Asidetext": "MarginalAnnotation",
+            "Pageasidetext": "MarginalAnnotation",
+            "Inlineannotation": "InlineAnnotation",
         }
 
         return label_aliases.get(normalized, normalized)
@@ -220,7 +227,8 @@ class BaseLayoutService(BaseService):
                     label=normalized_label,
                     position=bbox.position,
                     top_k=new_top_k,
-                    polygon=bbox.polygon
+                    polygon=bbox.polygon,
+                    metadata=dict(getattr(bbox, "metadata", {}) or {}),
                 ))
             # 无效标签的框被丢弃
 
@@ -231,5 +239,5 @@ class BaseLayoutService(BaseService):
         return LayoutResult(
             image_bbox=layout_result.image_bbox,
             bboxes=validated_bboxes,
-            sliced=layout_result.sliced
+            sliced=layout_result.sliced,
         )
