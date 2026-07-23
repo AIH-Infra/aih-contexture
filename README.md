@@ -130,7 +130,7 @@ Contexture 在这些引擎之上统一页码锚点、Middle JSON、学术 Markdo
 - VLM 结果需要受原始页面、页码锚点与 Middle JSON 的约束和复核。
 - 外部模型服务、MinerU、Paddle、Tesseract 与 Chrome ScreenAI 均不随主包强制安装。
 
-发行内容和与原版 0.5 的完整对比见：
+本版本的更新内容见：
 
 - **RELEASE_MANIFEST.md**
 - **VERSION_0.7_UPDATE_COMPARISON_ZH.md**
