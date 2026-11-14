@@ -12,6 +12,7 @@ from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.document import Document
 from aih_contexture.schema.groups.page import PageGroup
 from aih_contexture.schema.registry import get_block_class
+from aih_contexture.runtime.progress_events import emit_progress_event
 
 
 class DocumentBuilder(BaseBuilder):
@@ -71,15 +72,23 @@ class DocumentBuilder(BaseBuilder):
         self.actual_highres_dpi = self._compute_ocr_dpi()
 
     def __call__(self, provider: PdfProvider, layout_builder: LayoutBuilder, line_builder: LineBuilder, ocr_builder: OcrBuilder):
+        total_pages = len(provider.page_range or [])
+        emit_progress_event("stage_changed", "document", current=0, total=total_pages, unit="pages", message="Building document pages")
         document = self.build_document(provider)
+        emit_progress_event("stage_changed", "layout", current=0, total=len(document.pages), unit="pages", message="Running layout detection")
         layout_builder(document, provider)
+        emit_progress_event("stage_completed", "layout", current=len(document.pages), total=len(document.pages), unit="pages", message="Layout detection completed")
         if self._ocr_backend_owns_line_detection():
             for page in document.pages:
                 page.text_extraction_method = "surya"
         else:
+            emit_progress_event("stage_changed", "line_detection", current=0, total=len(document.pages), unit="pages", message="Building text lines")
             line_builder(document, provider)
+            emit_progress_event("stage_completed", "line_detection", current=len(document.pages), total=len(document.pages), unit="pages", message="Text line construction completed")
         if not self.disable_ocr:
+            emit_progress_event("stage_changed", "ocr", current=0, total=len(document.pages), unit="pages", message="Running OCR")
             ocr_builder(document, provider)
+            emit_progress_event("stage_completed", "ocr", current=len(document.pages), total=len(document.pages), unit="pages", message="OCR completed")
         return document
 
     def _ocr_backend_owns_line_detection(self) -> bool:

@@ -47,10 +47,11 @@ logger = get_logger()
 
 
 def worker_init():
-    model_dict = create_model_dict()
-
     global model_refs
-    model_refs = model_dict
+    # Do not create models at worker startup.  The text-layer fast path is
+    # intentionally model-free; regular Pipeline jobs initialize lazily on
+    # their first use below.
+    model_refs = None
 
     # Ensure we clean up the model references on exit
     atexit.register(worker_exit)
@@ -59,6 +60,8 @@ def worker_init():
 def worker_exit():
     global model_refs
     try:
+        if model_refs is None:
+            return
         release_all = getattr(model_refs, "release_all", None)
         if callable(release_all):
             release_all()
@@ -68,6 +71,7 @@ def worker_exit():
 
 
 def process_single_pdf(args):
+    global model_refs
     page_count = 0
     fpath, cli_options = args
     cli_options = dict(cli_options)
@@ -96,7 +100,13 @@ def process_single_pdf(args):
                 "config": cli_options,
             }
         )
-        result = run_job(job, artifact_dict=model_refs)
+        is_text_layer_fast_path = (
+            str(cli_options.get("layout_backend") or "").strip().lower().replace("-", "_") == "none"
+            and str(cli_options.get("ocr_backend") or "none").strip().lower().replace("-", "_") == "none"
+        )
+        if not is_text_layer_fast_path and model_refs is None:
+            model_refs = create_model_dict()
+        result = run_job(job, artifact_dict=None if is_text_layer_fast_path else model_refs)
         save_contexture_result(result, out_folder, base_name, output_format)
         page_count = result.page_count
 

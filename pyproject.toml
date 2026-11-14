@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "aih-contexture"
-version = "0.7.0"
+version = "0.9.0"
 description = "Weaving Data from History - 面向人文学科的文献结构化提取平台"
 authors = ["Güriedrich & Baireinhold <aih-infra@example.com>"]
 readme = "README.md"
@@ -20,27 +20,33 @@ python = ">=3.10,<3.13"
 Pillow = "^10.1.0"
 pydantic = "^2.4.2"
 pydantic-settings = "^2.0.3"
-transformers = "^4.45.2"
+transformers = "4.57.6"
 python-dotenv = "^1.0.0"
 torch = "^2.7.0"
 tqdm = "^4.66.1"
 ftfy = "^6.1.1"
 rapidfuzz = "^3.8.1"
-surya-ocr = "^0.17.0"
+surya-ocr = "0.17.1"
 regex = "^2024.4.28"
-pdftext = "~0.6.3"
+pdftext = "0.6.3"
 markdownify = "^1.1.0"
 click = "^8.2.0"
 markdown2 = "^2.5.2"
 filetype = "^1.2.0"
 google-genai = "^1.0.0"
 anthropic = "^0.46.0"
-scikit-learn = "^1.6.1"
+scikit-learn = [
+    {version = ">=1.6.1,<1.7", python = ">=3.10,<3.11"},
+    {version = ">=1.8.0", python = ">=3.11,<3.13"},
+]
 openai = "^1.65.2"
 PyYAML = "^6.0.3"
-numpy = "^2.3.0"
+numpy = [
+    {version = ">=2.2,<2.3", python = ">=3.10,<3.11"},
+    {version = ">=2.3.0", python = ">=3.11,<3.13"},
+]
 pypdf = "^6.6.0"
-pypdfium2 = "^4.30.0"
+pypdfium2 = "4.30.0"
 PyMuPDF = "^1.26.0"
 opencv-python-headless = "^4.11.0"
 beautifulsoup4 = "^4.14.0"
@@ -52,7 +58,7 @@ fastapi = "^0.115.4"
 uvicorn = "^0.32.0"
 python-multipart = "^0.0.16"
 psutil = "^7.2.0"
-huggingface-hub = "^0.20.0"
+huggingface-hub = "^0.34.0"
 lxml = "^5.3.0"
 
 # Optional dependencies for extended document formats
@@ -82,6 +88,8 @@ contexture_single = "aih_contexture.scripts.convert_single:convert_single_cli"
 contexture_chunk = "aih_contexture.scripts.chunk_convert:chunk_convert_cli"
 contexture_gui = "aih_contexture.scripts.run_streamlit_app:streamlit_app_cli"
 contexture_extract = "aih_contexture.scripts.run_streamlit_app:extraction_app_cli"
+contexture_text_layer_batch = "aih_contexture.scripts.text_layer_batch:text_layer_batch_cli"
+contexture_text_layer_audit = "aih_contexture.scripts.text_layer_audit:text_layer_audit_cli"
 contexture_server = "aih_contexture.scripts.server:server_cli"
 contexture_middle = "aih_contexture.scripts.middle:middle_cli"
 contexture_import_document = "aih_contexture.scripts.import_external_document:import_external_document_cli"
@@ -99,6 +107,11 @@ contexture_eval_markdown = "aih_contexture.scripts.evaluate_markdown:evaluate_ma
 contexture_download_layout_smoke = "aih_contexture.scripts.download_layout_smoke:download_layout_smoke_cli"
 contexture_visualize_layout = "aih_contexture.scripts.visualize_layout:visualize_layout_cli"
 contexture_compare_layout = "aih_contexture.scripts.compare_layout:compare_layout_cli"
+contexture_vlm_generalized = "aih_contexture.scripts.vlm_runtime:vlm_generalized_cli"
+contexture_vlm_specialized = "aih_contexture.scripts.vlm_runtime:vlm_specialized_cli"
+contexture_structured_source = "aih_contexture.scripts.structured_source:structured_source_cli"
+contexture_validate_source = "aih_contexture.scripts.structured_source:validate_source_package_cli"
+contexture_structured_source_sample = "aih_contexture.scripts.structured_source_sample:structured_source_sample_cli"
 
 [build-system]
 requires = ["poetry-core"]

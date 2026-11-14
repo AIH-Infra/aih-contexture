@@ -156,7 +156,7 @@ Table 2
     def rewrite_blocks(self, document: Document):
         # Skip table merging if disabled via config
         if self.no_merge_tables_across_pages:
-            logger.info("Skipping table merging across pages due to --no_merge_tables_across_pages flag")
+            logger.debug("Skipping table merging across pages due to --no_merge_tables_across_pages flag")
             return
 
         table_runs = []

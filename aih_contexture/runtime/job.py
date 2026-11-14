@@ -5,12 +5,20 @@ from typing import Any, Literal
 
 from aih_contexture.util import parse_range_str
 
+SUPPORTED_RUNTIME_MODES = (
+    "pipeline",
+    "vlm_generalized",
+    "vlm_specialized",
+    "markdown_postprocess",
+    "structured_source",
+)
+
 ContextureMode = Literal[
     "pipeline",
     "vlm_generalized",
     "vlm_specialized",
-    "office",
     "markdown_postprocess",
+    "structured_source",
 ]
 
 
@@ -50,11 +58,16 @@ class ContextureJob:
         elif isinstance(output_formats, str):
             output_formats = [output_formats]
 
+        mode = payload.get("mode") or payload.get("conversion_mode") or config.get("conversion_mode", "pipeline")
+        if mode not in SUPPORTED_RUNTIME_MODES:
+            supported = ", ".join(SUPPORTED_RUNTIME_MODES)
+            raise ValueError(f"Unsupported runtime mode: {mode}. Supported modes: {supported}")
+
         return cls(
             input_path=payload.get("input_path") or payload.get("filepath") or payload.get("file_path"),
             input_bytes=payload.get("input_bytes"),
             input_name=payload.get("input_name") or payload.get("file_name"),
-            mode=payload.get("mode") or payload.get("conversion_mode") or config.get("conversion_mode", "pipeline"),
+            mode=mode,
             output_formats=list(output_formats),
             page_range=page_range,
             config=config,
@@ -84,3 +97,13 @@ class ContextureResult:
     debug_artifacts: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     file_outputs: list[dict[str, Any]] = field(default_factory=list)
+    diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    response_metadata: list[dict[str, Any]] = field(default_factory=list)
+    xml_pages: list[str] = field(default_factory=list)
+    searchable_pdf_path: str | None = None
+    page_outputs: list[Any] = field(default_factory=list)
+    html_pages: list[str] = field(default_factory=list)
+    failed_pages: list[int] = field(default_factory=list)
+    checkpoint: dict[str, Any] | None = None
+    structured_document: dict[str, Any] | None = None
+    structured_artifacts: dict[str, Any] = field(default_factory=dict)

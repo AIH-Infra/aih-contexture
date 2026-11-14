@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
 from aih_contexture.postprocess import MarkdownPostprocessEngine
 from aih_contexture.evaluation.scholarly_markdown import evaluate_scholarly_markdown_text
+from aih_contexture.middle.adapters.markdown import markdown_to_middle_document
 from aih_contexture.runtime.artifacts import compact_middle_json_for_storage
+from aih_contexture.runtime.run_summary import ensure_processing_id, utc_now_iso, write_document_summary
+from aih_contexture.scripts.ui.task_outputs import get_output_folder, register_document_summary
 from aih_contexture.middle.adapters.mineru_official import (
     default_source_name_from_json_path,
     mineru_official_json_to_middle_document,
@@ -16,6 +21,8 @@ from aih_contexture.middle.debug_markdown import render_middle_debug_markdown
 from aih_contexture.middle.scholarly_markdown import render_middle_scholarly_markdown
 from aih_contexture.middle.validation import validate_middle_json
 from aih_contexture.settings import settings
+from aih_contexture.runtime.subprocess_stream import finish_terminal_progress, render_terminal_progress
+from aih_contexture.runtime.console_text import safe_endpoint_for_log
 
 
 def read_markdown_input(file_obj: Any, upload_mode: str) -> tuple[str, str]:
@@ -35,7 +42,7 @@ def validate_markdown_llm_result(result: Any, *, enable_llm: bool) -> dict[str, 
     if enable_llm and not llm_meta.get("invoked") and llm_status not in {"no_review_needed"}:
         raise RuntimeError(
             "LLM 修正模式未真正调用模型；需要检查 Base URL、模型名称和适配链路。"
-            f" provider={llm_meta.get('provider')!r}, base_url={llm_meta.get('base_url')!r}, model={llm_meta.get('model')!r}, skipped_reason={skipped_reason!r}, status={llm_status!r}"
+            f" provider={llm_meta.get('provider')!r}, endpoint={safe_endpoint_for_log(llm_meta.get('base_url'))!r}, model={llm_meta.get('model')!r}, skipped_reason={skipped_reason!r}, status={llm_status!r}"
         )
 
     if (
@@ -131,12 +138,18 @@ def process_markdown_file(
     output_markdown = markdown_text if review_only else result.markdown
     markdown_path.write_text(output_markdown, encoding="utf-8", newline="")
 
+    # P1-1: Middle JSON 必须由最终落盘的 Markdown 生成，保证 Middle 与正式输出一致。
+    middle_path = output_path / f"{fname_base}_middle.json"
+    middle = markdown_to_middle_document(output_markdown, source_name=file_name, backend="markdown_postprocess")
+    middle_path.write_text(json.dumps(middle, ensure_ascii=False, indent=2) + "\n", encoding=settings.OUTPUT_ENCODING)
+
     return {
         "file_name": file_name,
         "output_path": str(markdown_path),
         "report_path": str(report_path),
-        "output_paths": [str(report_path), str(markdown_path)],
+        "output_paths": [str(report_path), str(markdown_path), str(middle_path)],
         "llm_meta": llm_meta,
+        "page_count": len(middle.get("pages", []) or []),
     }
 
 
@@ -402,63 +415,158 @@ def run_markdown_postprocess_batch(
         llm_max_retries=llm_max_retries,
     )
 
+    work_ctx = ctx if ctx is not None else {}
+    processing_id = ensure_processing_id(work_ctx, output_dir)
+    work_ctx["mode"] = "markdown_postprocess"
+    work_ctx.setdefault("batch_started_at", utc_now_iso())
+    work_ctx["models"] = {"llm": llm_model} if llm_model else {}
     all_output_paths_for_zip: list[str] = []
-    for file_obj in uploaded_files:
+    total_files = len(uploaded_files)
+
+    def _source_info(file_obj: Any) -> dict[str, Any]:
+        """本地文件取路径；上传文件读取 bytes 计算 size/SHA-256。"""
+        if upload_mode != "上传文件":
+            try:
+                return {"source_path": os.fspath(file_obj)}
+            except (TypeError, ValueError):
+                return {}
+        getvalue = getattr(file_obj, "getvalue", None)
+        if callable(getvalue):
+            payload = getvalue()
+            return {"source_size_bytes": len(payload), "source_sha256": hashlib.sha256(payload).hexdigest()}
+        return {}
+
+    def _write_status_summary(
+        *,
+        file_index: int,
+        display_name: str,
+        status: str,
+        file_started_at: str,
+        file_started_clock: float,
+        output_paths: list[str],
+        errors: list[str],
+        warnings: list[str],
+        info: dict[str, Any],
+        page_count: int | None = None,
+    ) -> str:
+        finished_at = utc_now_iso()
+        summary_path = write_document_summary(
+            output_dir=get_output_folder(output_dir, display_name, file_index=file_index),
+            source_name=display_name, processing_id=processing_id,
+            file_index=file_index + 1, mode="markdown_postprocess", strategy="rerender_and_repair",
+            models=work_ctx.get("models") or {},
+            config={"input_kind": input_kind, "review_only": review_only, "enable_llm": enable_llm},
+            started_at=file_started_at, finished_at=finished_at,
+            elapsed_seconds=time.perf_counter() - file_started_clock,
+            status=status, page_count=page_count,
+            output_paths=output_paths, warnings=warnings, errors=errors,
+            **info,
+        )
+        register_document_summary(work_ctx, summary_path)
+        return summary_path
+
+    for file_index, file_obj in enumerate(uploaded_files):
+        uploaded_name = getattr(file_obj, "name", None)
+        display_name = str(uploaded_name or os.path.basename(os.fspath(file_obj)))
+        file_started_clock = time.perf_counter()
+        file_started_at = utc_now_iso()
+        source_info = _source_info(file_obj)
+
         if cancel is not None and cancel.is_set():
+            # P1-7: 被取消的文件也要留下可审计的摘要，而不是静默消失。
             if ctx is not None:
                 ctx["status"] = "cancelled"
+            _write_status_summary(
+                file_index=file_index, display_name=display_name, status="cancelled",
+                file_started_at=file_started_at, file_started_clock=file_started_clock,
+                output_paths=[], errors=[], warnings=["任务在处理该文件前被取消"], info=source_info,
+            )
             st.warning("⏹ 任务已取消")
+            finish_terminal_progress()
             return all_output_paths_for_zip
 
-        if input_kind == "markdown":
-            file_result = process_markdown_file(
-                file_obj,
-                upload_mode=upload_mode,
-                engine=engine,
-                output_dir=output_dir,
-                review_only=review_only,
-                enable_llm=enable_llm,
+        render_terminal_progress(
+            mode_label="Markdown Postprocess",
+            stage="Processing",
+            message=f"Processing {display_name}",
+            current=file_index,
+            total=total_files,
+            unit="files",
+            rate_scope="markdown_files",
+        )
+
+        file_output_dir = get_output_folder(output_dir, display_name, file_index=file_index)
+        try:
+            if input_kind == "markdown":
+                file_result = process_markdown_file(
+                    file_obj,
+                    upload_mode=upload_mode,
+                    engine=engine,
+                    output_dir=os.fspath(file_output_dir),
+                    review_only=review_only,
+                    enable_llm=enable_llm,
+                )
+            elif input_kind == "mineru_json":
+                file_result = process_mineru_json_file(
+                    file_obj,
+                    upload_mode=upload_mode,
+                    output_dir=os.fspath(file_output_dir),
+                    include_provenance_comments=middle_rerender_include_provenance,
+                    include_printed_page_comments=middle_rerender_include_printed_page_comments,
+                    include_page_header_comments=middle_rerender_include_page_header_comments,
+                    include_page_footer_comments=middle_rerender_include_page_footer_comments,
+                    include_margin_comments=middle_rerender_include_margin_comments,
+                    include_page_separators=middle_rerender_include_page_separators,
+                    marginal_output_mode=middle_rerender_marginal_output_mode,
+                    equation_output_mode=middle_rerender_equation_output_mode,
+                    engine=engine,
+                    apply_markdown_postprocess=middle_rerender_apply_postprocess,
+                    review_only=review_only,
+                    enable_llm=enable_llm,
+                )
+            else:
+                file_result = process_middle_json_file(
+                    file_obj,
+                    upload_mode=upload_mode,
+                    output_dir=os.fspath(file_output_dir),
+                    include_provenance_comments=middle_rerender_include_provenance,
+                    include_printed_page_comments=middle_rerender_include_printed_page_comments,
+                    include_page_header_comments=middle_rerender_include_page_header_comments,
+                    include_page_footer_comments=middle_rerender_include_page_footer_comments,
+                    include_margin_comments=middle_rerender_include_margin_comments,
+                    include_page_separators=middle_rerender_include_page_separators,
+                    marginal_output_mode=middle_rerender_marginal_output_mode,
+                    equation_output_mode=middle_rerender_equation_output_mode,
+                    engine=engine,
+                    apply_markdown_postprocess=middle_rerender_apply_postprocess,
+                    review_only=review_only,
+                    enable_llm=enable_llm,
+                )
+        except Exception as exc:
+            # P1-7: 失败路径必须留下摘要；随后继续向上抛出以保持原有错误呈现。
+            _write_status_summary(
+                file_index=file_index, display_name=display_name, status="failed",
+                file_started_at=file_started_at, file_started_clock=file_started_clock,
+                output_paths=[], errors=[f"{type(exc).__name__}: {exc}"], warnings=[], info=source_info,
             )
-        elif input_kind == "mineru_json":
-            file_result = process_mineru_json_file(
-                file_obj,
-                upload_mode=upload_mode,
-                output_dir=output_dir,
-                include_provenance_comments=middle_rerender_include_provenance,
-                include_printed_page_comments=middle_rerender_include_printed_page_comments,
-                include_page_header_comments=middle_rerender_include_page_header_comments,
-                include_page_footer_comments=middle_rerender_include_page_footer_comments,
-                include_margin_comments=middle_rerender_include_margin_comments,
-                include_page_separators=middle_rerender_include_page_separators,
-                marginal_output_mode=middle_rerender_marginal_output_mode,
-                equation_output_mode=middle_rerender_equation_output_mode,
-                engine=engine,
-                apply_markdown_postprocess=middle_rerender_apply_postprocess,
-                review_only=review_only,
-                enable_llm=enable_llm,
-            )
-        else:
-            file_result = process_middle_json_file(
-                file_obj,
-                upload_mode=upload_mode,
-                output_dir=output_dir,
-                include_provenance_comments=middle_rerender_include_provenance,
-                include_printed_page_comments=middle_rerender_include_printed_page_comments,
-                include_page_header_comments=middle_rerender_include_page_header_comments,
-                include_page_footer_comments=middle_rerender_include_page_footer_comments,
-                include_margin_comments=middle_rerender_include_margin_comments,
-                include_page_separators=middle_rerender_include_page_separators,
-                marginal_output_mode=middle_rerender_marginal_output_mode,
-                equation_output_mode=middle_rerender_equation_output_mode,
-                engine=engine,
-                apply_markdown_postprocess=middle_rerender_apply_postprocess,
-                review_only=review_only,
-                enable_llm=enable_llm,
-            )
+            raise
 
         all_output_paths_for_zip.extend(file_result["output_paths"])
 
         file_name = file_result["file_name"]
+        summary_path = write_document_summary(
+            output_dir=file_output_dir, source_name=file_name, processing_id=processing_id,
+            file_index=file_index + 1, mode="markdown_postprocess", strategy="rerender_and_repair",
+            models=work_ctx.get("models") or {}, config={"input_kind": input_kind, "review_only": review_only, "enable_llm": enable_llm},
+            started_at=file_started_at, finished_at=utc_now_iso(),
+            elapsed_seconds=time.perf_counter() - file_started_clock,
+            status="succeeded",
+            page_count=file_result.get("page_count")
+            or (file_result.get("middle_validation") or {}).get("summary", {}).get("page_count"),
+            output_paths=file_result["output_paths"], warnings=[], errors=[],
+            **source_info,
+        )
+        register_document_summary(work_ctx, summary_path)
         output_path = file_result["output_path"]
         report_path = file_result["report_path"]
         llm_meta = file_result["llm_meta"]
@@ -486,4 +594,15 @@ def run_markdown_postprocess_batch(
             if skipped_reason:
                 st.caption(f"跳过原因：{skipped_reason}")
 
+        render_terminal_progress(
+            mode_label="Markdown Postprocess",
+            stage="Completed",
+            message=f"Completed {file_name}",
+            current=file_index + 1,
+            total=total_files,
+            unit="files",
+            rate_scope="markdown_files",
+        )
+
+    finish_terminal_progress()
     return all_output_paths_for_zip

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from aih_contexture.middle.labels import normalize_block_type
+from aih_contexture.middle.adapters.mineru_dedup import drop_mineru_aggregate_duplicates
 from aih_contexture.middle.schema import MiddleBlock, MiddleDocument, MiddlePage, MiddleProvenance
 
 
@@ -98,13 +99,16 @@ def external_layout_page_to_middle_page(
             )
         )
 
-    return MiddlePage(
+    page = MiddlePage(
         index=resolved_page_index,
         width=page_size[0],
         height=page_size[1],
         blocks=sorted(blocks, key=lambda block: (block.order, block.id)),
         provenance=[MiddleProvenance(backend=backend, stage="layout", model=model, source=source)],
     )
+    if "mineru" in backend.strip().lower():
+        drop_mineru_aggregate_duplicates(page)
+    return page
 
 
 def _extract_pages(payload: dict[str, Any] | list[Any]) -> list[dict[str, Any]]:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from aih_contexture.utils.footnote_markers import match_leading_footnote_marker
+
 
 PADDLE_VL_PROMPTS = {
     "ocr": "OCR:",
@@ -387,7 +389,7 @@ def _should_merge_text_lines(a: dict[str, Any], b: dict[str, Any], *, median_hei
 
 
 def _starts_new_footnote(text: str) -> bool:
-    return bool(_PADDLE_SUPERSCRIPT_FOOTNOTE_RE.match(text or ""))
+    return match_leading_footnote_marker(text) is not None
 
 
 def _classification_confidence(block: dict[str, Any]) -> str:
@@ -472,10 +474,10 @@ def _union_bbox(values: list[Any]) -> list[Any] | None:
 
 
 def _footnote_marker_text(text: str) -> str | None:
-    match = _PADDLE_SUPERSCRIPT_FOOTNOTE_RE.match(text or "")
+    match = match_leading_footnote_marker(text)
     if not match:
         return None
-    return match.group(0).strip()
+    return match.original
 
 
 def classify_paddle_loc_ocr_line(
@@ -486,6 +488,7 @@ def classify_paddle_loc_ocr_line(
 ) -> tuple[str, bool, int | None, str | None]:
     x0, y0, x1, y1 = norm_bbox
     stripped = text.strip()
+    marker_match = None
     starts_footnote = bool(_PADDLE_SUPERSCRIPT_FOOTNOTE_RE.match(stripped))
 
     if y1 <= 85 and _PAGE_NUMBER_RE.fullmatch(stripped):

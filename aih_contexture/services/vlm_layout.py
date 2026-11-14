@@ -16,6 +16,7 @@ from openai import APITimeoutError, RateLimitError
 from PIL import Image
 
 from aih_contexture.logger import get_logger
+from aih_contexture.runtime.console_text import safe_endpoint_for_log
 from aih_contexture.services.layout_service import (
     BaseLayoutService,
     LayoutBox,
@@ -169,20 +170,25 @@ class VlmLayoutService(BaseLayoutService):
         if config.get("vlm_layout_prompt"):
             # 用户直接指定了提示词
             self.prompt = str(config["vlm_layout_prompt"])
-            logger.info("[VlmLayoutService] Using custom prompt")
+            logger.debug("[VlmLayoutService] Using custom prompt")
         else:
             # 使用模板
             template_name = config.get("vlm_layout_prompt_template", "modern")
             try:
                 from aih_contexture.templates.vlm_layout_prompts import get_layout_prompt
                 self.prompt = get_layout_prompt(template_name)
-                logger.info(f"[VlmLayoutService] Using template: {template_name}")
+                logger.debug("[VlmLayoutService] Prompt template=%s", template_name)
             except Exception as e:
                 logger.warning(f"[VlmLayoutService] Failed to load template, using default: {e}")
                 self.prompt = DEFAULT_LAYOUT_PROMPT
 
-        logger.info(f"[VlmLayoutService] Init: base_url={self.base_url}, model={self.model}")
-        logger.info(f"[VlmLayoutService] Image: format={self.image_format}, max_dim={self.max_image_dimension}")
+        logger.debug(
+            "[VlmLayoutService] Init: endpoint=%s model=%s image=%s/%s",
+            safe_endpoint_for_log(self.base_url),
+            self.model,
+            self.image_format,
+            self.max_image_dimension,
+        )
 
     def get_client(self) -> openai.OpenAI:
         """获取 OpenAI 客户端"""

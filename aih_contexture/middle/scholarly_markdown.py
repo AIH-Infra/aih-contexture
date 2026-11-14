@@ -6,15 +6,21 @@ from typing import Any
 
 from aih_contexture.config.marginal_output import normalize_marginal_output_mode
 from aih_contexture.middle.semantics import resolve_middle_for_rendering
+from aih_contexture.utils.footnote_markers import (
+    match_leading_footnote_marker,
+    split_strong_footnote_entries,
+)
 
 
 HIDDEN_BLOCK_TYPES = {"PageHeader", "PageFooter", "PageNumber"}
 FOOTNOTE_MARKER_RE = re.compile(
-    r"^\s*(?:[-*]\s*)?(?:\\\(\s*)?(?:\^\s*)?\{?([0-9]{1,4}|[ivxlcdm]{1,12})\}?(?:\s*\\\))?[.)]?\s+",
+    r"^\s*(?:[-*]\s*)?(?:"
+    r"(?:\\\(\s*)?(?:\^\s*)?\{?([0-9]{1,4}|[ivxlcdm]{1,12})\}?(?:\s*\\\))?[.)]?\s+"
+    r")",
     re.IGNORECASE,
 )
 HTML_SUPERSCRIPT_LEADING_MARKER_RE = re.compile(
-    r"^\s*<sup>\s*([0-9]{1,4}|[ivxlcdm]{1,12})\s*</sup>\s*",
+    r"^\s*<sup>\s*([0-9]{1,4}|[ivxlcdm]{1,12}|[①-⑳])\s*</sup>\s*",
     re.IGNORECASE,
 )
 LATEX_SUPERSCRIPT_FOOTNOTE_RE = re.compile(
@@ -482,6 +488,9 @@ def _extract_footnote_entries(text: str) -> list[tuple[str | None, str]]:
     entries = _split_html_sup_footnote_entries(normalized)
     if entries:
         return entries
+    entries = split_strong_footnote_entries(normalized)
+    if entries:
+        return entries
     marker, body = _extract_footnote_marker_and_body(normalized)
     return [(marker, body)]
 
@@ -489,7 +498,7 @@ def _extract_footnote_entries(text: str) -> list[tuple[str | None, str]]:
 def _split_html_sup_footnote_entries(text: str) -> list[tuple[str, str]]:
     matches = list(
         re.finditer(
-            r"(?m)^\s*<sup>\s*([0-9]{1,4}|[ivxlcdm]{1,12})\s*</sup>\s*",
+            r"(?m)^\s*<sup>\s*([0-9]{1,4}|[ivxlcdm]{1,12}|[①-⑳])\s*</sup>\s*",
             text,
             re.IGNORECASE,
         )
@@ -508,14 +517,10 @@ def _split_html_sup_footnote_entries(text: str) -> list[tuple[str, str]]:
 
 def _extract_footnote_marker_and_body(text: str) -> tuple[str | None, str]:
     normalized = _text(text)
-    html_match = HTML_SUPERSCRIPT_LEADING_MARKER_RE.match(normalized)
-    if html_match:
-        return html_match.group(1), normalized[html_match.end():].strip()
-    match = FOOTNOTE_MARKER_RE.match(normalized)
-    if not match:
+    marker = match_leading_footnote_marker(normalized)
+    if marker is None:
         return None, normalized
-    marker = match.group(1)
-    return marker, normalized[match.end():].strip()
+    return marker.original, normalized[marker.body_start:].strip()
 
 
 def _normalize_footnote_references(text: str) -> str:

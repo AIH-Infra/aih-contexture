@@ -7,16 +7,17 @@ from aih_contexture.middle.adapters import (
     vlm_json_document_to_middle_document,
 )
 from aih_contexture.runtime.artifacts import save_middle_json_artifacts
+from aih_contexture.runtime.vlm_outputs import GeneralizedVlmOutput, SpecializedVlmOutput
 
 
 def middle_json_from_vlm_generalized_converter(
-    converter: Any,
+    converter: GeneralizedVlmOutput,
     *,
     source_name: str,
     source: str,
     backend: str = "vlm_generalized",
 ) -> dict[str, Any] | None:
-    json_pages = getattr(converter, "_last_json_pages", None)
+    json_pages = converter.last_json_pages
     if not json_pages:
         return None
 
@@ -30,12 +31,12 @@ def middle_json_from_vlm_generalized_converter(
 
 
 def middle_json_from_vlm_specialized_converter(
-    converter: Any,
+    converter: SpecializedVlmOutput,
     *,
     source_name: str,
     source: str,
 ) -> dict[str, Any] | None:
-    chunks = getattr(converter, "_last_chunks", None)
+    chunks = converter.last_chunks
     if not chunks:
         return None
 
@@ -45,12 +46,12 @@ def middle_json_from_vlm_specialized_converter(
         model=getattr(converter, "model", None),
         source_name=source_name,
         source=source,
-        printed_pages=getattr(converter, "_last_printed_pages", None),
+        printed_pages=converter.last_printed_pages,
     ).to_dict()
 
 
 def save_vlm_middle_artifacts_for_converter(
-    converter: Any,
+    converter: GeneralizedVlmOutput | SpecializedVlmOutput,
     *,
     mode: str,
     output_dir: str,

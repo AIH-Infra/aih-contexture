@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import os
 import time
-from datetime import datetime
 from typing import Any, Iterable, Mapping
 
 from aih_contexture.converters.ocr_direct_async import OcrDirectAsyncConverter
@@ -11,10 +10,13 @@ from aih_contexture.scripts.ui.batch_inputs import (
     check_file_accessible,
     input_file_objects,
 )
+from aih_contexture.runtime.run_summary import ensure_processing_id, utc_now_iso, write_document_summary
 from aih_contexture.scripts.ui.task_outputs import (
     finalize_zip_outputs,
     get_output_basename,
+    get_output_folder,
     record_processed_outputs,
+    register_document_summary,
 )
 from aih_contexture.scripts.ui.vlm_batch_runner import run_materialized_pdf_batches
 from aih_contexture.scripts.ui.vlm_config import build_vlm_specialized_config
@@ -53,6 +55,7 @@ def run_vlm_specialized_batch(
     ctx: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     work_ctx: dict[str, Any] = ctx if ctx is not None else {}
+    processing_id = ensure_processing_id(work_ctx, output_dir)
     output_formats = list(output_formats)
 
     ocr_direct_config = build_vlm_specialized_config(
@@ -62,6 +65,11 @@ def run_vlm_specialized_batch(
 
     all_output_paths_for_zip: list[str] = []
     start_time = time.time()
+    batch_started_at = utc_now_iso()
+    work_ctx["batch_started_at"] = batch_started_at
+    work_ctx["mode"] = "vlm_specialized"
+    work_ctx["config"] = ocr_direct_config
+    work_ctx["models"] = {"vlm": ocr_direct_config.get("vlm_direct_model") or ocr_direct_config.get("ocr_model") or ocr_direct_config.get("ocr_backend")}
     global_semaphore = asyncio.Semaphore(max(1, int(ocr_total_concurrent or 1)))
     batch_size = max(1, int(ocr_max_concurrent_files or 1))
 
@@ -97,28 +105,50 @@ def run_vlm_specialized_batch(
 
     from aih_contexture.services.ocr_chandra import ModelCrashError
 
+    def _write_failed_summary(item: dict, *, errors: list[str], file_idx: int, file_name: str) -> None:
+        """P1-7: 失败/崩溃文件也必须留下 run_summary.json，错误不得只留在 UI 日志。"""
+        file_output_dir = get_output_folder(output_dir, file_name, file_index=file_idx)
+        summary_path = write_document_summary(
+            output_dir=file_output_dir, source_name=file_name, processing_id=processing_id,
+            file_index=file_idx + 1, mode="vlm_specialized", strategy="vlm_specialized",
+            models=work_ctx["models"], config=ocr_direct_config,
+            started_at=item.get("started_at") or utc_now_iso(), finished_at=utc_now_iso(),
+            elapsed_seconds=float(item.get("elapsed_seconds") or 0.0), status="failed",
+            page_count=None, output_paths=[], warnings=[], errors=errors,
+            source_path=item.get("file_path"),
+        )
+        register_document_summary(work_ctx, summary_path)
+
+    def _derive_page_count(item: dict) -> int | None:
+        """P1-3: 从已有页级输出推导页数，不得留空。"""
+        result = item.get("result")
+        if result is not None:
+            if getattr(result, "page_count", None):
+                return int(result.page_count)
+            if result.page_outputs:
+                return len(result.page_outputs)
+        converter = item.get("converter")
+        if converter is not None:
+            for attr in ("last_chunks", "last_json_pages", "last_clean_html_pages"):
+                pages = getattr(converter, attr, None)
+                if pages:
+                    return len(pages)
+        return None
+
     async def process_single_file(file_path: str, file_name: str, file_idx: int):
+        file_started_clock = time.perf_counter()
+        file_started_at = utc_now_iso()
         try:
             if not check_file_accessible(file_path):
-                return (file_idx, file_name, None, None, "文件被锁定（可能被PDF阅读器打开）", False)
-
-            progress_callback = make_vlm_progress_callback(
-                work_ctx,
-                mode="vlm_specialized",
-                file_name=file_name,
-                file_index=file_idx,
-                total_files=len(file_objects),
-            )
-            file_converter = OcrDirectAsyncConverter(
-                ocr_direct_config,
-                progress_callback=progress_callback,
-            )
+                return {"file_idx": file_idx, "file_path": file_path, "file_name": file_name, "error": "文件被锁定（可能被PDF阅读器打开）", "is_crash": False, "started_at": file_started_at, "elapsed_seconds": time.perf_counter() - file_started_clock}
+            progress_callback = make_vlm_progress_callback(work_ctx, mode="vlm_specialized", file_name=file_name, file_index=file_idx, total_files=len(file_objects))
+            file_converter = OcrDirectAsyncConverter(ocr_direct_config, progress_callback=progress_callback)
             markdown = await file_converter(file_path, global_semaphore)
-            return (file_idx, file_name, markdown, file_converter, None, False)
+            return {"file_idx": file_idx, "file_path": file_path, "file_name": file_name, "markdown": markdown, "converter": file_converter, "is_crash": False, "started_at": file_started_at, "elapsed_seconds": time.perf_counter() - file_started_clock}
         except ModelCrashError as e:
-            return (file_idx, file_name, None, None, str(e), True)
+            return {"file_idx": file_idx, "file_path": file_path, "file_name": file_name, "error": str(e), "is_crash": True, "started_at": file_started_at, "elapsed_seconds": time.perf_counter() - file_started_clock}
         except Exception as e:
-            return (file_idx, file_name, None, None, str(e), False)
+            return {"file_idx": file_idx, "file_path": file_path, "file_name": file_name, "error": str(e), "is_crash": False, "started_at": file_started_at, "elapsed_seconds": time.perf_counter() - file_started_clock}
 
     async def process_batch_and_save(batch_file_list, batch_num, batch_start):
         tasks = [
@@ -130,17 +160,26 @@ def run_vlm_specialized_batch(
         model_crashed = False
         crash_error = None
         saved_count = 0
-        for file_idx, file_name, markdown, file_converter, error, is_crash in batch_results:
+        for item in batch_results:
+            file_idx = item["file_idx"]
+            file_name = item["file_name"]
+            markdown = item.get("markdown")
+            file_converter = item.get("converter")
+            error = item.get("error")
+            is_crash = bool(item.get("is_crash"))
             if is_crash:
                 model_crashed = True
                 crash_error = error
                 st.error(f"🚨 {file_name} 模型崩溃：{error}")
+                _write_failed_summary(item, errors=[f"ModelCrashError: {error}"], file_idx=file_idx, file_name=file_name)
                 continue
             if error:
                 st.error(f"❌ {file_name} 转换失败：{error}")
+                _write_failed_summary(item, errors=[f"{type(error).__name__}: {error}"], file_idx=file_idx, file_name=file_name)
                 continue
 
             saved_count += 1
+            file_output_dir = get_output_folder(output_dir, file_name, file_index=file_idx)
             fname_base = get_output_basename(
                 file_name,
                 vlm_start_page if vlm_use_page_range else None,
@@ -149,7 +188,7 @@ def run_vlm_specialized_batch(
             output_files = save_vlm_specialized_outputs(
                 converter=file_converter,
                 markdown_text=markdown,
-                output_dir=os.fspath(output_dir),
+                output_dir=os.fspath(file_output_dir),
                 fname_base=fname_base,
                 file_name=file_name,
                 output_formats=output_formats,
@@ -164,11 +203,17 @@ def run_vlm_specialized_batch(
             )
 
             all_output_paths_for_zip.extend(output_files)
-            record_processed_outputs(
-                work_ctx,
-                f"{fname_base}_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-                output_files,
+            record_processed_outputs(work_ctx, file_name, output_files)
+            summary_path = write_document_summary(
+                output_dir=file_output_dir, source_name=file_name, processing_id=processing_id,
+                file_index=file_idx + 1, mode="vlm_specialized", strategy="vlm_specialized",
+                models=work_ctx["models"], config=ocr_direct_config,
+                started_at=item["started_at"], finished_at=utc_now_iso(),
+                elapsed_seconds=float(item["elapsed_seconds"]), status="succeeded",
+                page_count=_derive_page_count(item),
+                output_paths=output_files, warnings=[], errors=[], source_path=item.get("file_path"),
             )
+            register_document_summary(work_ctx, summary_path)
             st.write(f"  💾 {file_name} 已保存")
 
         return saved_count, model_crashed, crash_error
@@ -282,7 +327,13 @@ def run_vlm_specialized_batch(
             message=f"全部完成，总耗时 {elapsed_time:.1f} 秒",
         )
         st.success(f"🎉 所有文件处理完成！总耗时：{elapsed_time:.1f} 秒")
-        finalize_zip_outputs(work_ctx, all_output_paths_for_zip, output_dir, "ocr_direct_results.zip")
+        from aih_contexture.runtime.output_contract import zip_name
+        finalize_zip_outputs(
+            work_ctx, all_output_paths_for_zip, output_dir,
+            zip_name(mode="vlm_specialized", vlm_model=work_ctx["models"]["vlm"], processing_id=processing_id),
+            mode="vlm_specialized", models=work_ctx["models"], config=ocr_direct_config,
+            started_at=batch_started_at, status="succeeded",
+        )
         work_ctx["status"] = "done"
     else:
         finish_vlm_progress(

@@ -17,13 +17,19 @@ USE_MIRROR=0
 
 # pip安装函数：失败自动切换镜像
 pip_install() {
-    if [ $USE_MIRROR -eq 1 ]; then
-        "$VENV_PYTHON" -m pip install "$@" -i "$MIRROR_URL"
+    if [ "$USE_MIRROR" -eq 1 ]; then
+        if ! "$VENV_PYTHON" -m pip install "$@" -i "$MIRROR_URL"; then
+            echo "[错误] pip 安装失败，请查看上方错误并检查网络或依赖版本。" >&2
+            return 1
+        fi
     else
-        if ! "$VENV_PYTHON" -m pip install "$@" 2>/dev/null; then
+        if ! "$VENV_PYTHON" -m pip install "$@"; then
             echo "[提示] 官方源连接失败，切换到清华镜像..."
             USE_MIRROR=1
-            "$VENV_PYTHON" -m pip install "$@" -i "$MIRROR_URL"
+            if ! "$VENV_PYTHON" -m pip install "$@" -i "$MIRROR_URL"; then
+                echo "[错误] 官方源和清华镜像均安装失败，请查看上方错误。" >&2
+                return 1
+            fi
         fi
     fi
 }
@@ -171,7 +177,10 @@ VENV_PYTHON="$SCRIPT_DIR/.venv/bin/python"
 
 # 升级 pip
 echo "升级 pip..."
-pip_install --upgrade pip -q
+if ! pip_install --upgrade pip -q; then
+    echo "[错误] pip 升级失败，安装已停止。" >&2
+    exit 1
+fi
 
 # ============================================
 # 步骤 3: 硬件检测
@@ -287,7 +296,10 @@ echo ""
 echo "[5/5] 安装项目依赖..."
 echo ""
 
-pip_install -r requirements.txt
+if ! pip_install -r requirements.txt; then
+    echo "[错误] 项目依赖安装失败，安装已停止。" >&2
+    exit 1
+fi
 
 if ! verify_torch_profile; then
     echo "[错误] 项目依赖安装后 PyTorch profile 发生变化。" >&2
@@ -296,7 +308,10 @@ fi
 
 echo ""
 echo "注册本地 Contexture 命令入口..."
-pip_install -e . --no-deps
+if ! pip_install -e . --no-deps; then
+    echo "[错误] 注册本地 Contexture 命令入口失败，安装已停止。" >&2
+    exit 1
+fi
 
 if ! "$VENV_PYTHON" -c "import streamlit, aih_contexture; from aih_contexture.scripts.doctor import doctor_cli" >/dev/null 2>&1; then
     echo "[错误] 安装验证失败，请检查上方依赖安装日志。"
@@ -314,7 +329,11 @@ else
         if command -v brew >/dev/null 2>&1; then
             read -r -p "是否尝试通过 Homebrew 安装 Tesseract? (y/N): " INSTALL_TESS
             if [ "$INSTALL_TESS" = "y" ] || [ "$INSTALL_TESS" = "Y" ]; then
-                brew install tesseract || true
+                if brew install tesseract; then
+                    echo "[Info] Restart this terminal before using Tesseract."
+                else
+                    echo "[警告] Homebrew 安装 Tesseract 失败。可稍后手动运行 brew install tesseract。" >&2
+                fi
             fi
         else
             echo "macOS 可安装 Homebrew 后运行: brew install tesseract"

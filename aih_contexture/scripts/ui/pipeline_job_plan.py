@@ -29,6 +29,8 @@ def build_pipeline_file_job_spec(
     output_formats: Sequence[str],
     fname_base: str,
     batch_jobs: Sequence[dict[str, Any]],
+    processing_id: str | None = None,
+    file_index: int | None = None,
 ) -> dict[str, Any]:
     return {
         "file_path": file_path,
@@ -37,4 +39,6 @@ def build_pipeline_file_job_spec(
         "output_formats": list(output_formats),
         "fname_base": fname_base,
         "batch_jobs": list(batch_jobs),
+        "processing_id": processing_id,
+        "file_index": file_index,
     }

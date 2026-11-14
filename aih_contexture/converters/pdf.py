@@ -3,7 +3,7 @@ import os
 from aih_contexture.logger import get_logger
 from aih_contexture.schema.document import Document
 
-os.environ["TOKENIZERS_PARALLELISM"] = "false"  # disables a tokenizers warning
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")  # Respect an explicit user setting.
 
 from collections import defaultdict
 from typing import Annotated, Any, Dict, List, Optional, Type, Tuple, Union
@@ -40,6 +40,8 @@ from aih_contexture.processors.marginal_annotation import MarginalAnnotationProc
 from aih_contexture.processors.marginal_line_numbers import MarginalLineNumberProcessor
 from aih_contexture.processors.page_footer import PageFooterProcessor
 from aih_contexture.processors.page_header import PageHeaderProcessor
+from aih_contexture.processors.running_furniture import RunningFurnitureProcessor
+from aih_contexture.processors.text_layer_quality import TextLayerQualityProcessor
 from aih_contexture.processors.reference import ReferenceProcessor
 from aih_contexture.processors.sectionheader import SectionHeaderProcessor
 from aih_contexture.processors.table import TableProcessor
@@ -98,6 +100,8 @@ class PdfConverter(BaseConverter):
         ListProcessor,
         PageHeaderProcessor,
         PageFooterProcessor,
+        RunningFurnitureProcessor,
+        TextLayerQualityProcessor,
         PageNumberProcessor,  # 提取页码
         PrintedPageNumberCorrectorProcessor,  # 基于连续序列修正/补全印刷页码
         LLMPrintedPageCorrectionProcessor,  # 🆕 LLM辅助修正页码
@@ -135,6 +139,8 @@ class PdfConverter(BaseConverter):
         ListProcessor: "list",
         PageHeaderProcessor: "page_header",
         PageFooterProcessor: "page_footer",
+        RunningFurnitureProcessor: "running_furniture",
+        TextLayerQualityProcessor: "text_layer_quality",
         PageNumberProcessor: "page_number",
         PrintedPageNumberCorrectorProcessor: "printed_page_correction",
         MarginalAnnotationProcessor: "marginal_annotation",
@@ -243,6 +249,8 @@ class PdfConverter(BaseConverter):
             TableProcessor: "table_enabled",
             SectionHeaderProcessor: "section_header_enabled",
             ReferenceProcessor: "reference_enabled",
+            RunningFurnitureProcessor: "running_furniture_enabled",
+            TextLayerQualityProcessor: "text_layer_quality_enabled",
             MarkdownNoiseRemovalProcessor: "markdown_noise_removal_enabled",
             MarginalAnnotationProcessor: "heuristic_marginal_detection_enabled",
             MarginalLineNumberProcessor: "marginal_line_number_dedupe_enabled",
@@ -252,7 +260,7 @@ class PdfConverter(BaseConverter):
 
     @classmethod
     def _processor_enabled_default(cls, config_key):
-        if config_key in {"enable_marginal_detection", "heuristic_marginal_detection_enabled", "enable_inline_detection"}:
+        if config_key in {"enable_marginal_detection", "heuristic_marginal_detection_enabled", "enable_inline_detection", "running_furniture_enabled"}:
             return False
         if config_key == "marginal_line_number_dedupe_enabled":
             return False
@@ -377,6 +385,8 @@ class PdfConverter(BaseConverter):
 
     # ↓↓↓ 确保这里与 filepath_to_str 同级（4空格缩进，是类方法）↓↓↓
     def build_document(self, filepath: str) -> Document:
+        from aih_contexture.runtime.progress_events import emit_progress_event
+
         logger = self.logger
         provider_cls = provider_from_filepath(filepath)
         line_builder = self.resolve_dependencies(LineBuilder)
@@ -394,36 +404,38 @@ class PdfConverter(BaseConverter):
             ocr_builder_class=OcrBuilder,
         )
 
-        logger.info("[PdfConverter] Creating provider: %s", provider_cls.__name__)
+        logger.debug("[PdfConverter] Creating provider: %s", provider_cls.__name__)
         provider = provider_cls(filepath, self.config)
-        logger.info("[PdfConverter] Provider created: %s", provider_cls.__name__)
+        logger.debug("[PdfConverter] Provider created: %s", provider_cls.__name__)
 
-        logger.info("[PdfConverter] Building document via DocumentBuilder")
+        logger.debug("[PdfConverter] Building document via DocumentBuilder")
         document = DocumentBuilder(self.config)(
             provider, layout_builder, line_builder, ocr_builder
         )
-        logger.info("[PdfConverter] DocumentBuilder completed")
+        logger.debug("[PdfConverter] DocumentBuilder completed")
         structure_builder_cls = self.resolve_dependencies(StructureBuilder)
         structure_builder_cls(document)
 
         summary = self.get_processor_debug_summary()
-        logger.info(
+        logger.debug(
             "[PdfConverter] Processor summary: enabled=%s | disabled=%s | execution_order=%s",
             ", ".join(summary["enabled_labels"]) or "none",
             ", ".join(summary["disabled_labels"]) or "none",
             " -> ".join(summary["execution_order"]) or "none",
         )
 
+        emit_progress_event("stage_changed", "postprocess", message="Running document processors")
         for processor in self.processor_list:
             processor_label = self.PROCESSOR_LABELS.get(processor.__class__, processor.__class__.__name__)
-            logger.info(
+            logger.debug(
                 "[PdfConverter] Running processor: %s",
                 processor_label,
             )
             processor(document)
-            logger.info("[PdfConverter] Completed processor: %s", processor_label)
+            logger.debug("[PdfConverter] Completed processor: %s", processor_label)
 
-        logger.info("[PdfConverter] build_document completed")
+        logger.debug("[PdfConverter] build_document completed")
+        emit_progress_event("stage_completed", "postprocess", message="Document postprocessing completed")
         return document
 
     def __call__(self, filepath: str | io.BytesIO):

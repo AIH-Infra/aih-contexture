@@ -11,6 +11,7 @@ from PIL import Image
 from pydantic import BaseModel
 
 from aih_contexture.logger import get_logger
+from aih_contexture.runtime.console_text import safe_endpoint_for_log
 from aih_contexture.schema.blocks import Block
 from aih_contexture.services import BaseService
 
@@ -54,9 +55,15 @@ class OpenAIService(BaseService):
             if config.get("vlm_response_mode") is not None:
                 self.vlm_response_mode = str(config["vlm_response_mode"]).strip().lower()
 
-        logger.info(f"[OpenAIService] Init: base_url={self.openai_base_url}, model={self.openai_model}")
-        logger.info(f"[OpenAIService] Image: format={self.openai_image_format}, max_dim={self.max_image_dimension}")
-        logger.info(f"[OpenAIService] Mode: vlm_response_mode={self.vlm_response_mode}, openai_use_stop={self.openai_use_stop}")
+        logger.debug(
+            "[OpenAIService] Init: endpoint=%s model=%s image=%s/%s response_mode=%s stop=%s",
+            safe_endpoint_for_log(self.openai_base_url),
+            self.openai_model,
+            self.openai_image_format,
+            self.max_image_dimension,
+            self.vlm_response_mode,
+            self.openai_use_stop,
+        )
 
     def get_client(self) -> openai.OpenAI:
         return openai.OpenAI(

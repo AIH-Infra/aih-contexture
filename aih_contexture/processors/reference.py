@@ -61,7 +61,7 @@ class ReferenceProcessor(BaseProcessor):
                 block.structure.insert(0, ref_block.id)
                 attached_references += 1
 
-        logger.info(
+        logger.debug(
             "[ReferenceProcessor] completed: pages_with_refs=%s attached_references=%s",
             pages_with_refs,
             attached_references,

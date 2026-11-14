@@ -9,7 +9,7 @@ def get_batch_sizes_worker_counts(gpu_manager: GPUManager, peak_worker_vram: int
         return {}, workers
 
     return {
-        "layout_batch_size": 12,
+        "layout_batch_size": 8,
         "detection_batch_size": 8,
         "table_rec_batch_size": 12,
         "ocr_error_batch_size": 12,

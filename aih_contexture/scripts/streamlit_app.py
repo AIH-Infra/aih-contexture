@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import threading
 import json
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import streamlit as st
 
@@ -46,6 +47,8 @@ from aih_contexture.renderers.chunk import ChunkRenderer
 from aih_contexture.renderers.html import HTMLRenderer
 from aih_contexture.renderers.json import JSONRenderer
 from aih_contexture.renderers.markdown import MarkdownRenderer
+from aih_contexture.runtime.run_summary import ensure_processing_id, utc_now_iso
+from aih_contexture.runtime.output_contract import effective_backend_label, zip_name
 from aih_contexture.runtime.artifacts import (
     append_text,
     merge_chunk_batches,
@@ -62,6 +65,7 @@ from aih_contexture.runtime.vlm_repair import (
 from aih_contexture.scripts.ui.backend_selectors import (
     render_layout_backend_selector,
     render_ocr_backend_selector,
+    should_migrate_legacy_screenai_preprocess,
 )
 from aih_contexture.scripts.ui.batch_inputs import (
     check_file_accessible,
@@ -82,6 +86,7 @@ from aih_contexture.scripts.ui.dpi_settings import (
 from aih_contexture.scripts.ui.markdown_postprocess_runner import (
     run_markdown_postprocess_batch,
 )
+from aih_contexture.scripts.ui.structured_source_runner import run_structured_source_batch
 from aih_contexture.scripts.ui.vlm_generalized_runner import (
     run_vlm_generalized_batch,
 )
@@ -255,8 +260,23 @@ except (ImportError, OSError) as exc:
 FAVICON_PATH = Path(__file__).parent.parent.parent / "assets" / "logo.png"
 _page_icon = str(FAVICON_PATH) if FAVICON_PATH.exists() else "📜"
 
+# 实例身份（由启动脚本通过环境变量注入；dev 直启时为空则不显示）
+_INSTANCE_ID = os.environ.get("CONTEXTURE_INSTANCE_ID", "").strip()
+_BACKEND_TAG = os.environ.get("CONTEXTURE_EXPECT_BACKEND", "").strip().upper()
+_PORT_TAG = os.environ.get("CONTEXTURE_PORT", "").strip()
+_INSTANCE_LABEL = " · ".join(
+    part for part in (
+        _INSTANCE_ID.upper(),
+        _BACKEND_TAG,
+        f":{_PORT_TAG}" if _PORT_TAG else "",
+    )
+    if part
+)
+
 st.set_page_config(
-    page_title="經緯 · Contexture - 面向人文学科的文献结构化平台",
+    page_title="經緯 · Contexture"
+    + (f" · {_INSTANCE_LABEL}" if _INSTANCE_LABEL else "")
+    + " - 面向人文学科的文献结构化平台",
     layout="wide",
     page_icon=_page_icon
 )
@@ -282,10 +302,22 @@ with col_title:
     <sub>🔗 仓库地址：<a href="https://github.com/AIH-Infra/aih-contexture" target="_blank">github.com/AIH-Infra/aih-contexture</a></sub>
     """, unsafe_allow_html=True)
 
+if _INSTANCE_LABEL:
+    _gpu_label = ""
+    try:
+        if HAS_TORCH and torch.cuda.is_available():
+            _gpu_label = f" | GPU: {torch.cuda.get_device_name(0)}"
+    except Exception:
+        _gpu_label = ""
+    st.caption(f"🖥️ 实例: {_INSTANCE_LABEL}{_gpu_label}")
+
 if TORCH_IMPORT_ERROR is not None:
+    torch_error_summary = str(TORCH_IMPORT_ERROR).strip().splitlines()[0]
     st.warning(
         "当前环境的 PyTorch DLL 无法加载，本地 Surya/PyTorch 后端暂不可用；"
-        "不依赖本地 torch 的后端、API 后端和已有 JSON 重渲染仍可继续使用。"
+        "不依赖本地 torch 的后端、API 后端和已有 JSON 重渲染仍可继续使用。\n\n"
+        f"原始错误：`{torch_error_summary}`\n\n"
+        "请运行项目根目录的 `repair_windows_runtime.bat`，完成后正常重启 Windows。"
     )
 
 # ==================== 文案常量定义 ====================
@@ -468,11 +500,6 @@ SPECIALIZED_OCR_DESCRIPTIONS = {
 - 已在 VLM 特化模式中接入
 - 按官方任务提示调用并标准化输出
 """,
-    "deepseek": """
-**DeepSeek-OCR** - DeepSeek（未启用）
-- 多模态理解能力强
-- 开源可商用
-"""
 }
 
 os.environ["IN_STREAMLIT"] = "true"
@@ -569,6 +596,7 @@ MODE_STATE_RULES = {
         "include": {
             "ocr_backend", "ocr_batch_size", "ocr_quality", "ocr_dpi_override",
             "force_ocr", "force_ocr_vlm", "layout_backend", "surya_layout_quality",
+            "layout_batch_size",
             "layout_dpi_override",
             "use_llm", "llm_provider", "vlm_prompt", "openai_use_stop",
             "markdown_postprocess_enabled", "markdown_postprocess_review_only",
@@ -579,6 +607,11 @@ MODE_STATE_RULES = {
     },
     "markdown_postprocess": {
         "prefixes": ("markdown_postprocess_",),
+        "include": set(),
+        "exclude": set(),
+    },
+    "structured_source": {
+        "prefixes": ("structured_source_",),
         "include": set(),
         "exclude": set(),
     },
@@ -609,7 +642,7 @@ def _infer_config_mode(config: dict) -> str:
     if global_mode in MODE_STATE_RULES:
         return global_mode
 
-    for mode in ("pipeline", "vlm_generalized", "vlm_specialized", "markdown_postprocess"):
+    for mode in ("pipeline", "vlm_generalized", "vlm_specialized", "structured_source", "markdown_postprocess"):
         if config.get(mode):
             return mode
 
@@ -628,6 +661,7 @@ def _build_config_save_scope_text(mode: str) -> str:
         "vlm_generalized": "当前 VLM 泛化模式配置",
         "vlm_specialized": "当前 VLM 特化模式配置",
         "markdown_postprocess": "当前 Markdown 后处理模式配置",
+        "structured_source": "当前结构化源导入配置",
     }.get(mode, "当前模式配置")
 
 
@@ -648,6 +682,7 @@ def collect_current_config() -> dict:
         "vlm_generalized": {},
         "pipeline": {},
         "markdown_postprocess": {},
+        "structured_source": {},
     }
 
     # 收集真正参与复现的全局配置和当前模式配置
@@ -1028,6 +1063,7 @@ with st.sidebar:
     # 版面识别后端 defaults
     layout_backend = "surya"
     surya_layout_quality = st.session_state.get("surya_layout_quality", "fast")
+    layout_batch_size = int(st.session_state.get("layout_batch_size", 8))
     layout_dpi_override = st.session_state.get("layout_dpi_override")
 
     # OCR 后端 defaults
@@ -1135,12 +1171,13 @@ with st.sidebar:
     st.subheader("⚙️ 转换模式")
     conversion_mode = st.radio(
         "选择转换模式",
-        options=["pipeline", "vlm_generalized", "vlm_specialized", "markdown_postprocess"],
+        options=["pipeline", "vlm_generalized", "vlm_specialized", "structured_source", "markdown_postprocess"],
         index=0,
         format_func=lambda x: {
             "pipeline": "🔧 Pipeline模式",
             "vlm_generalized": "🌐 VLM 泛化模式",
             "vlm_specialized": "🎯 VLM 特化模式",
+            "structured_source": "📚 结构化源导入",
             "markdown_postprocess": "📝 Markdown 后处理",
         }.get(x, x),
         horizontal=True,
@@ -1152,6 +1189,8 @@ with st.sidebar:
         st.info(MODE_DESCRIPTIONS["vlm_generalized"])
     elif conversion_mode == "vlm_specialized":
         st.warning(MODE_DESCRIPTIONS["vlm_specialized"])
+    elif conversion_mode == "structured_source":
+        st.info("原生导入 TEI/XML 与 EPUB，保留章节树、目录、页表、索引、锚点和原始元数据。")
     elif conversion_mode == "markdown_postprocess":
         pass
     else:
@@ -1159,6 +1198,20 @@ with st.sidebar:
         st.info("首次使用 Pipeline 中的 Surya 版面识别或 OCR 时，程序需要联网下载模型并写入本地缓存；首次运行通常耗时更长。")
 
     st.divider()
+
+    if conversion_mode == "structured_source":
+        st.subheader("📚 结构化源导入配置")
+        structured_source_emit_line_indexes = st.checkbox(
+            "生成 JSONL 字节偏移索引",
+            value=True,
+            key="structured_source_emit_line_indexes",
+            help="为大规模知识库的局部读取生成 .idx sidecar。",
+        )
+        structured_source_workers = st.number_input(
+            "文件并发数", min_value=1, max_value=16, value=4,
+            key="structured_source_workers",
+        )
+        st.caption("输出包含权威 Source Package、完整原件、原始元数据及 Open WebUI 兼容 Markdown。")
 
     if conversion_mode == "markdown_postprocess":
         st.subheader("🧰 后处理工具")
@@ -1501,7 +1554,7 @@ with st.sidebar:
     custom_id_source = "none"
     custom_id_data = None
 
-    if conversion_mode != "markdown_postprocess":
+    if conversion_mode not in {"markdown_postprocess", "structured_source"}:
         st.subheader("📍 页码锚点配置")
         st.caption("PDF 页码锚点默认启用，当前区块的关键设置会参与配置保存/加载；不同主分支对印刷页码的提取机制各不相同。")
         with st.expander("页码锚点设置", expanded=False):
@@ -2364,8 +2417,8 @@ with st.sidebar:
                             "Chrome 并行数",
                             min_value=1,
                             max_value=20,
-                            value=int(st.session_state.get("chrome_workers", st.session_state.get("ocr_concurrency", 2))),
-                            help="单本书内部同时运行的 Chrome ScreenAI worker 数。Chrome 默认建议从 1-2 开始。",
+                            value=int(st.session_state.get("chrome_workers", st.session_state.get("ocr_concurrency", 4))),
+                            help="单本书内部同时运行的 Chrome ScreenAI worker 数。默认 4。",
                             key="chrome_workers",
                         )
                         ocr_concurrency = int(chrome_workers)
@@ -3526,22 +3579,42 @@ with st.sidebar:
         # ==================== 3. 版面识别后端选择 ====================
         st.subheader("📐 版面识别后端")
         layout_backend = render_layout_backend_selector(st)
-        layout_dpi_settings = render_pipeline_layout_dpi_settings(
-            st,
-            layout_backend=layout_backend,
-            surya_layout_quality=surya_layout_quality,
-            layout_dpi_override=layout_dpi_override,
+        text_layer_fast_path = layout_backend == "none"
+        if text_layer_fast_path:
+            output_formats = ["markdown"]
+            emit_middle_json = False
+            emit_middle_report = False
+            emit_middle_debug = False
+            emit_middle_scholarly = False
+            emit_middle_scholarly_report = False
+            emit_layout_overlay = False
+            emit_span_overlay = False
+            emit_middle_full_json = False
+            st.info("文本层快速路径：跳过 Layout、模型与页面渲染，仅生成带物理页码锚点的 Markdown。")
+        layout_dpi_settings = (
+            {"surya_layout_quality": surya_layout_quality, "layout_dpi_override": None}
+            if text_layer_fast_path
+            else render_pipeline_layout_dpi_settings(
+                st,
+                layout_backend=layout_backend,
+                surya_layout_quality=surya_layout_quality,
+                layout_dpi_override=layout_dpi_override,
+            )
         )
         surya_layout_quality = layout_dpi_settings["surya_layout_quality"]
         layout_dpi_override = layout_dpi_settings["layout_dpi_override"]
 
         # 版面识别后端配置
-        if layout_backend == "surya":
-            render_surya_layout_settings(
+        if layout_backend == "none":
+            pass
+        elif layout_backend == "surya":
+            surya_layout_settings = render_surya_layout_settings(
                 st,
                 description=LAYOUT_BACKEND_DESCRIPTIONS["surya"],
                 extract_printed_pages=extract_printed_pages,
+                layout_batch_size=layout_batch_size,
             )
+            layout_batch_size = surya_layout_settings["layout_batch_size"]
 
         elif layout_backend in ("vlm", "vlm_layout"):
             vlm_layout_settings = render_vlm_layout_settings(
@@ -3774,7 +3847,7 @@ with st.sidebar:
         st.subheader("🔍 OCR 后端")
         chrome_screenai_light = bool(st.session_state.get("chrome_screenai_light", False))
         chrome_preprocess_mode = st.session_state.get("chrome_preprocess_mode", "native")
-        chrome_workers = int(st.session_state.get("chrome_workers", 2))
+        chrome_workers = int(st.session_state.get("chrome_workers", 4))
         chrome_chunk_pages = int(st.session_state.get("chrome_chunk_pages", 4))
         chrome_emit_searchable_pdf = bool(st.session_state.get("chrome_emit_searchable_pdf", False))
         chrome_rasterize_dpi = int(st.session_state.get("chrome_rasterize_dpi", 144))
@@ -3785,14 +3858,36 @@ with st.sidebar:
             .lower()
             .replace("-", "_")
         )
-        if legacy_preprocess_backend == "chrome_screenai_searchable_pdf" and st.session_state.get("ocr_backend") != "chrome_screenai":
+        if should_migrate_legacy_screenai_preprocess(
+            legacy_preprocess_backend,
+            st.session_state.get("ocr_backend"),
+        ):
             st.session_state["ocr_backend"] = "chrome_screenai"
             st.session_state["ocr_preprocess_backend"] = "none"
             st.info("已将旧版 ScreenAI 预处理配置迁移为 OCR 后端 `chrome_screenai`。")
 
-        ocr_backend = render_ocr_backend_selector(st)
+        ocr_backend = render_ocr_backend_selector(
+            st,
+            options=["none", "chrome_screenai"] if text_layer_fast_path else None,
+        )
         ocr_preprocess_backend = "chrome_screenai_searchable_pdf" if ocr_backend == "chrome_screenai" else "none"
         st.session_state["ocr_preprocess_backend"] = ocr_preprocess_backend
+
+        text_layer_file_concurrency = 4
+        if text_layer_fast_path:
+            st.caption("文本层模式按整本 PDF 评估质量；普通嵌入文本可按文件并行，Chrome ScreenAI 保持单文件调度。")
+            if ocr_backend == "none":
+                text_layer_file_concurrency = int(
+                    st.number_input(
+                        "文本层文件并发数",
+                        min_value=1,
+                        max_value=16,
+                        value=int(st.session_state.get("text_layer_file_concurrency", 4)),
+                        step=1,
+                        key="text_layer_file_concurrency",
+                        help="每个文件在独立子进程中提取文本。默认 4；5–16 会显著增加 CPU、内存和磁盘读取压力。",
+                    )
+                )
 
         if ocr_backend == "chrome_screenai":
             ocr_quality = "auto"
@@ -4429,6 +4524,7 @@ with st.sidebar:
         batch_threshold = pipeline_run_settings["batch_threshold"]
         pages_per_batch = pipeline_run_settings["pages_per_batch"]
         cooling_seconds = pipeline_run_settings["cooling_seconds"]
+        stall_timeout_minutes = pipeline_run_settings["stall_timeout_minutes"]
         process_mode = pipeline_run_settings["process_mode"]
         use_page_range = pipeline_run_settings["use_page_range"]
         start_page_1based = pipeline_run_settings["start_page_1based"]
@@ -4572,6 +4668,30 @@ if uploaded_files and len(uploaded_files) > 0:
     # --- 后台处理函数（闭包，捕获所有侧边栏变量）---
     def _proc_body(_ctx, _cancel, _output_dir):
         """在后台线程中执行，st.write 等已被重定向到 _ctx["log"]"""
+        ensure_processing_id(_ctx, _output_dir)
+        _ctx["mode"] = conversion_mode
+        _ctx.setdefault("batch_started_at", utc_now_iso())
+
+        if conversion_mode == "structured_source":
+            all_output_paths_for_zip = run_structured_source_batch(
+                st=st,
+                uploaded_files=uploaded_files,
+                upload_mode=upload_mode,
+                output_dir=_output_dir,
+                emit_line_indexes=structured_source_emit_line_indexes,
+                max_workers=structured_source_workers,
+                cancel=_cancel,
+                ctx=_ctx,
+            )
+            if all_output_paths_for_zip and _ctx.get("status") != "cancelled":
+                finalize_zip_outputs(
+                    _ctx, all_output_paths_for_zip, _output_dir,
+                    zip_name(mode="structured_source", processing_id=str(_ctx.get("processing_id") or "0000")),
+                    mode="structured_source", started_at=_ctx.get("batch_started_at"), status="succeeded",
+                )
+            if _ctx.get("status") != "cancelled":
+                _ctx["status"] = "done"
+            return
 
         if conversion_mode == "markdown_postprocess":
             mp_llm_provider = st.session_state.get("markdown_postprocess_llm_provider_widget", markdown_postprocess_llm_provider)
@@ -4614,8 +4734,11 @@ if uploaded_files and len(uploaded_files) > 0:
                 return
 
             if all_output_paths_for_zip:
-                zip_name = f"markdown_postprocess_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-                finalize_zip_outputs(_ctx, all_output_paths_for_zip, _output_dir, zip_name)
+                finalize_zip_outputs(
+                    _ctx, all_output_paths_for_zip, _output_dir,
+                    zip_name(mode="markdown_postprocess", processing_id=str(_ctx.get("processing_id") or "0000")),
+                    mode="markdown_postprocess", started_at=_ctx.get("batch_started_at"), status="succeeded",
+                )
             _ctx["status"] = "done"
             return
 
@@ -4687,35 +4810,89 @@ if uploaded_files and len(uploaded_files) > 0:
         start_time = time.time()
 
         _pipe_files = input_file_objects(upload_mode, uploaded_files, _ctx)
-        for file_idx, file_obj in enumerate(_pipe_files):
-            if _cancel.is_set():
-                st.warning("⏹ 任务已取消")
-                _ctx["status"] = "cancelled"
-                break
-            _ctx["progress"] = file_idx / len(_pipe_files)
-
-            file_result = run_pipeline_file(
-                file_obj,
-                file_idx=file_idx,
-                total_files=len(_pipe_files),
-                upload_mode=upload_mode,
-                ctx=_ctx,
-                cancel=_cancel,
-                values=pipeline_values,
-                output_dir=_output_dir,
-                output_formats=output_formats,
-                repo_root=REPO_ROOT,
-                config_builder=build_config_dict,
-                write=st.write,
-                info=st.info,
-                warning=st.warning,
-                error=st.error,
+        text_layer_workers = 1
+        if layout_backend == "none" and ocr_backend == "none":
+            text_layer_workers = min(
+                len(_pipe_files),
+                max(1, min(16, int(pipeline_values.get("text_layer_file_concurrency", 4)))),
             )
+
+        def _record_pipeline_file_result(file_result):
             all_output_paths_for_zip.extend(file_result.get("output_paths", []))
             if file_result.get("status") == "failed":
                 failed_pipeline_files.append(file_result.get("file_name") or "未知文件")
-            if file_result.get("status") == "cancelled" or _ctx.get("status") == "cancelled":
-                break
+            # P1-8: 并行路径中 run_pipeline_file 拿到的是临时 ctx，其
+            # pipeline_backend_summaries / document_summary_paths 不会到达主 ctx；
+            # 从返回的子进程结果中回传，保证 ZIP 命名使用实际后端信息。
+            worker_result = file_result.get("result") or {}
+            backend_summary = worker_result.get("backend_summary")
+            if backend_summary:
+                summaries = _ctx.setdefault("pipeline_backend_summaries", [])
+                if backend_summary not in summaries:
+                    summaries.append(backend_summary)
+            summary_path = worker_result.get("summary_path")
+            if summary_path:
+                doc_paths = _ctx.setdefault("document_summary_paths", [])
+                if os.fspath(summary_path) not in [os.fspath(p) for p in doc_paths]:
+                    doc_paths.append(os.fspath(summary_path))
+
+        if text_layer_workers > 1:
+            st.info(f"文本层快速路径：以 {text_layer_workers} 个独立文件子进程并行处理。")
+            with ThreadPoolExecutor(max_workers=text_layer_workers) as pool:
+                futures = {
+                    pool.submit(
+                        run_pipeline_file,
+                        file_obj,
+                        file_idx=file_idx,
+                        total_files=len(_pipe_files),
+                        upload_mode=upload_mode,
+                        ctx={"status": "running", "processing_id": _ctx.get("processing_id")},
+                        cancel=_cancel,
+                        values=pipeline_values,
+                        output_dir=_output_dir,
+                        output_formats=output_formats,
+                        repo_root=REPO_ROOT,
+                        config_builder=build_config_dict,
+                    ): file_idx
+                    for file_idx, file_obj in enumerate(_pipe_files)
+                }
+                completed_files = 0
+                for future in as_completed(futures):
+                    if _cancel.is_set():
+                        _ctx["status"] = "cancelled"
+                        break
+                    file_result = future.result()
+                    completed_files += 1
+                    _ctx["progress"] = completed_files / len(_pipe_files)
+                    _record_pipeline_file_result(file_result)
+        else:
+            for file_idx, file_obj in enumerate(_pipe_files):
+                if _cancel.is_set():
+                    st.warning("⏹ 任务已取消")
+                    _ctx["status"] = "cancelled"
+                    break
+                _ctx["progress"] = file_idx / len(_pipe_files)
+
+                file_result = run_pipeline_file(
+                    file_obj,
+                    file_idx=file_idx,
+                    total_files=len(_pipe_files),
+                    upload_mode=upload_mode,
+                    ctx=_ctx,
+                    cancel=_cancel,
+                    values=pipeline_values,
+                    output_dir=_output_dir,
+                    output_formats=output_formats,
+                    repo_root=REPO_ROOT,
+                    config_builder=build_config_dict,
+                    write=st.write,
+                    info=st.info,
+                    warning=st.warning,
+                    error=st.error,
+                )
+                _record_pipeline_file_result(file_result)
+                if file_result.get("status") == "cancelled" or _ctx.get("status") == "cancelled":
+                    break
 
         elapsed = time.time() - start_time
         if failed_pipeline_files:
@@ -4727,8 +4904,32 @@ if uploaded_files and len(uploaded_files) > 0:
         else:
             st.success(f"🎉 全部完成！总用时 {elapsed:.2f} 秒")
 
-        zip_name = f"marker_output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-        finalize_zip_outputs(_ctx, all_output_paths_for_zip, _output_dir, zip_name)
+        pipeline_summaries = _ctx.get("pipeline_backend_summaries") or []
+        ocr_models = []
+        layout_models = []
+        for backend in pipeline_summaries:
+            for value in backend.get("ocr_backends", []):
+                if value not in ocr_models:
+                    ocr_models.append(value)
+            # 部分布局后端没有具体模型名（如 surya），layout_models 可能为空；
+            # 回退到 layout_backends，避免实际执行过的布局后端被误标成 none。
+            layout_values = backend.get("layout_models") or backend.get("layout_backends") or []
+            for value in layout_values:
+                if value not in layout_models:
+                    layout_models.append(value)
+        # P1-9: ZIP 命名只反映实际执行的后端；OCR 被禁用（或无实际后端记录）
+        # 时使用 none，不得回退到 UI 配置里未实际执行的 backend。
+        finalize_zip_outputs(
+            _ctx, all_output_paths_for_zip, _output_dir,
+            zip_name(
+                mode="pipeline", processing_id=str(_ctx.get("processing_id") or "0000"),
+                ocr_model=effective_backend_label(ocr_models),
+                layout_model=effective_backend_label(layout_models),
+            ),
+            mode="pipeline", models={"ocr": ocr_models, "layout": layout_models},
+            config=pipeline_values, started_at=_ctx.get("batch_started_at"),
+            status="partial" if failed_pipeline_files else ("cancelled" if _ctx.get("status") == "cancelled" else "succeeded"),
+        )
 
     # --- _proc_body 结束 ---
 
@@ -4782,19 +4983,16 @@ if uploaded_files and len(uploaded_files) > 0:
             attach_preread_files(_ctx, uploaded_files)
 
         if conversion_mode == "pipeline":
-            # Pipeline 模式：同步执行（pypdfium2 在 Windows 后台线程中不安全）
             try:
                 _proc_body(_ctx, _cancel, _out_dir)
                 if _ctx["status"] == "running":
                     _ctx["status"] = "done"
             except Exception as e:
                 _ctx["status"] = "error"
-                st.error(f"处理异常: {e}")
+                st.error(f"Processing error: {e}")
                 st.error(traceback.format_exc())
-            # 同步结果到 session_state
             sync_proc_context_to_session(_ctx, st.session_state)
         else:
-            # VLM 模式：后台线程执行（async HTTP 调用，不涉及 pypdfium2）
             def _proc_thread():
                 run_proc_body_with_streamlit_log(
                     st=st,
@@ -4857,3 +5055,4 @@ if _pctx["status"] != "idle":
 
 elif not (uploaded_files and len(uploaded_files) > 0) and not st.session_state.get("pending_vlm_repair_job"):
     st.info("👆 在上方上传 PDF 文件或选择包含 PDF 的文件夹")
+

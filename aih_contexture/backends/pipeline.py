@@ -99,7 +99,7 @@ def create_layout_builder(
         logger.info("[PdfConverter] Using Paddle %s layout backend", model_name)
         return PaddleLayoutDetectionBuilder(config=paddle_config)
 
-    logger.info("[PdfConverter] Using Surya layout backend")
+    logger.debug("[PdfConverter] Using Surya layout backend")
     return resolve_dependencies(layout_builder_class)
 
 
@@ -114,7 +114,7 @@ def create_ocr_builder(
     disable_ocr = bool(config.get("disable_ocr", False))
 
     if disable_ocr:
-        logger.info("[PdfConverter] OCR disabled, using PDF embedded text")
+        logger.debug("[PdfConverter] OCR disabled, using PDF embedded text")
         return DisabledOcrBuilder()
 
     ocr_spec = default_ocr_registry.get(ocr_backend)

@@ -18,14 +18,16 @@ filetype>=1.2.0
 PyYAML>=6.0.3
 
 # 数值计算
-numpy>=2.3.0
-scikit-learn>=1.8.0
+numpy>=2.2,<2.3; python_version < "3.11"
+numpy>=2.3.0; python_version >= "3.11"
+scikit-learn>=1.6.1,<1.7; python_version < "3.11"
+scikit-learn>=1.8.0; python_version >= "3.11"
 
 # PDF & 文档处理
 pypdf>=6.6.0
-pypdfium2>=4.30.0
+pypdfium2==4.30.0
 PyMuPDF>=1.26.0
-pdftext>=0.6.3,<0.7.0
+pdftext==0.6.3
 
 # OCR 图像处理
 opencv-python-headless>=4.11.0
@@ -56,6 +58,6 @@ python-multipart>=0.0.16
 psutil>=7.2.0
 
 # 深度学习相关（torch 安装后）
-transformers>=4.57.0,<5.0.0
+transformers==4.57.6
 huggingface-hub>=0.20.0
-surya-ocr>=0.17.0
+surya-ocr==0.17.1

@@ -6,7 +6,7 @@ from typing import Any
 
 
 DEFAULT_MODEL_CACHE_POLICY = "release_before_non_pipeline"
-NON_PIPELINE_MODES = {"vlm_generalized", "vlm_specialized", "markdown_postprocess"}
+NON_PIPELINE_MODES = {"vlm_generalized", "vlm_specialized", "markdown_postprocess", "structured_source"}
 
 
 class LazyModelDict(MutableMapping[str, Any]):

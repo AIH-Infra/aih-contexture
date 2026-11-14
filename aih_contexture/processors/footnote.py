@@ -1,10 +1,9 @@
-import re
-
 from aih_contexture.logger import get_logger
 from aih_contexture.processors import BaseProcessor
 from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.document import Document
 from aih_contexture.schema.groups import PageGroup
+from aih_contexture.utils.footnote_markers import match_leading_footnote_marker
 
 logger = get_logger()
 
@@ -23,7 +22,7 @@ class FootnoteProcessor(BaseProcessor):
             moved_footnotes += self.push_footnotes_to_bottom(page, document)
             superscripted_spans += self.assign_superscripts(page, document)
 
-        logger.info(
+        logger.debug(
             "[FootnoteProcessor] completed: moved_footnotes=%s superscripted_spans=%s",
             moved_footnotes,
             superscripted_spans,
@@ -70,7 +69,7 @@ class FootnoteProcessor(BaseProcessor):
 
         for block in footnote_blocks:
             for span in block.contained_blocks(document, (BlockTypes.Span,)):
-                if re.match(r"^[0-9\W]+", span.text):
+                if match_leading_footnote_marker(span.text):
                     span.has_superscript = True
                     superscripted_spans += 1
                 break

@@ -305,7 +305,7 @@ def build_vlm_specialized_config(
         "emit_middle_full_json": values.get("emit_middle_full_json"),
         "chrome_screenai_light": bool(_fallback(values.get("chrome_screenai_light"), False)),
         "chrome_preprocess_mode": _fallback(values.get("chrome_preprocess_mode"), "native"),
-        "chrome_workers": _fallback(values.get("chrome_workers"), _fallback(values.get("ocr_concurrency"), 2)),
+        "chrome_workers": _fallback(values.get("chrome_workers"), _fallback(values.get("ocr_concurrency"), 4)),
         "chrome_chunk_pages": _fallback(values.get("chrome_chunk_pages"), _fallback(values.get("ocr_batch_size"), 4)),
         "chrome_emit_searchable_pdf": bool(_fallback(values.get("chrome_emit_searchable_pdf"), False)),
         "chrome_rasterize_dpi": _fallback(values.get("chrome_rasterize_dpi"), 144),

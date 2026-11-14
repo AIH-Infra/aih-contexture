@@ -156,7 +156,7 @@ class PageNumberProcessor(BaseProcessor):
                 self.printed_page_footer_y_frac = float(config["printed_page_footer_y_frac"])
 
     def __call__(self, document: Document):
-        logger.info(
+        logger.debug(
             "[PageNumberProcessor] start: page_numbering_enabled=%s, use_printed_page_number=%s",
             self.page_numbering_enabled,
             self.use_printed_page_number,
@@ -185,7 +185,7 @@ class PageNumberProcessor(BaseProcessor):
                 candidates = []
 
             page_candidates.append(candidates)
-            logger.info(
+            logger.debug(
                 "[PageNumberProcessor] page=%s header=%s footer=%s candidates=%s",
                 page_idx,
                 bool(header_text),
@@ -217,7 +217,7 @@ class PageNumberProcessor(BaseProcessor):
                 footer_text=footer_text,
             )
 
-        logger.info(
+        logger.debug(
             "[PageNumberProcessor] completed: %s/%s pages with printed page number",
             extracted_count,
             len(document.pages),

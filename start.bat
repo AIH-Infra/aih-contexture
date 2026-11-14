@@ -34,6 +34,17 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+:: Probe PyTorch in an isolated child process so DLL failures do not crash the UI.
+".venv\Scripts\python.exe" -c "import torch; print(torch.__version__, torch.cuda.is_available())" > ".torch_startup_check.log" 2>&1
+if %errorlevel% neq 0 (
+    echo [Warning] PyTorch could not be loaded. Local Surya/PyTorch backends will be unavailable.
+    echo [Warning] API backends and JSON rerendering can still be used.
+    echo [Action] Run repair_windows_runtime.bat to reinstall the selected PyTorch profile.
+    echo [Action] Restart Windows if the DLL initialization error remains after reinstalling.
+    echo [Detail] See .torch_startup_check.log for the original import error.
+    echo.
+)
+
 :: Set model cache directories
 set "HF_HOME=%~dp0.cache\huggingface"
 set "TRANSFORMERS_CACHE=%~dp0.cache\huggingface"
@@ -48,5 +59,10 @@ echo Press Ctrl+C to stop
 echo.
 
 ".venv\Scripts\python.exe" contexture_app.py
+set "APP_EXIT=%errorlevel%"
+if not "%APP_EXIT%"=="0" (
+    echo [Error] Contexture exited with code %APP_EXIT%. Review the error shown above.
+)
 
 pause
+exit /b %APP_EXIT%

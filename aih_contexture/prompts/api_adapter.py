@@ -9,6 +9,7 @@ Handles parameter differences between different VLM APIs:
 """
 
 from aih_contexture.logger import get_logger
+from aih_contexture.runtime.console_text import safe_endpoint_for_log
 
 logger = get_logger()
 
@@ -60,7 +61,11 @@ class APIParameterAdapter:
         elif "anthropic.com" in base_url_lower or "claude" in model_lower:
             return "claude"
         else:
-            logger.warning(f"Unknown API type for base_url={base_url}, model={model}, using minimal parameter set")
+            logger.warning(
+                "Unknown API type for endpoint=%s model=%s; using minimal parameter set",
+                safe_endpoint_for_log(base_url),
+                model,
+            )
             return "unknown"
 
     @staticmethod

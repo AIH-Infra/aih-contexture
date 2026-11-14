@@ -34,7 +34,22 @@ class MarkdownNoiseRemovalProcessor(BaseProcessor):
     block_types = (
         BlockTypes.Text,
         BlockTypes.TextInlineMath,
+        BlockTypes.SectionHeader,
+        BlockTypes.Caption,
+        BlockTypes.Footnote,
+        BlockTypes.PageHeader,
+        BlockTypes.PageFooter,
+        BlockTypes.ListItem,
+        BlockTypes.Reference,
+        BlockTypes.TableOfContents,
+        BlockTypes.MarginalAnnotation,
+        BlockTypes.InlineAnnotation,
     )
+
+    DOT_NOISE_CLUSTER = re.compile(
+        r"(?=(?:[\s,，、;；:：()（）]*[.·]){6})[.·\s,，、;；:：()（）]{6,}"
+    )
+    ISOLATED_DOT_NOISE = re.compile(r"^\s*[.·]{3,}\s*$")
 
     # 预定义的符号集
     BASIC_SYMBOLS = ["#"]
@@ -91,7 +106,7 @@ class MarkdownNoiseRemovalProcessor(BaseProcessor):
                             span.text = cleaned_text
                             total_cleaned += 1
 
-        logger.info(
+        logger.debug(
             "[MarkdownNoiseRemovalProcessor] completed: level=%s line_start_only=%s symbols=%s scanned_lines=%s scanned_spans=%s cleaned_spans=%s",
             self.markdown_noise_cleaning_level,
             self.markdown_noise_line_start_only,
@@ -103,6 +118,10 @@ class MarkdownNoiseRemovalProcessor(BaseProcessor):
 
     def clean_text(self, text: str) -> str:
         """清理文本中的 Markdown 噪音符号"""
+        if not text:
+            return text
+
+        text = self._clean_repeated_dot_noise(text)
         if not text:
             return text
 
@@ -124,6 +143,23 @@ class MarkdownNoiseRemovalProcessor(BaseProcessor):
             cleaned_lines.append(cleaned_line)
 
         return '\n'.join(cleaned_lines)
+
+    def _clean_repeated_dot_noise(self, text: str) -> str:
+        """Remove OCR dot leaders and punctuation-only debris without touching ellipses."""
+        if self.ISOLATED_DOT_NOISE.fullmatch(text):
+            return ""
+
+        def replace_cluster(match: re.Match) -> str:
+            if match.start() == 0 or match.end() == len(text):
+                return ""
+            return " "
+
+        cleaned = self.DOT_NOISE_CLUSTER.sub(replace_cluster, text)
+        if cleaned == text:
+            return text
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+        cleaned = re.sub(r"[ \t]+([,，。.;；:：!?！？])", r"\1", cleaned)
+        return cleaned
 
     def _get_symbols_to_clean(self):
         """根据配置获取要清理的符号列表"""

@@ -89,11 +89,18 @@ def scan_output_records_for_restore(out_dir: str | os.PathLike[str]) -> dict[str
     if not out_path.exists():
         return found
 
-    for entry in sorted(out_path.iterdir(), key=lambda item: item.name.lower()):
-        if not entry.is_file():
+    # Outputs are isolated per input file. Scan recursively so the history
+    # panel can restore both the new layout and legacy flat outputs.
+    for entry in sorted(out_path.rglob("*"), key=lambda item: str(item).lower()):
+        if not entry.is_file() or entry.name.startswith("."):
+            continue
+        if entry.suffix.lower() == ".zip":
             continue
         base, artifact_format = classify_output_file(entry)
-        found.setdefault(base, []).append(
+        # Prefer the containing folder as the history group for the new layout.
+        relative = entry.relative_to(out_path)
+        group = relative.parts[0] if len(relative.parts) > 1 else base
+        found.setdefault(group, []).append(
             {
                 "format": artifact_format,
                 "path": str(entry),

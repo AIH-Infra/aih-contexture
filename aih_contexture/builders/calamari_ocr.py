@@ -81,8 +81,8 @@ class CalamariOcrBuilder(BaseBuilder):
         chunk_size = self.config.get("pages_per_batch", 1)
 
         # 🔍 调试日志
-        logger.info(f"[CalamariOcrBuilder] 🔍 DEBUG: pages_per_batch from config = {chunk_size}")
-        logger.info(f"[CalamariOcrBuilder] 🔍 DEBUG: config keys = {list(self.config.keys())[:20]}")
+        logger.debug("[CalamariOcrBuilder] pages_per_batch=%s", chunk_size)
+        logger.debug("[CalamariOcrBuilder] config keys=%s", list(self.config.keys())[:20])
 
         if chunk_size > 1:
             # 多页批处理模式
@@ -113,7 +113,7 @@ class CalamariOcrBuilder(BaseBuilder):
                     traceback.print_exc()
                     continue
 
-            logger.info("[CalamariOcrBuilder] ✅ All pages processed successfully")
+            logger.info("[CalamariOcrBuilder] All pages processed successfully")
 
     def _line_sort_key_within_block(self, bbox: Tuple[int, int, int, int]) -> Tuple[int, int]:
         """Sort key for lines within a single block (by y then x)."""
@@ -277,7 +277,7 @@ class CalamariOcrBuilder(BaseBuilder):
 
             global_line_index += len(all_items)
 
-        logger.info("[CalamariOcrBuilder] ✅ Multi-page batch processing complete")
+        logger.info("[CalamariOcrBuilder] Multi-page batch processing complete")
 
     def _collect_sorted_page_lines(self, document, page, provider):
         """收集并排序单页的所有行，返回 [(line_id, crop_img)]"""

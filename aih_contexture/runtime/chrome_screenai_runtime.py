@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import base64
+import json
 import html
 import gc
+import os
+import subprocess
+import sys
+import tempfile
 import threading
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -14,7 +20,9 @@ import fitz
 from PIL import Image
 
 from aih_contexture.logger import get_logger
+from aih_contexture.runtime.errors import ContextureCancelledError
 from aih_contexture.vendor.locro import ScreenAI
+from aih_contexture.vendor.locro.ocr import _find_cjk_font, _insert_invisible_word
 from aih_contexture.vendor.locro.models import OcrBlock, OcrPage
 
 logger = get_logger()
@@ -85,6 +93,52 @@ def _process_pdf_chunk_worker(
     return results
 
 
+def _process_pdf_chunk_subprocess_worker(
+    pdf_path: Path,
+    page_indices: list[int],
+    model_dir: Path | None,
+    light_mode: bool,
+    preprocess_mode: str,
+    rasterize_dpi: int,
+    max_retries: int,
+) -> list[dict[str, Any]]:
+    """Run the native OCR worker outside the parent process."""
+    with tempfile.TemporaryDirectory(prefix="contexture-chrome-chunk-") as temp_dir:
+        result_path = Path(temp_dir) / "result.json"
+        progress_path = Path(temp_dir) / "progress.json"
+        payload = {
+            "input_pdf": str(pdf_path),
+            "result_json": str(result_path),
+            "progress_json": str(progress_path),
+            "model_dir": str(model_dir) if model_dir is not None else None,
+            "light_mode": light_mode,
+            "preprocess_mode": preprocess_mode,
+            "rasterize_dpi": rasterize_dpi,
+            "max_retries": max_retries,
+            "page_indices": page_indices,
+            "page_count": len(page_indices),
+            "collect_pages": True,
+        }
+        token = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("ascii")
+        env = os.environ.copy()
+        repo_root = Path(__file__).resolve().parents[2]
+        pythonpath = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = str(repo_root) if not pythonpath else f"{repo_root}{os.pathsep}{pythonpath}"
+        subprocess.run(
+            [sys.executable, "-m", "aih_contexture.scripts.chrome_screenai_chunk_worker", token],
+            cwd=str(repo_root),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        if not result.get("ok"):
+            raise RuntimeError(str(result.get("error") or "Chrome ScreenAI worker failed"))
+        return list(result.get("pages") or [])
+
+
 class ChromeScreenAIRuntime:
     def __init__(
         self,
@@ -92,7 +146,7 @@ class ChromeScreenAIRuntime:
         model_dir: str | None = None,
         light_mode: bool = False,
         preprocess_mode: str = "native",
-        workers: int = 2,
+        workers: int = 4,
         chunk_pages: int = 4,
         batch_rest: float = 0.0,
         rasterize_dpi: int = 144,
@@ -180,14 +234,14 @@ class ChromeScreenAIRuntime:
             self._process_chunks_sequential(pdf_path, chunks, ordered_results)
         else:
             try:
-                with ProcessPoolExecutor(max_workers=worker_count) as pool:
+                with ThreadPoolExecutor(max_workers=worker_count) as pool:
                     future_map = {}
                     for chunk_index, chunk in enumerate(chunks):
                         future = pool.submit(
-                            _process_pdf_chunk_worker,
-                            str(pdf_path),
+                            _process_pdf_chunk_subprocess_worker,
+                            pdf_path,
                             chunk,
-                            str(self.model_dir) if self.model_dir is not None else None,
+                            self.model_dir,
                             self.light_mode,
                             self.preprocess_mode,
                             self.rasterize_dpi,
@@ -536,11 +590,11 @@ class ChromeScreenAIRuntime:
             x1 = (x + width) * sx
             y1 = (y + height) * sy
             font_size = max(1.0, (y1 - y0) * 0.8)
-            page.insert_text(
-                fitz.Point(x0, y1 - font_size * 0.1),
+            _insert_invisible_word(
+                page,
+                fitz.Rect(x0, y0, x1, y1),
                 text,
-                fontsize=font_size,
-                render_mode=3,
+                _find_cjk_font(),
             )
 
     def _get_screen_ai(self) -> ScreenAI:
@@ -606,6 +660,8 @@ class ChromeScreenAIRuntime:
             return
         try:
             self.progress_callback(event)
+        except ContextureCancelledError:
+            raise
         except Exception as exc:
             logger.debug("[Chrome ScreenAI] progress callback ignored: %s", exc)
 

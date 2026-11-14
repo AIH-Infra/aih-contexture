@@ -29,7 +29,7 @@ class ListProcessor(BaseProcessor):
     def __call__(self, document: Document):
         continuation_count = self.list_group_continuation(document)
         reparented_items, nested_items = self.list_group_indentation(document)
-        logger.info(
+        logger.debug(
             "[ListProcessor] completed: continuations=%s nested_items=%s reparented_items=%s",
             continuation_count,
             nested_items,

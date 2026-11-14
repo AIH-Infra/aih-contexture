@@ -3,12 +3,15 @@ import click
 from pydantic import BaseModel, Field
 from starlette.responses import HTMLResponse
 
+import asyncio
 import base64
 from contextlib import asynccontextmanager
 from typing import Optional, Annotated, Any
 import io
+import os
+import threading
 
-from fastapi import FastAPI, Form, File, UploadFile
+from fastapi import FastAPI, Form, File, HTTPException, UploadFile
 from aih_contexture.backends.catalog import backend_catalog
 from aih_contexture.backends.external_config import default_mineru_command, default_mineru_python
 from aih_contexture.models import create_model_dict
@@ -19,6 +22,23 @@ from aih_contexture.logger import get_logger
 
 app_data = {}
 logger = get_logger()
+_run_semaphore = asyncio.Semaphore(1)
+_run_lock = threading.Lock()
+_DEFAULT_MAX_UPLOAD_MB = 512
+
+
+def _max_upload_bytes() -> int:
+    raw_value = os.environ.get("CONTEXTURE_MAX_UPLOAD_MB", str(_DEFAULT_MAX_UPLOAD_MB))
+    try:
+        max_upload_mb = int(raw_value)
+    except ValueError:
+        logger.warning(
+            "Invalid CONTEXTURE_MAX_UPLOAD_MB=%r; using %s MB",
+            raw_value,
+            _DEFAULT_MAX_UPLOAD_MB,
+        )
+        max_upload_mb = _DEFAULT_MAX_UPLOAD_MB
+    return max(1, max_upload_mb) * 1024 * 1024
 
 
 @asynccontextmanager
@@ -250,7 +270,7 @@ class CommonParams(BaseModel):
     chrome_workers: Annotated[
         int,
         Field(description="Chrome ScreenAI OCR worker count for searchable-PDF preprocessing."),
-    ] = 2
+    ] = 4
     chrome_chunk_pages: Annotated[
         int,
         Field(description="Chrome ScreenAI page chunk size for searchable-PDF preprocessing."),
@@ -425,10 +445,22 @@ async def _convert_pdf(params: CommonParams):
             "config": options,
         }
     )
-    return _run_job_response(job, params.output_format)
+    return await _run_job_response(job, params.output_format)
 
 
-def _run_job_response(job: ContextureJob, output_format: str) -> dict:
+async def _run_job_response(job: ContextureJob, output_format: str) -> dict:
+    async with _run_semaphore:
+        return await asyncio.to_thread(_run_job_response_sync, job, output_format)
+
+
+def _run_job_response_sync(job: ContextureJob, output_format: str) -> dict:
+    # asyncio.to_thread cannot stop an in-flight worker when its caller is cancelled.
+    # Keep the shared model container serialized even if the async semaphore is released.
+    with _run_lock:
+        return _run_job_response_unlocked(job, output_format)
+
+
+def _run_job_response_unlocked(job: ContextureJob, output_format: str) -> dict:
     try:
         result = run_job(job, artifact_dict=app_data["models"])
         text = _result_text(result, output_format)
@@ -491,7 +523,7 @@ async def convert_runtime(params: RuntimeConvertParams):
             "config": params.config,
         }
     )
-    return _run_job_response(job, output_formats[0] if output_formats else "markdown")
+    return await _run_job_response(job, output_formats[0] if output_formats else "markdown")
 
 
 @app.get("/v1/backends")
@@ -567,7 +599,7 @@ async def convert_pdf_upload(
     ocr_preprocess_backend: Optional[str] = Form(default="none"),
     chrome_screenai_light: bool = Form(default=False),
     chrome_preprocess_mode: Optional[str] = Form(default="native"),
-    chrome_workers: Optional[int] = Form(default=2),
+    chrome_workers: Optional[int] = Form(default=4),
     chrome_chunk_pages: Optional[int] = Form(default=4),
     chrome_emit_searchable_pdf: bool = Form(default=False),
     chrome_rasterize_dpi: Optional[int] = Form(default=144),
@@ -606,7 +638,16 @@ async def convert_pdf_upload(
     assert output_format in ["markdown", "json", "html", "chunks"], (
         "Invalid output format"
     )
-    file_contents = await file.read()
+    max_upload_bytes = _max_upload_bytes()
+    file_contents = await file.read(max_upload_bytes + 1)
+    if len(file_contents) > max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Uploaded file exceeds the {max_upload_bytes // (1024 * 1024)} MB limit. "
+                "Set CONTEXTURE_MAX_UPLOAD_MB to change the local server limit."
+            ),
+        )
     resolved_layout_backend = layout_backend or "surya"
     default_paddle_model = (
         "PP-DocLayoutV3"
@@ -658,7 +699,7 @@ async def convert_pdf_upload(
         "ocr_preprocess_backend": ocr_preprocess_backend or "none",
         "chrome_screenai_light": chrome_screenai_light,
         "chrome_preprocess_mode": chrome_preprocess_mode or "native",
-        "chrome_workers": int(chrome_workers or 2),
+        "chrome_workers": int(chrome_workers or 4),
         "chrome_chunk_pages": int(chrome_chunk_pages or 4),
         "chrome_emit_searchable_pdf": chrome_emit_searchable_pdf,
         "chrome_rasterize_dpi": int(chrome_rasterize_dpi or 144),
@@ -707,7 +748,7 @@ async def convert_pdf_upload(
             "config": options,
         }
     )
-    return _run_job_response(job, output_format)
+    return await _run_job_response(job, output_format)
 
 
 @click.command()

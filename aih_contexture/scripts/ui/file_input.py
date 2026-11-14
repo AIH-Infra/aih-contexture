@@ -4,6 +4,13 @@ import os
 
 
 def file_input_spec(conversion_mode: str, postprocess_input_kind: str | None = None) -> dict[str, object]:
+    if conversion_mode == "structured_source":
+        return {
+            "label": "TEI/XML 或 EPUB 文件",
+            "types": ["xml", "tei", "epub"],
+            "suffixes": (".xml", ".tei", ".epub"),
+            "success_name": "结构化源",
+        }
     if conversion_mode == "markdown_postprocess":
         if postprocess_input_kind == "middle_json":
             return {

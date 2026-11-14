@@ -4,7 +4,7 @@
 
 AIH-Infra 的第一层：面向人文学科的本地文献结构化工具。Contexture 将 PDF、图片及其他文献材料转化为可校阅、可追溯、可进入知识库的结构化输出，而不把 OCR 仅视为纯文本提取。
 
-当前发行版本：**0.7.0**
+当前发行版本：**0.9.0**
 
 ## 位置与目标
 
@@ -43,6 +43,7 @@ Contexture 的责任是让材料进入后续系统前仍保留可复核的结构
 | Pipeline | 通用、可审计的基础流程 | Layout、OCR 与后处理可以独立选择和组合。 |
 | VLM 泛化 | 复杂版式、手稿或需要整页视觉理解 | 使用用户配置的视觉语言模型服务。 |
 | VLM 特化 | 已有匹配的专用模型或本地运行时 | 效果依赖模型训练领域，需抽检。 |
+| 结构化源导入 | 已有 TEI/XML 或 EPUB 结构化结果 | 导入原始章节树、目录、页表、索引、锚点和元数据。 |
 | Markdown 后处理 | 已有结果需要复核、重渲染或修订 | 用于保守地修复页码、结构与格式。 |
 
 所有路线都可生成 Middle JSON，并可渲染为 Scholarly Markdown。编号段落会规范为 201\. 这类非缩进 Markdown 形式；脚注引用和定义使用 <sup>n</sup> 语义。
@@ -50,6 +51,8 @@ Contexture 的责任是让材料进入后续系统前仍保留可复核的结构
 ## 安装与启动
 
 要求：Python **3.10、3.11 或 3.12**，首次安装和首次下载模型时需要网络。
+
+默认 OCR/文档依赖使用 Surya OCR **0.17.1**、Transformers **4.57.6**、pdftext **0.6.3** 和 pypdfium2 **4.30.0**。Python 3.10 使用 NumPy 2.2.x 与 scikit-learn 1.6.x；Python 3.11/3.12 使用 NumPy 2.3+ 与 scikit-learn 1.8+。
 
 ### Windows
 
@@ -97,6 +100,38 @@ macOS/Linux: .venv/bin/contexture_doctor
 
 缺失的可选后端不会阻止主流程安装，但被选中时需要其自身的解释器、依赖和模型完整可用。
 
+## 命令行与本地服务
+
+安装后可从项目虚拟环境直接使用单文件、批量、诊断和本地服务入口。Pipeline 支持独立选择 Layout 与 OCR；当两者均设为禁用时，应用走 PDF 文本层快速路径，默认以 **4 个文件子进程**并行处理，允许在 1–16 间调整。
+
+Chrome ScreenAI 默认使用 **4 个 worker** 生成 searchable PDF 后再回流到 Contexture。该能力仍是可选本地后端。
+
+VLM 两种运行模式提供独立 CLI，可连接本机或局域网的 LM Studio：
+
+~~~bash
+# 泛化 VLM：LM Studio OpenAI-compatible API
+contexture_vlm_generalized input.pdf \
+  --base-url http://127.0.0.1:1234/v1 \
+  --model your-model \
+  --api-key-env CONTEXTURE_VLM_API_KEY
+
+# 特化 VLM：LM Studio native API
+contexture_vlm_specialized input.pdf \
+  --backend chandra \
+  --endpoint http://127.0.0.1:1234 \
+  --api-style lmstudio-native \
+  --model your-model
+~~~
+
+两种 VLM CLI 都支持 `--config-json` 和重复的 `--set KEY=VALUE`，用于透传运行参数；`--dry-run` 会打印脱敏后的最终配置。API Key 建议通过环境变量提供。
+
+### VLM 中断恢复范围
+
+- **VLM 泛化**：按页保存成功结果。重新运行时，仅在源文件、页码范围和有效配置匹配时复用已成功页面；缺失或失败页面仍会处理。
+- **VLM 特化**：模型崩溃后可在当前 UI 会话中从失败批次重新开始，已完成批次的文件产物会保留。它不提供逐页 checkpoint，也不提供应用重启后的持久任务恢复。
+
+以上是局部结果复用与批次级 UI 恢复，不是完整、持久的任务队列或任务恢复系统。
+
 ## 与 DataLab 上游项目的关系
 
 Contexture 是 AIH-Infra 的独立文献结构化框架，不是 Marker、Surya、Chandra 或 PDFText 的分支，也不拥有这些上游项目的模型与代码产权。
@@ -130,13 +165,8 @@ Contexture 在这些引擎之上统一页码锚点、Middle JSON、学术 Markdo
 - VLM 结果需要受原始页面、页码锚点与 Middle JSON 的约束和复核。
 - 外部模型服务、MinerU、Paddle、Tesseract 与 Chrome ScreenAI 均不随主包强制安装。
 
-本版本的更新内容见：
-
-- **RELEASE_MANIFEST.md**
-- **VERSION_0.7_UPDATE_COMPARISON_ZH.md**
-
-在线发布记录见 GitHub 的 [Releases](https://github.com/AIH-Infra/aih-contexture/releases)。
+发行内容见 [RELEASE_MANIFEST.md](RELEASE_MANIFEST.md)。
 
 ## 许可证
 
-GPL-3.0-or-later。第三方模型、外部服务及其权重分别受其自身许可证和服务条款约束。
+本项目按 [GPL-3.0-or-later](LICENSE) 发布，第三方组件归属见 [NOTICE](NOTICE)。ScreenAI 使用的 locro 封装保留 MIT 许可证；Chrome 的 ScreenAI 原生库和模型不随发行包分发。第三方模型权重及外部服务仍受各自许可证和服务条款约束；发行包附带的模型条款见 [MODEL_LICENSE](MODEL_LICENSE)。

@@ -75,7 +75,7 @@ class SectionHeaderProcessor(BaseProcessor):
                 if block_height > 0:
                     assigned_headers += 1
 
-        logger.info(
+        logger.debug(
             "[SectionHeaderProcessor] completed: headings=%s ignored_empty=%s default_level=%s heading_ranges=%s",
             assigned_headers,
             ignored_empty_headers,

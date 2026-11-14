@@ -6,6 +6,7 @@ from typing import Any
 
 from aih_contexture.middle.heading_levels import normalize_middle_heading_levels
 from aih_contexture.middle.labels import normalize_block_type
+from aih_contexture.middle.adapters.mineru_dedup import drop_mineru_aggregate_duplicates
 from aih_contexture.middle.schema import MiddleBlock, MiddleDocument, MiddlePage, MiddleProvenance, MiddleSpan
 
 MINERU_COORDINATE_SPACE = "mineru_0_1000_normalized"
@@ -140,6 +141,7 @@ def _mineru_middle_json_to_middle_document(
                     source=source,
                 )
             )
+        drop_mineru_aggregate_duplicates(page)
         _promote_printed_page_from_page_number_blocks(page)
         pages.append(page)
 

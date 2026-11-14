@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import Callable, MutableMapping
 from typing import Any
 
+from aih_contexture.runtime.subprocess_stream import finish_terminal_progress, render_terminal_progress
+
 
 MODE_LABELS = {
     "vlm_generalized": "VLM 泛化",
@@ -52,6 +54,42 @@ def _set_ratio(ctx: MutableMapping[str, Any], progress: MutableMapping[str, Any]
     total = int(progress.get("total_pages") or 0)
     done = int(progress.get("done_pages") or 0)
     ctx["progress"] = min(1.0, max(0.0, done / total)) if total > 0 else 0.0
+
+
+def _render_terminal(progress: MutableMapping[str, Any]) -> None:
+    mode_labels = {
+        "vlm_generalized": "VLM Generalized",
+        "vlm_specialized": "VLM Specialized",
+    }
+    stage_labels = {
+        "准备中": "Preparing",
+        "预处理": "Preprocessing",
+        "处理中": "Processing",
+        "修复中": "Repairing",
+        "渲染修复页": "Rendering repair pages",
+        "修复重试待继续": "Repair retry pending",
+        "整理输出": "Postprocessing",
+        "保存可搜索PDF": "Saving searchable PDF",
+        "保存结果": "Saving",
+        "完成": "Completed",
+        "失败": "Failed",
+        "已取消": "Cancelled",
+    }
+    mode = str(progress.get("mode") or "")
+    current_file = str(progress.get("current_file") or "")
+    current_page = progress.get("current_page")
+    message = current_file
+    if current_page:
+        message = f"{current_file} | Page {current_page}"
+    render_terminal_progress(
+        mode_label=mode_labels.get(mode, "VLM"),
+        stage=stage_labels.get(str(progress.get("stage") or ""), str(progress.get("stage") or "Processing")),
+        message=message or "Processing",
+        current=int(progress.get("done_pages") or 0),
+        total=int(progress.get("total_pages") or 0),
+        unit="pages",
+        rate_scope="vlm_pages",
+    )
 
 
 def _prefixed_message(file_name: str, event: dict[str, Any], fallback: str) -> str:
@@ -197,6 +235,7 @@ def make_vlm_progress_callback(
                 progress["stage"] = str(stage)
 
         _set_ratio(ctx, progress)
+        _render_terminal(progress)
 
     return callback
 
@@ -220,6 +259,7 @@ def update_vlm_batch_progress(
     if message:
         progress["message"] = message
     _set_ratio(ctx, progress)
+    _render_terminal(progress)
 
 
 def finish_vlm_progress(
@@ -237,6 +277,8 @@ def finish_vlm_progress(
         ctx["progress"] = 1.0
     else:
         _set_ratio(ctx, progress)
+    _render_terminal(progress)
+    finish_terminal_progress()
 
 
 def render_vlm_progress(st: Any, ctx: MutableMapping[str, Any]) -> None:
@@ -246,10 +288,8 @@ def render_vlm_progress(st: Any, ctx: MutableMapping[str, Any]) -> None:
 
     total = int(progress.get("total_pages") or 0)
     done = int(progress.get("done_pages") or 0)
-    ratio = min(1.0, max(0.0, done / total)) if total else 0.0
 
     st.markdown(f"**{progress.get('mode_label', 'VLM')}处理进度**")
-    st.progress(ratio)
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("阶段", progress.get("stage") or "准备中")

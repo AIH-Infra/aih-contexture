@@ -11,6 +11,7 @@ from google import genai
 from google.genai import types
 from google.genai.errors import APIError
 from aih_contexture.logger import get_logger
+from aih_contexture.runtime.console_text import safe_endpoint_for_log
 from pydantic import BaseModel
 
 from aih_contexture.schema.blocks import Block
@@ -185,7 +186,10 @@ class GoogleGeminiService(BaseGeminiService):
         if self.key_rotator.get_key_count() > 1:
             logger.info(f"[GoogleGeminiService] Using {self.key_rotator.get_key_count()} API keys with rotation")
         if self.base_url:
-            logger.info(f"[GoogleGeminiService] Using custom base URL: {self.base_url}")
+            logger.debug(
+                "[GoogleGeminiService] Custom endpoint: %s",
+                safe_endpoint_for_log(self.base_url),
+            )
 
     def get_google_client(self, timeout: int, api_key: str = None):
         """Get Google client with optional API key override and custom base URL."""

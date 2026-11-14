@@ -78,7 +78,7 @@ class BlockquoteProcessor(BaseProcessor):
 
                 prev_block = block
 
-        logger.info(
+        logger.debug(
             "[BlockquoteProcessor] completed: blockquotes=%s new_blockquotes=%s continued_blocks=%s max_level=%s",
             blockquote_blocks,
             new_blockquotes,

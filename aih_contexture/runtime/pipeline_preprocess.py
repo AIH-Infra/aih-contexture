@@ -134,7 +134,7 @@ def _run_chrome_screenai_searchable_pdf_pipeline(
         shutil.copy2(staged_input, empty_output)
         return empty_output
 
-    worker_count = max(1, min(int(config.get("chrome_workers", 2) or 2), page_count))
+    worker_count = max(1, min(int(config.get("chrome_workers", 4) or 4), page_count))
     chunk_jobs = _prepare_chrome_chunk_jobs(
         staged_input=staged_input,
         work_dir=work_dir,
@@ -229,11 +229,9 @@ def _run_chrome_chunk_jobs(
             command,
             cwd=os.fspath(repo_root),
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
             creationflags=_CREATE_NO_WINDOW,
         )
 
@@ -269,9 +267,7 @@ def _wait_for_chrome_chunk_jobs(jobs: list[_ChromeChunkJob]) -> None:
             if proc.poll() is None:
                 continue
 
-            stdout, stderr = proc.communicate()
-            job.stdout = stdout
-            job.stderr = stderr
+            proc.communicate()
             if proc.returncode != 0:
                 raise RuntimeError(_format_chrome_chunk_failure(job, f"exit code {proc.returncode}"))
 
@@ -308,8 +304,8 @@ def _format_chrome_chunk_failure(job: _ChromeChunkJob, reason: str) -> str:
     message = (
         f"Chrome ScreenAI chunk {job.chunk_index} ({job.start_page + 1}-{job.end_page + 1}) failed: {reason}"
     )
-    stdout = job.stdout.strip()
-    stderr = job.stderr.strip()
+    stdout = str(job.stdout or "").strip()
+    stderr = str(job.stderr or "").strip()
     if stdout:
         message += f". STDOUT: {stdout}"
     if stderr:

@@ -17,6 +17,7 @@ from openai import APITimeoutError, RateLimitError
 from PIL import Image
 
 from aih_contexture.logger import get_logger
+from aih_contexture.runtime.console_text import safe_endpoint_for_log
 from aih_contexture.utils.api_key_rotator import APIKeyRotator
 from aih_contexture.services.layout_base import (
     BaseLayoutService,
@@ -152,7 +153,7 @@ class VlmLayoutService(BaseLayoutService):
         # 初始化Key轮换器(支持多Key,逗号分隔)
         self.key_rotator = APIKeyRotator(self.api_key)
         if self.key_rotator.get_key_count() > 1:
-            logger.info(f"[VlmLayoutService] Using {self.key_rotator.get_key_count()} API keys with rotation")
+            logger.debug("[VlmLayoutService] API key pool size=%s", self.key_rotator.get_key_count())
 
         # === 图像处理配置 ===
         self.image_format = config.get(
@@ -186,20 +187,25 @@ class VlmLayoutService(BaseLayoutService):
         if config.get("vlm_layout_prompt"):
             # 用户直接指定了提示词
             self.prompt = str(config["vlm_layout_prompt"])
-            logger.info("[VlmLayoutService] Using custom prompt")
+            logger.debug("[VlmLayoutService] Using custom prompt")
         else:
             # 使用模板
             template_name = config.get("vlm_layout_prompt_template", "modern")
             try:
                 from aih_contexture.templates.vlm_layout_prompts import get_layout_prompt
                 self.prompt = get_layout_prompt(template_name)
-                logger.info(f"[VlmLayoutService] Using template: {template_name}")
+                logger.debug("[VlmLayoutService] Prompt template=%s", template_name)
             except Exception as e:
                 logger.warning(f"[VlmLayoutService] Failed to load template, using default: {e}")
                 self.prompt = DEFAULT_LAYOUT_PROMPT
 
-        logger.info(f"[VlmLayoutService] Init: base_url={self.base_url}, model={self.model}")
-        logger.info(f"[VlmLayoutService] Image: format={self.image_format}, max_dim={self.max_image_dimension}")
+        logger.debug(
+            "[VlmLayoutService] Init: endpoint=%s model=%s image=%s/%s",
+            safe_endpoint_for_log(self.base_url),
+            self.model,
+            self.image_format,
+            self.max_image_dimension,
+        )
 
     def get_client(self, api_key: Optional[str] = None) -> openai.OpenAI:
         """
@@ -370,7 +376,7 @@ class VlmLayoutService(BaseLayoutService):
             return [self._detect_single_image_safely(client, img) for img in images]
 
         max_workers = min(self.vlm_layout_max_concurrent, len(images))
-        logger.info(f"[VlmLayoutService] Using concurrent layout requests: {max_workers}")
+        logger.debug("[VlmLayoutService] Layout concurrency=%s", max_workers)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             return list(executor.map(
                 lambda img: self._detect_single_image_safely(self.get_client(), img),

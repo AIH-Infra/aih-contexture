@@ -8,3 +8,7 @@ class ContextureConfigError(ContextureRuntimeError):
 
 class ContextureArtifactError(ContextureRuntimeError):
     """Raised when runtime artifact writing fails."""
+
+
+class ContextureCancelledError(ContextureRuntimeError):
+    """Raised when a cooperative runtime cancellation is requested."""

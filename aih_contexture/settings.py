@@ -2,7 +2,7 @@ from typing import Any, Optional
 
 from dotenv import find_dotenv
 from pydantic import computed_field
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 import os
 
 try:
@@ -63,9 +63,10 @@ class Settings(BaseSettings):
         else:
             return torch.float32
 
-    class Config:
-        env_file = find_dotenv("local.env")
-        extra = "ignore"
+    model_config = SettingsConfigDict(
+        env_file=find_dotenv("local.env"),
+        extra="ignore",
+    )
 
 
 settings = Settings()

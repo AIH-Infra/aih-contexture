@@ -8,6 +8,7 @@ from aih_contexture.schema.groups.page import PageGroup
 from aih_contexture.schema.polygon import PolygonBox
 from aih_contexture.schema.registry import get_block_class
 from aih_contexture.settings import settings
+from aih_contexture.runtime.progress_events import emit_progress_event
 
 
 class LayoutBuilder(BaseBuilder):
@@ -58,7 +59,7 @@ class LayoutBuilder(BaseBuilder):
         if self.layout_batch_size is not None:
             return self.layout_batch_size
         elif settings.TORCH_DEVICE_MODEL == "cuda":
-            return 12
+            return 8
         return 6
 
     def forced_layout(self, pages: List[PageGroup]) -> List[Any]:
@@ -84,10 +85,31 @@ class LayoutBuilder(BaseBuilder):
 
     def surya_layout(self, pages: List[PageGroup]) -> List[Any]:
         self.layout_model.disable_tqdm = self.disable_tqdm
-        layout_results = self.layout_model(
-            [p.get_image(highres=False) for p in pages],
-            batch_size=int(self.get_batch_size()),
+        images = [p.get_image(highres=False) for p in pages]
+        total = len(images)
+        batch_size = max(1, int(self.get_batch_size()))
+        layout_results = []
+        emit_progress_event(
+            "stage_changed",
+            "layout",
+            current=0,
+            total=total,
+            unit="pages",
+            message=f"Surya layout: {total} pages, GPU batch size {batch_size}",
         )
+        for start in range(0, total, batch_size):
+            end = min(total, start + batch_size)
+            layout_results.extend(self.layout_model(images[start:end], batch_size=batch_size))
+            emit_progress_event(
+                "progress",
+                "layout",
+                current=end,
+                total=total,
+                unit="pages",
+                page_start=start + 1,
+                page_end=end,
+                message=f"Surya layout completed {end}/{total} pages",
+            )
         return layout_results
 
     def expand_layout_blocks(self, document: Document):

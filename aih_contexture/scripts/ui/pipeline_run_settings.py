@@ -68,6 +68,15 @@ def render_pipeline_run_settings(st) -> dict[str, object]:
         st.markdown("---")
         st.markdown("**其他设置**")
 
+        stall_timeout_minutes = st.number_input(
+            "无进展自动跳过（分钟）",
+            min_value=3,
+            max_value=180,
+            value=_default_stall_timeout_minutes(),
+            step=1,
+            help="结构化页数、阶段或批次在此时间内没有任何推进时，终止当前文件子进程并继续下一文件。",
+        )
+
         use_fp16 = st.checkbox(
             "使用 FP16",
             value=os.environ.get("USE_FP16", "false").lower() == "true",
@@ -86,4 +95,13 @@ def render_pipeline_run_settings(st) -> dict[str, object]:
         "start_page_1based": start_page_1based,
         "end_page_1based": end_page_1based,
         "use_fp16": use_fp16,
+        "stall_timeout_minutes": int(stall_timeout_minutes),
     }
+
+
+def _default_stall_timeout_minutes() -> int:
+    try:
+        value = int(os.environ.get("CONTEXTURE_PIPELINE_STALL_TIMEOUT_MINUTES", "15"))
+    except (TypeError, ValueError):
+        value = 15
+    return max(3, min(180, value))

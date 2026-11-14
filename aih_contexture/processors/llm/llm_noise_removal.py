@@ -78,15 +78,15 @@ class LLMNoiseRemovalProcessor(BaseLLMSimpleBlockProcessor):
             document: 文档对象
         """
         if not self.use_llm or not self.llm_service:
-            logger.info("[LLMNoiseRemovalProcessor] ❌ Disabled (no LLM service)")
+            logger.debug("[LLMNoiseRemovalProcessor] Disabled (no LLM service)")
             return
 
-        logger.info(f"[LLMNoiseRemovalProcessor] ✅ Enabled, processing {len(document.pages)} pages")
+        logger.debug("[LLMNoiseRemovalProcessor] Enabled, processing %s pages", len(document.pages))
 
         # 第一步：文档级分析
         self.document_type, self.common_symbols = self._analyze_document(document)
-        logger.info(f"[LLMNoiseRemovalProcessor] Document type: {self.document_type}")
-        logger.info(f"[LLMNoiseRemovalProcessor] Common symbols: {self.common_symbols}")
+        logger.debug("[LLMNoiseRemovalProcessor] Document type: %s", self.document_type)
+        logger.debug("[LLMNoiseRemovalProcessor] Common symbols: %s", self.common_symbols)
 
         # 第二步：页面级过滤
         super().__call__(document)
@@ -245,7 +245,7 @@ class LLMNoiseRemovalProcessor(BaseLLMSimpleBlockProcessor):
 
                 # 如果置信度足够高且确实移除了字符，更新块内容
                 if confidence >= 3 and removed_chars:
-                    logger.info(f"[LLMNoiseRemovalProcessor] Removed {len(removed_chars)} noise chars from block")
+                    logger.debug("[LLMNoiseRemovalProcessor] Removed %s noise chars from block", len(removed_chars))
                     # 更新块的文本内容
                     # 注意：这里需要根据实际的块结构来更新
                     # 简化处理：更新 block 的 text 属性（如果存在）

@@ -11,6 +11,12 @@ MAX_PORT_ATTEMPTS = 1000
 DEFAULT_STREAMLIT_HOST = "0.0.0.0"
 INTERRUPT_CONFIRM_SECONDS = 5.0
 DISABLE_QUICK_EDIT_ENV = "CONTEXTURE_DISABLE_QUICK_EDIT"
+PORT_ENV = "CONTEXTURE_PORT"
+PORT_BASE_ENV = "CONTEXTURE_PORT_BASE"
+PORT_RANGE_ENV = "CONTEXTURE_PORT_RANGE"
+DEFAULT_PORT_RANGE = 10
+INSTANCE_ENV = "CONTEXTURE_INSTANCE_ID"
+BACKEND_ENV = "CONTEXTURE_EXPECT_BACKEND"
 
 
 def _is_port_listening(host: str, port: int, family: socket.AddressFamily = socket.AF_INET) -> bool:
@@ -71,13 +77,16 @@ def _get_windows_excluded_ports() -> set[int]:
                     "protocol=tcp",
                 ],
                 capture_output=True,
-                text=True,
                 check=False,
             )
         except OSError:
             continue
 
-        for line in result.stdout.splitlines():
+        # netsh 输出编码随控制台代码页变化（GBK/UTF-8 均可能出现），
+        # 用字节捕获 + 宽松解码，端口段是纯数字，不受乱码影响。
+        raw = result.stdout or b""
+        output = raw.decode("utf-8", errors="replace")
+        for line in output.splitlines():
             match = pattern.match(line)
             if not match:
                 continue
@@ -176,12 +185,105 @@ def _wait_for_streamlit_process(proc: subprocess.Popen) -> int:
             return int(proc.returncode or 130)
 
 
+def _parse_port(value: str, env_name: str) -> int:
+    try:
+        return int(value)
+    except ValueError:
+        raise SystemExit(f"[AIH-Contexture] {env_name}={value!r} 不是合法端口号。")
+
+
+def _resolve_strict_port(host: str) -> int:
+    """端口策略（按优先级）：
+
+    1. CONTEXTURE_PORT 指定单一端口 -> 严格固定，占用即拒绝启动；
+    2. CONTEXTURE_PORT_BASE 指定端口带起点 -> 在 [base, base+CONTEXTURE_PORT_RANGE)
+       内自动找空位（默认带宽 10）。同一实例代码与前端资源哈希一致，带内
+       漂移无害；跨实例串台由端口带结构性隔离（如 CUDA 8510+ / ROCm 8520+）；
+    3. 都不设 -> 旧行为：从 DEFAULT_STREAMLIT_PORT 起自动找空位
+       （dev 目录直启，多个 Streamlit 开发实例互不冲突）。
+
+    核心约束不变：端口即实例身份，绝不在不同代码/版本之间静默换位，
+    否则浏览器旧标签页会拿 A 实例的资源哈希请求 B 实例，
+    触发 "Failed to fetch dynamically imported module"。
+    """
+    raw = os.environ.get(PORT_ENV, "").strip()
+    if raw:
+        port = _parse_port(raw, PORT_ENV)
+        if not _is_port_available(host, port):
+            raise SystemExit(
+                f"[AIH-Contexture] 端口 {port} 已被占用，按固定端口策略拒绝启动。\n"
+                f"  处理方式：关闭占用 {port} 的进程，或 set {PORT_ENV}=<空闲端口> 后重试。"
+            )
+        return port
+
+    base_raw = os.environ.get(PORT_BASE_ENV, "").strip()
+    if base_raw:
+        base = _parse_port(base_raw, PORT_BASE_ENV)
+        span_raw = os.environ.get(PORT_RANGE_ENV, "").strip()
+        span = _parse_port(span_raw, PORT_RANGE_ENV) if span_raw else DEFAULT_PORT_RANGE
+        try:
+            return _find_available_port(host=host, start_port=base, max_attempts=span)
+        except RuntimeError:
+            raise SystemExit(
+                f"[AIH-Contexture] 端口带 {base}-{base + span - 1} 已满，拒绝越带漂移。\n"
+                f"  处理方式：释放带内端口，或调大 {PORT_RANGE_ENV}。"
+            )
+
+    return _find_available_port(host=host)
+
+
+def _verify_instance_identity() -> None:
+    """启动前自检：代码目录 / 解释器 / torch 后端三者必须匹配。
+
+    防两类历史事故：
+    1. 用 A 环境的解释器跑 B 目录的代码（曾造成命名空间包跨目录混装）；
+    2. 启动器声明 CUDA 但 torch 是 ROCm 构建（或反之）。
+    """
+    from pathlib import Path
+
+    import aih_contexture
+
+    expected_pkg_dir = Path(__file__).resolve().parents[1]
+    pkg_file = Path(getattr(aih_contexture, "__file__", "") or "").resolve()
+    pkg_paths = [Path(p).resolve() for p in getattr(aih_contexture, "__path__", [])]
+    if pkg_paths != [expected_pkg_dir] or pkg_file.parent != expected_pkg_dir:
+        raise SystemExit(
+            "[AIH-Contexture] aih_contexture 路径污染，拒绝启动：\n"
+            f"  期望包目录: {expected_pkg_dir}\n"
+            f"  实际 __path__: {[str(p) for p in pkg_paths]}\n"
+            f"  实际 __file__: {pkg_file}\n"
+            "  请使用与本代码目录匹配的解释器/环境启动。"
+        )
+
+    expected_backend = os.environ.get(BACKEND_ENV, "").strip().lower()
+    if expected_backend not in {"cuda", "rocm"}:
+        return
+    try:
+        import torch
+    except Exception as exc:
+        print(f"[AIH-Contexture] 警告：无法导入 torch（{exc}），跳过后端校验。")
+        return
+    cuda_build = getattr(torch.version, "cuda", None)
+    hip_build = getattr(torch.version, "hip", None)
+    if expected_backend == "cuda" and not cuda_build:
+        raise SystemExit(
+            f"[AIH-Contexture] 启动器声明 NVIDIA/CUDA，但当前 torch 不是 CUDA 构建"
+            f"（cuda={cuda_build}, hip={hip_build}）。解释器/环境不匹配，拒绝启动。"
+        )
+    if expected_backend == "rocm" and not hip_build:
+        raise SystemExit(
+            f"[AIH-Contexture] 启动器声明 AMD/ROCm，但当前 torch 不是 ROCm 构建"
+            f"（cuda={cuda_build}, hip={hip_build}）。解释器/环境不匹配，拒绝启动。"
+        )
+
+
 def streamlit_app_cli(app_name: str = "streamlit_app.py"):
+    _verify_instance_identity()
     argv = sys.argv[1:]
     cur_dir = os.path.dirname(os.path.abspath(__file__))
     app_path = os.path.join(cur_dir, app_name)
     host = DEFAULT_STREAMLIT_HOST
-    port = _find_available_port(host=host)
+    port = _resolve_strict_port(host=host)
 
     # ========== 🔧 窗口配置参数 ==========
     cmd = [
@@ -198,6 +300,7 @@ def streamlit_app_cli(app_name: str = "streamlit_app.py"):
         # 🎨 界面行为
         "--server.fileWatcherType", "none",    # 禁用文件监控（原配置保留）
         "--server.headless", "false",          # 自动打开浏览器
+        "--browser.serverAddress", "localhost",  # 自动打开的地址（服务仍绑定 0.0.0.0；直接开 0.0.0.0 浏览器会报"找不到网页"）
         "--browser.gatherUsageStats", "false", # 不收集统计
 
         # 🎨 主题配置（可选）
@@ -217,8 +320,12 @@ def streamlit_app_cli(app_name: str = "streamlit_app.py"):
         "IN_STREAMLIT": "true",
         "CUDA_VISIBLE_DEVICES": "0",
         "PYTORCH_CUDA_ALLOC_CONF": "max_split_size_mb:512",
+        PORT_ENV: str(port),  # 让页面能显示实际监听端口
     }
 
+    instance_id = os.environ.get(INSTANCE_ENV, "").strip() or "dev"
+    backend_tag = os.environ.get(BACKEND_ENV, "").strip().upper() or "未声明"
+    print(f"[AIH-Contexture] 实例: {instance_id} | 后端: {backend_tag} | 版本: 见页面")
     local_ip = _get_local_ip()
     print(f"[AIH-Contexture] Streamlit 将监听 http://{host}:{port}")
     print(f"[AIH-Contexture] 本机访问: http://127.0.0.1:{port}")

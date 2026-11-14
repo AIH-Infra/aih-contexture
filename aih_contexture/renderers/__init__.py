@@ -12,6 +12,7 @@ from aih_contexture.schema.blocks.base import BlockId, BlockOutput
 from aih_contexture.schema.document import Document
 from aih_contexture.settings import settings
 from aih_contexture.util import assign_config
+from aih_contexture.renderers.footnotes import normalize_footnote_html
 
 
 class BaseRenderer:
@@ -176,4 +177,13 @@ class BaseRenderer:
             if image is not None:
                 images[block_output.id] = image
 
-        return str(soup), images
+        output = str(soup)
+        if block_output.id.block_type == BlockTypes.Footnote:
+            output = normalize_footnote_html(
+                output,
+                document=document,
+                block_id=block_output.id,
+                superscript_policy=self.superscript_policy,
+            )
+
+        return output, images

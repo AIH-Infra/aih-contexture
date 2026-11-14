@@ -26,6 +26,7 @@ from PIL import Image
 
 from aih_contexture.converters import BaseConverter
 from aih_contexture.logger import get_logger
+from aih_contexture.runtime.console_text import safe_endpoint_for_log
 from aih_contexture.providers.registry import provider_from_filepath
 
 logger = get_logger()
@@ -146,8 +147,13 @@ class VlmDirectConverter(BaseConverter):
 
         self.page_separator = config.get("vlm_direct_page_separator", self.vlm_direct_page_separator)
 
-        logger.info(f"[VlmDirectConverter] Init: base_url={self.base_url}, model={self.model}")
-        logger.info(f"[VlmDirectConverter] Image: format={self.image_format}, max_dim={self.max_image_dimension}")
+        logger.debug(
+            "[VlmDirectConverter] Init: endpoint=%s model=%s image=%s/%s",
+            safe_endpoint_for_log(self.base_url),
+            self.model,
+            self.image_format,
+            self.max_image_dimension,
+        )
 
     def get_client(self) -> openai.OpenAI:
         """获取 OpenAI 客户端"""
@@ -173,7 +179,7 @@ class VlmDirectConverter(BaseConverter):
             return img
         scale = min(self.max_image_dimension / w, self.max_image_dimension / h)
         new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
-        logger.info(f"[VlmDirectConverter] Resizing image from {w}x{h} to {new_size[0]}x{new_size[1]}")
+        logger.debug("[VlmDirectConverter] Resizing image %sx%s -> %sx%s", w, h, *new_size)
         return img.resize(new_size, Image.Resampling.LANCZOS)
 
     def _img_to_base64(self, img: Image.Image) -> str:
@@ -197,7 +203,7 @@ class VlmDirectConverter(BaseConverter):
 
     def _convert_page(self, client: openai.OpenAI, img: Image.Image, page_num: int) -> str:
         """转换单个页面"""
-        logger.info(f"[VlmDirectConverter] Converting page {page_num}...")
+        logger.debug("[VlmDirectConverter] Converting page %s", page_num)
 
         # 构建请求
         b64_img = self._img_to_base64(img)
@@ -226,7 +232,7 @@ class VlmDirectConverter(BaseConverter):
                 )
 
                 markdown = (resp.choices[0].message.content or "").strip()
-                logger.info(f"[VlmDirectConverter] Page {page_num} converted successfully ({len(markdown)} chars)")
+                logger.debug("[VlmDirectConverter] Page %s converted (%s chars)", page_num, len(markdown))
                 return markdown
 
             except (APITimeoutError, RateLimitError) as e:

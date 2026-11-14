@@ -1,5 +1,5 @@
 經緯·Contexture
-Copyright 2024-2025 AIH-Infra (人文学科人工智能基础设施)
+Copyright 2024-2026 AIH-Infra (人文学科人工智能基础设施)
 Authors: Güriedrich & Baireinhold (橘里德里希 & 白茵霍尔德)
 
 ================================================================================
@@ -18,15 +18,15 @@ Authors: Güriedrich & Baireinhold (橘里德里希 & 白茵霍尔德)
 主要修改内容
 ================================================================================
 
-Contexture 在 Marker 基础上进行了以下重大修改和创新：
+Contexture 在 Marker 基础上进行了以下修改：
 
-1. 架构创新
+1. 可组合的文献处理
    - OCR 后端可插拔架构（支持 Surya / Calamari / Chandra / VLM）
    - Layout 后端可插拔架构（支持 Surya / YOLO / DocLayout-YOLO / VLM）
-   - 三模式处理架构（传统 Pipeline / VLM 泛化 / VLM 特化）
+   - 五种界面工作流：Pipeline、VLM 泛化、VLM 特化、结构化源导入和 Markdown 后处理
    - 异步并发处理架构
 
-2. 人文学科专用功能（完全原创）
+2. 文献语义处理
    - 双重页码系统（PDF 页码 + 印刷页码）
    - 页码锚点系统（{n} 包裹结构）
    - 页码模式识别与自动修正
@@ -47,12 +47,18 @@ Contexture 在 Marker 基础上进行了以下重大修改和创新：
 Datalab 项目（Endless Labs, Inc.）：
   - Marker (GPL-3.0) - 核心框架
   - Surya (GPL-3.0) - OCR 引擎
-  - Chandra (Apache-2.0) - 高级 OCR
+  - Chandra 集成代码（Apache-2.0）- 可选特化 VLM OCR；模型权重另受其模型许可约束
   - PDFText (Apache-2.0) - PDF 文本提取
 
 其他项目：
   - Calamari OCR (Apache-2.0) - 欧洲历史文献 OCR
     通过 Docker 容器集成，作为可选 OCR 后端
+  - locro (MIT) - Chrome ScreenAI 的 ctypes 封装；源码位于
+    `aih_contexture/vendor/locro/`，许可证保留于该目录的 `LICENSE`。
+
+Chrome ScreenAI 调用的原生库和模型是 Google 专有组件，不随本项目分发。
+发行包不包含模型权重。根目录 `MODEL_LICENSE` 提供单独的修改版 OpenRAIL-M
+模型许可证文本；具体模型权重仍须遵循其来源方的许可和使用条款。
 
 ================================================================================
 许可证兼容性说明
@@ -60,5 +66,7 @@ Datalab 项目（Endless Labs, Inc.）：
 
 - GPL-3.0 组件：Marker, Surya → 本项目必须使用 GPL-3.0
 - Apache-2.0 组件：Chandra, PDFText, Calamari → 与 GPL-3.0 兼容
+- locro 源码使用 MIT；相应许可证随源码保留。
+- 模型权重不随发行包分发；模型许可证及外部服务条款独立于本项目代码许可证。
 
 本项目整体使用 GPL-3.0-or-later 许可证。

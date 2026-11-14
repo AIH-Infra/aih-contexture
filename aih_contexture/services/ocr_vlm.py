@@ -11,6 +11,7 @@ from PIL import Image
 from pydantic import BaseModel
 
 from aih_contexture.logger import get_logger
+from aih_contexture.runtime.console_text import safe_endpoint_for_log
 from aih_contexture.schema.blocks import Block
 from aih_contexture.services import BaseService
 from aih_contexture.utils.api_key_rotator import APIKeyRotator
@@ -60,9 +61,15 @@ class VlmOcrService(BaseService):
         if self.key_rotator.get_key_count() > 1:
             logger.info(f"[VlmOcrService] Using {self.key_rotator.get_key_count()} API keys with rotation")
 
-        logger.info(f"[VlmOcrService] Init: base_url={self.openai_base_url}, model={self.openai_model}")
-        logger.info(f"[VlmOcrService] Image: format={self.openai_image_format}, max_dim={self.max_image_dimension}")
-        logger.info(f"[VlmOcrService] Mode: vlm_response_mode={self.vlm_response_mode}, openai_use_stop={self.openai_use_stop}")
+        logger.debug(
+            "[VlmOcrService] Init: endpoint=%s model=%s image=%s/%s response_mode=%s stop=%s",
+            safe_endpoint_for_log(self.openai_base_url),
+            self.openai_model,
+            self.openai_image_format,
+            self.max_image_dimension,
+            self.vlm_response_mode,
+            self.openai_use_stop,
+        )
 
     def get_client(self, api_key: Optional[str] = None) -> openai.OpenAI:
         """Get OpenAI client with optional API key override."""

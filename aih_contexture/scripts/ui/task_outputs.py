@@ -2,49 +2,120 @@ from __future__ import annotations
 
 import os
 import time
+import json
 import zipfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+from aih_contexture.runtime.output_contract import document_output_basename, document_output_folder
+from aih_contexture.runtime.run_summary import batch_summary_payload, utc_now_iso
 from aih_contexture.scripts.ui.output_restore import output_file_records
 
 
+def get_output_folder(
+    output_root: str | os.PathLike[str],
+    input_path_or_name: str,
+    *,
+    file_index: int | None = None,
+) -> str:
+    """Create an isolated timestamped folder for one input document."""
+    # file_index is retained for caller compatibility; collision handling is
+    # based on the timestamped folder itself.
+    return document_output_folder(output_root, input_path_or_name)
+
+
 def get_output_basename(input_path_or_name: str, start_page=None, end_page=None) -> str:
-    stem = Path(input_path_or_name).stem
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return document_output_basename(input_path_or_name, start_page, end_page)
 
-    if start_page is not None and end_page is not None:
-        return f"{stem}_p{start_page}-{end_page}_{ts}"
-    return f"{stem}_{ts}"
+def build_zip(
+    paths: Iterable[str | os.PathLike[str]],
+    zip_path: str | os.PathLike[str],
+    *,
+    batch_summary: dict[str, Any] | None = None,
+    rename_log: list[dict[str, str]] | None = None,
+) -> str:
+    """Create a flat download archive without extracted image resources.
 
+    Per-document ``run_summary.json`` files are deliberately omitted because
+    a flat archive cannot contain multiple files with that name.  The archive
+    gets one root-level batch summary instead.
 
-def build_zip(paths: Iterable[str | os.PathLike[str]], zip_path: str | os.PathLike[str]) -> str:
+    ``rename_log`` (when provided) receives one record per archived file:
+    ``{"source_artifact_name", "archive_name"}`` so batch summaries can stay
+    consistent when flat-name collisions force ``__2`` style renames (P2-2).
+    """
     zip_path_str = os.fspath(zip_path)
     parent = os.path.dirname(zip_path_str)
     if parent:
         os.makedirs(parent, exist_ok=True)
 
     try:
-        return _write_zip(paths, zip_path_str)
+        return _write_zip(paths, zip_path_str, batch_summary=batch_summary, rename_log=rename_log)
     except PermissionError:
         fallback = _fallback_zip_path(zip_path_str)
-        return _write_zip(paths, fallback)
+        return _write_zip(paths, fallback, batch_summary=batch_summary, rename_log=rename_log)
 
 
-def _write_zip(paths: Iterable[str | os.PathLike[str]], zip_path_str: str) -> str:
+def _archive_arcname(path: str, used: set[str]) -> str:
+    candidate = Path(path).name
+    if candidate not in used:
+        used.add(candidate)
+        return candidate
+    stem = Path(candidate).stem
+    suffix = Path(candidate).suffix
+    index = 2
+    while True:
+        candidate = f"{stem}__{index}{suffix}"
+        if candidate not in used:
+            used.add(candidate)
+            return candidate
+        index += 1
+
+
+def _write_zip(
+    paths: Iterable[str | os.PathLike[str]],
+    zip_path_str: str,
+    *,
+    batch_summary: dict[str, Any] | None = None,
+    rename_log: list[dict[str, str]] | None = None,
+) -> str:
+    used: set[str] = set()
+    renames: list[dict[str, str]] = []
     with zipfile.ZipFile(zip_path_str, "w", compression=zipfile.ZIP_DEFLATED) as zf:
         for path in paths:
-            if path and os.path.exists(path):
-                zf.write(path, arcname=os.path.basename(os.fspath(path)))
+            if not path or not os.path.isfile(path):
+                continue
+            source = os.fspath(path)
+            suffix = Path(source).suffix.lower()
+            if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+                continue
+            # Per-document summaries are represented by the root batch summary.
+            if Path(source).name.lower() == "run_summary.json":
+                continue
+            arcname = _archive_arcname(source, used)
+            if rename_log is not None:
+                rename_log.append(
+                    {
+                        "source_artifact_name": Path(source).name,
+                        "archive_name": arcname,
+                    }
+                )
+            if arcname != Path(source).name:
+                renames.append(
+                    {
+                        "source_artifact_name": Path(source).name,
+                        "archive_name": arcname,
+                    }
+                )
+            zf.write(source, arcname=arcname)
+        if batch_summary is not None:
+            if renames:
+                # P2-2: 重命名记录必须在 ZIP 内的批次摘要里可见。
+                batch_summary["archive_renames"] = renames
+            summary_name = _archive_arcname("run_summary.json", used)
+            zf.writestr(summary_name, json.dumps(batch_summary, ensure_ascii=False, indent=2) + "\n")
     return zip_path_str
-
-
-def _fallback_zip_path(zip_path_str: str) -> str:
-    path = Path(zip_path_str)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return str(path.with_name(f"{path.stem}_{stamp}{path.suffix}"))
-
 
 def record_processed_outputs(
     ctx: dict,
@@ -88,21 +159,80 @@ def worker_error_details(result: dict[str, Any], default_error: str = "子进程
     return str(error), str(details)
 
 
+def register_document_summary(ctx: dict[str, Any], summary_path: str | os.PathLike[str]) -> None:
+    summaries = ctx.setdefault("document_summary_paths", [])
+    path = os.fspath(summary_path)
+    if path not in summaries:
+        summaries.append(path)
+
+
+def _discover_document_summaries(
+    ctx: dict[str, Any],
+    output_paths: Iterable[str | os.PathLike[str]],
+) -> list[str]:
+    paths = list(ctx.get("document_summary_paths") or [])
+    seen = {os.path.normcase(os.path.abspath(path)) for path in paths}
+    for raw in output_paths:
+        if not raw:
+            continue
+        candidate = Path(os.fspath(raw)).parent / "run_summary.json"
+        key = os.path.normcase(os.path.abspath(candidate))
+        if candidate.is_file() and key not in seen:
+            paths.append(os.fspath(candidate))
+            seen.add(key)
+    return paths
+
+
 def finalize_zip_outputs(
     ctx: dict,
     output_paths: Iterable[str | os.PathLike[str]],
     output_dir: str | os.PathLike[str],
     zip_name: str,
+    *,
+    mode: str | None = None,
+    models: dict[str, Any] | None = None,
+    config: dict[str, Any] | None = None,
+    started_at: str | None = None,
+    status: str | None = None,
 ) -> str | None:
+    output_paths = list(output_paths)
     existing_paths = [
         os.fspath(path)
         for path in output_paths
         if path and os.path.exists(path)
     ]
-    if not existing_paths:
+    summary_paths = _discover_document_summaries(ctx, existing_paths)
+    if not existing_paths and not summary_paths:
         return None
 
-    zip_path = build_zip(existing_paths, Path(output_dir) / zip_name)
+    started = started_at or ctx.get("batch_started_at") or utc_now_iso()
+    warnings = list(ctx.get("warnings") or [])
+    errors = list(ctx.get("errors") or [])
+    effective_status = str(status or ctx.get("status") or "succeeded")
+    if existing_paths and not summary_paths:
+        # P1-10: 有正式输出却找不到任何文档摘要时，禁止"成功 ZIP + 0 文档记录"。
+        if effective_status == "succeeded":
+            effective_status = "partial"
+        warnings.append(
+            f"{len(existing_paths)} 个输出文件缺少文档级 run_summary.json，"
+            "批次摘要无法关联任何文档记录，状态已降级为 partial。"
+        )
+    batch_summary = batch_summary_payload(
+        processing_id=str(ctx.get("processing_id") or "0000"),
+        mode=str(mode or ctx.get("mode") or "unknown"),
+        models=models or ctx.get("models") or {},
+        config=config or ctx.get("config") or {},
+        started_at=str(started),
+        finished_at=utc_now_iso(),
+        document_summary_paths=summary_paths,
+        status=effective_status,
+        warnings=warnings,
+        errors=errors,
+    )
+    rename_log: list[dict[str, str]] = []
+    zip_path = build_zip(existing_paths, Path(output_dir) / zip_name, batch_summary=batch_summary, rename_log=rename_log)
     ctx["last_zip_path"] = zip_path
-    ctx["last_zip_name"] = zip_name
+    ctx["last_zip_name"] = Path(zip_path).name
+    ctx["batch_summary"] = batch_summary
     return zip_path
+

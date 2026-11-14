@@ -15,6 +15,7 @@ import requests
 from PIL import Image
 
 from aih_contexture.logger import get_logger
+from aih_contexture.runtime.console_text import safe_endpoint_for_log
 from aih_contexture.services import BaseService
 
 logger = get_logger()
@@ -61,9 +62,12 @@ class CalamariService(BaseService):
             )
         )
 
-        logger.info(
-            f"[CalamariService] Init: base_url={self.calamari_base_url}, model={self.calamari_model}, "
-            f"timeout={self.calamari_timeout}, sequential_mode={self.calamari_sequential_mode}"
+        logger.debug(
+            "[CalamariService] Init: endpoint=%s model=%s timeout=%s sequential=%s",
+            safe_endpoint_for_log(self.calamari_base_url),
+            self.calamari_model,
+            self.calamari_timeout,
+            self.calamari_sequential_mode,
         )
 
     def health_check(self) -> bool:
@@ -85,10 +89,10 @@ class CalamariService(BaseService):
             return []
 
         if self.calamari_sequential_mode:
-            logger.info(f"[CalamariService] Using sequential mode for {len(images)} images (page)")
+            logger.debug("[CalamariService] Sequential page mode images=%s", len(images))
             return self._ocr_sequential(images)
 
-        logger.info(f"[CalamariService] Using batch mode for {len(images)} images (whole page)")
+        logger.debug("[CalamariService] Whole-page batch images=%s", len(images))
         
         # 直接发送整页，不拆分
         return self._ocr_batch_single(images, global_start_index=0)
@@ -103,10 +107,10 @@ class CalamariService(BaseService):
             return []
 
         if self.calamari_sequential_mode:
-            logger.info(f"[CalamariService] Using sequential mode for {len(images)} images")
+            logger.debug("[CalamariService] Sequential images=%s", len(images))
             return self._ocr_sequential(images)
 
-        logger.info(f"[CalamariService] Using BATCH mode for {len(images)} images (may split)")
+        logger.debug("[CalamariService] Batch images=%s", len(images))
 
         results: List[str] = []
         global_start = 0
@@ -122,11 +126,11 @@ class CalamariService(BaseService):
         """串行模式：逐张发送"""
         out: List[str] = []
         total = len(images)
-        logger.info(f"[CalamariService] Sequential OCR: 0/{total}")
+        logger.debug("[CalamariService] Sequential OCR total=%s", total)
 
         for idx, img in enumerate(images):
             if idx % 20 == 0 or idx == total - 1:
-                logger.info(f"[CalamariService] Sequential progress: {idx + 1}/{total}")
+                logger.debug("[CalamariService] Sequential progress=%s/%s", idx + 1, total)
 
             buf = io.BytesIO()
             img.save(buf, format="PNG")
@@ -149,14 +153,14 @@ class CalamariService(BaseService):
                 logger.warning(f"[CalamariService] Sequential OCR failed for image {idx}: {e}")
                 out.append("")
 
-        logger.info(f"[CalamariService] Sequential complete: {total} images")
+        logger.debug("[CalamariService] Sequential complete images=%s", total)
         return out
 
     def _ocr_batch_single(self, images: List[Image.Image], global_start_index: int) -> List[str]:
         """处理单个批次的 OCR"""
         index_to_position = {global_start_index + i: i for i in range(len(images))}
 
-        logger.info(
+        logger.debug(
             f"[CalamariService] _ocr_batch_single: "
             f"images={len(images)}, global_start_index={global_start_index}"
         )
@@ -174,7 +178,10 @@ class CalamariService(BaseService):
 
                 data = {"model": self.calamari_model}
 
-                logger.info(f"[CalamariService] Sending batch to {self.calamari_base_url}/ocr/batch")
+                logger.debug(
+                    "[CalamariService] Sending batch to %s",
+                    safe_endpoint_for_log(f"{self.calamari_base_url}/ocr/batch"),
+                )
 
                 resp = requests.post(
                     f"{self.calamari_base_url}/ocr/batch",
@@ -185,12 +192,15 @@ class CalamariService(BaseService):
                 resp.raise_for_status()
                 payload = resp.json()
 
-                logger.info(f"[CalamariService] Response keys: {list(payload.keys())}")
+                logger.debug("[CalamariService] Response keys: %s", list(payload.keys()))
                 if "results" in payload:
-                    logger.info(f"[CalamariService] Results count: {len(payload.get('results', []))}")
+                    logger.debug("[CalamariService] Results count: %s", len(payload.get("results", [])))
                     if payload.get("results"):
                         first_result = payload['results'][0]
-                        logger.info(f"[CalamariService] First result: filename={first_result.get('filename')}, text_preview={first_result.get('text', '')[:50]}...")
+                        logger.debug(
+                            "[CalamariService] First result filename=%s",
+                            first_result.get("filename"),
+                        )
 
                 try:
                     return self._parse_and_reorder_results(
@@ -219,7 +229,7 @@ class CalamariService(BaseService):
                 
                 # 最后一次尝试失败，降级到串行
                 if self.calamari_fallback_to_sequential_on_ordering_failure:
-                    logger.warning(f"[CalamariService] ⚠️ All batch attempts failed, falling back to sequential")
+                    logger.warning("[CalamariService] All batch attempts failed; falling back to sequential")
                     return self._ocr_sequential(images)
                 return [""] * len(images)
 

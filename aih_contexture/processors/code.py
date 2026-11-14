@@ -25,7 +25,7 @@ class CodeProcessor(BaseProcessor):
                 total_lines += line_count
                 total_characters += char_count
 
-        logger.info(
+        logger.debug(
             "[CodeProcessor] completed: code_blocks=%s total_lines=%s total_characters=%s",
             code_block_count,
             total_lines,

@@ -64,7 +64,34 @@ def main(argv: list[str] | None = None) -> int:
             progress_callback=progress.on_event,
         )
         input_pdf = Path(job["input_pdf"])
-        payload = runtime.process_document(input_pdf, list(range(int(job.get("page_count", 0) or 0))))
+        page_indices = job.get("page_indices")
+        if not isinstance(page_indices, list):
+            page_indices = list(range(int(job.get("page_count", 0) or 0)))
+        page_indices = [int(index) for index in page_indices]
+        if job.get("collect_pages"):
+            runtime.emit_searchable_pdf = False
+        payload = runtime.process_document(input_pdf, page_indices)
+        if job.get("collect_pages"):
+            Path(job["result_json"]).write_text(
+                json.dumps({"ok": True, "pages": [
+                    {
+                        "page_index": index,
+                        "markdown": markdown,
+                        "clean_html": html,
+                        "printed_page": printed,
+                        "chunk_page": chunk,
+                    }
+                    for index, markdown, html, printed, chunk in zip(
+                        page_indices,
+                        payload.get("markdown_pages", []),
+                        payload.get("clean_html_pages", []),
+                        payload.get("printed_pages", []),
+                        payload.get("chunk_pages", []),
+                    )
+                ]}, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            return 0
         searchable_pdf_path = payload.get("searchable_pdf_path")
         if not isinstance(searchable_pdf_path, str) or not searchable_pdf_path:
             raise RuntimeError("Chrome ScreenAI worker did not produce searchable_pdf_path")

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
@@ -16,6 +18,65 @@ from .models import BoundingBox, OcrBlock, OcrLine, OcrPage, OcrResult, OcrWord
 log = logging.getLogger(__name__)
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tiff", ".tif", ".gif"}
+
+# ---------------------------------------------------------------------------
+# Font fallback for invisible text overlay
+# ---------------------------------------------------------------------------
+
+# Character ranges that need a CJK-capable font for the invisible text layer.
+_CJK_RANGES = [
+    (0x3040, 0x309F),  # Hiragana
+    (0x30A0, 0x30FF),  # Katakana
+    (0x4E00, 0x9FFF),  # CJK Unified Ideographs
+    (0x3400, 0x4DBF),  # CJK Extension A
+    (0xAC00, 0xD7AF),  # Hangul Syllables
+    (0x3000, 0x303F),  # CJK Symbols and Punctuation
+    (0xFF00, 0xFFEF),  # Halfwidth/Fullwidth forms
+]
+
+
+def _char_needs_cjk_font(ch: str) -> bool:
+    cp = ord(ch)
+    return any(start <= cp <= end for start, end in _CJK_RANGES)
+
+
+def _text_needs_cjk_font(text: str) -> bool:
+    return any(_char_needs_cjk_font(ch) for ch in text)
+
+
+def _find_cjk_font() -> Path | None:
+    """Locate a system font that can encode CJK characters.
+
+    PyMuPDF's default Helvetica only covers Latin-1, so Chinese/Japanese/Korean
+    text in the invisible overlay would otherwise be replaced by question marks.
+    """
+    candidates: list[Path] = []
+    if sys.platform == "win32":
+        system_root = Path(os.environ.get("SYSTEMROOT", r"C:\Windows"))
+        candidates = [
+            system_root / "Fonts" / "simhei.ttf",
+            system_root / "Fonts" / "simsun.ttc",
+            system_root / "Fonts" / "msyh.ttc",
+            Path.home() / "AppData" / "Local" / "Microsoft" / "Windows" / "Fonts" / "simhei.ttf",
+        ]
+    elif sys.platform == "darwin":
+        candidates = [
+            Path("/System/Library/Fonts/PingFang.ttc"),
+            Path("/System/Library/Fonts/STHeiti Light.ttc"),
+            Path("/Library/Fonts/Arial Unicode.ttf"),
+        ]
+    else:
+        candidates = [
+            Path("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc"),
+            Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+            Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        ]
+
+    for path in candidates:
+        if path.exists():
+            return path
+    return None
+
 
 
 class ScreenAI:
@@ -117,6 +178,8 @@ class ScreenAI:
                 continue
 
             pg = doc[i]
+            if pg.rotation:
+                pg.remove_rotation()
             scale = min(1.0, self._max_dim / max(pg.rect.width, pg.rect.height))
             dpi = int(72 * scale * 2)
             pix = pg.get_pixmap(dpi=dpi)
@@ -138,7 +201,9 @@ class ScreenAI:
                 sum(len(b.lines) for b in ocr_page.blocks),
             )
 
-        doc.save(str(output_pdf), deflate=True)
+        if hasattr(doc, "subset_fonts"):
+            doc.subset_fonts()
+        doc.save(str(output_pdf), deflate=True, garbage=4)
         doc.close()
         log.info("Searchable PDF -> %s", output_pdf)
         return OcrResult(pages=ocr_pages)
@@ -252,6 +317,7 @@ def _overlay_text(
     """Insert invisible text onto a PyMuPDF page for each OCR'd word."""
     import fitz  # noqa: F811
 
+    cjk_font = _find_cjk_font()
     for ln in lines:
         for w in ln.words:
             if not w.text or not w.width:
@@ -261,10 +327,84 @@ def _overlay_text(
             y0 = w.y * sy
             x1 = (w.x + w.width) * sx
             y1 = (w.y + w.height) * sy
-            font_size = max(1.0, (y1 - y0) * 0.8)
+            _insert_invisible_word(page, fitz.Rect(x0, y0, x1, y1), w.text, cjk_font)
+
+# Thresholds for conditionally stretching proportional (mostly Latin) words.
+_LATIN_STRETCH_THRESHOLD = 1.25
+_LATIN_MAX_STRETCH = 2.5
+
+
+def _insert_invisible_word(
+    page, rect, text: str, cjk_font: Path | None
+) -> None:
+    """Insert invisible horizontal text constrained to the OCR word box."""
+    import fitz  # noqa: F811
+
+    if rect.is_empty or rect.width <= 0 or rect.height <= 0:
+        return
+
+    use_cjk = cjk_font is not None and _text_needs_cjk_font(text)
+    font_args: dict[str, object] = {}
+    if use_cjk:
+        font_args = {"fontfile": str(cjk_font), "fontname": "AIHFallbackCJK"}
+
+    if use_cjk:
+        font = fitz.Font(fontfile=str(cjk_font))
+        font_size = max(1.0, rect.height * 0.95)
+        text_width = font.text_length(text, font_size)
+        if text_width > 0:
+            scale_x = rect.width / text_width
+            baseline_y = rect.y1 - font_size * 0.1
+            point = fitz.Point(rect.x0, baseline_y)
             page.insert_text(
-                fitz.Point(x0, y1 - font_size * 0.1),
-                w.text,
+                point,
+                text,
                 fontsize=font_size,
-                render_mode=3,  # invisible
+                render_mode=3,
+                rotate=0,
+                morph=(point, fitz.Matrix(scale_x, 1.0)),
+                **font_args,
             )
+            return
+
+    font_size = max(1.0, rect.height * 0.8)
+    font = fitz.Font("helv")
+    text_width = font.text_length(text, font_size)
+    if text_width > 0:
+        scale_x = rect.width / text_width
+        if scale_x > _LATIN_STRETCH_THRESHOLD and scale_x <= _LATIN_MAX_STRETCH:
+            baseline_y = rect.y1 - font_size * 0.1
+            point = fitz.Point(rect.x0, baseline_y)
+            page.insert_text(
+                point,
+                text,
+                fontsize=font_size,
+                fontname="helv",
+                render_mode=3,
+                rotate=0,
+                morph=(point, fitz.Matrix(scale_x, 1.0)),
+            )
+            return
+
+    for _ in range(6):
+        spare = page.insert_textbox(
+            rect,
+            text,
+            fontsize=font_size,
+            render_mode=3,
+            rotate=0,
+            align=fitz.TEXT_ALIGN_LEFT,
+            **font_args,
+        )
+        if spare >= 0:
+            return
+        font_size *= 0.82
+
+    page.insert_text(
+        fitz.Point(rect.x0, rect.y1 - max(1.0, font_size) * 0.1),
+        text,
+        fontsize=max(1.0, font_size),
+        render_mode=3,
+        rotate=0,
+        **font_args,
+    )

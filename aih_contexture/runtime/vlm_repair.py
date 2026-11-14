@@ -180,8 +180,8 @@ async def repair_vlm_json_async(
     remaining_failed_pages = extract_failed_pages(
         {
             "format": "vlm_generalized",
-            "pages": [json.loads(page) for page in converter._last_json_pages or []],
-            "diagnostics": converter._last_json_diagnostics or [],
+            "pages": [json.loads(page) for page in converter.last_json_pages or []],
+            "diagnostics": converter.last_json_diagnostics or [],
         }
     )
     return markdown, converter, failed_pages, remaining_failed_pages

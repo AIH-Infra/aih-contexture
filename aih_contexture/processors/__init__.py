@@ -8,7 +8,7 @@ from aih_contexture.util import assign_config
 
 
 class BaseProcessor:
-    block_types: Tuple[BlockTypes] | None = None  # What block types this processor is responsible for
+    block_types: Tuple[BlockTypes, ...] | None = None  # What block types this processor is responsible for
 
     def __init__(self, config: Optional[BaseModel | dict] = None):
         assign_config(self, config)

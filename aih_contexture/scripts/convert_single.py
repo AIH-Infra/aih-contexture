@@ -123,7 +123,6 @@ def convert_single_cli(fpath: str = None, pipeline_job_json: str = None, pipelin
     if not fpath:
         raise click.UsageError("Missing argument 'FPATH' or --pipeline_job_json.")
 
-    models = create_model_dict()
     start = time.time()
     output_format = kwargs.get("output_format", "markdown")
     config_parser = ConfigParser(kwargs)
@@ -136,6 +135,11 @@ def convert_single_cli(fpath: str = None, pipeline_job_json: str = None, pipelin
             "config": kwargs,
         }
     )
+    is_text_layer_fast_path = (
+        str(kwargs.get("layout_backend") or "").strip().lower().replace("-", "_") == "none"
+        and str(kwargs.get("ocr_backend") or "none").strip().lower().replace("-", "_") == "none"
+    )
+    models = None if is_text_layer_fast_path else create_model_dict()
     result = run_job(job, artifact_dict=models)
     out_folder = config_parser.get_output_folder(fpath)
     save_contexture_result(result, out_folder, config_parser.get_base_filename(fpath), output_format)

@@ -5,8 +5,13 @@ import html
 import re
 from typing import Any
 
+from aih_contexture.utils.footnote_markers import (
+    match_leading_footnote_marker,
+    normalize_footnote_marker,
+)
 
-FOOTNOTE_SEMANTIC_VERSION = "footnote-superscript/0.1"
+
+FOOTNOTE_SEMANTIC_VERSION = "footnote-superscript/0.2"
 
 _HTML_SUP_RE = re.compile(r"<sup>\s*(.*?)\s*</sup>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -373,13 +378,8 @@ def _block_text(block: dict[str, Any]) -> str:
 
 
 def _extract_leading_marker(text: str) -> str | None:
-    html_match = _LEADING_HTML_SUP_RE.match(text or "")
-    if html_match:
-        return html_match.group(1)
-    match = _LEADING_MARKER_RE.match(text or "")
-    if match:
-        return match.group(1)
-    return None
+    marker = match_leading_footnote_marker(text or "")
+    return marker.original if marker is not None else None
 
 
 def _plain_marker(text: str) -> str:
@@ -387,14 +387,12 @@ def _plain_marker(text: str) -> str:
 
 
 def _is_marker(value: str) -> bool:
-    return bool(value and _MARKER_RE.fullmatch(value))
+    return normalize_footnote_marker(value) is not None
 
 
 def _normalize_marker(value: str) -> str:
-    marker = re.sub(r"[)\].-]+$", "", _plain_marker(value)).strip()
-    if marker.isdigit():
-        return str(int(marker)) if marker else marker
-    return marker.lower()
+    marker = normalize_footnote_marker(value)
+    return marker if marker is not None else _plain_marker(value).lower()
 
 
 def _is_single_alpha_marker(marker: str) -> bool:

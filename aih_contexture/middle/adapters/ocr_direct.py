@@ -7,7 +7,9 @@ from bs4 import BeautifulSoup
 
 from aih_contexture.middle.heading_levels import normalize_middle_heading_levels
 from aih_contexture.middle.labels import normalize_block_type
+from aih_contexture.middle.adapters.mineru_dedup import drop_mineru_aggregate_duplicates
 from aih_contexture.middle.schema import MiddleBlock, MiddleDocument, MiddlePage, MiddleProvenance, MiddleSpan
+from aih_contexture.utils.footnote_markers import match_leading_footnote_marker
 from aih_contexture.vendor.paddleocr_vl_compat import (
     extract_paddle_pruned_blocks,
     find_paddle_layout_results,
@@ -16,10 +18,6 @@ from aih_contexture.vendor.paddleocr_vl_compat import (
 )
 
 _PAGE_NUMBER_TEXT_RE = re.compile(r"^\s*\{?([0-9]{1,4}|[ivxlcdm]{1,12})\}?\s*$", re.IGNORECASE)
-_FOOTNOTE_LEADING_MARKER_RE = re.compile(
-    r"^\s*(?:[-*]\s*)?(?:\\\(\s*)?(?:\^\s*)?\{?([0-9]{1,4}|[ivxlcdm]{1,12})\}?(?:\s*\\\))?[.)]?\s+",
-    re.IGNORECASE,
-)
 _UNICODE_SUPERSCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
 _UNICODE_SUPERSCRIPT_LEADING_MARKER_RE = re.compile(r"^\s*([⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s+")
 _PADDLE_PAGE_NUMBER_RE = re.compile(r"^\s*([0-9]{1,4}|[ivxlcdm]{1,12})\s*$", re.IGNORECASE)
@@ -368,9 +366,13 @@ def _specialized_vlm_pages_to_middle_pages(
                         page_height=height,
                     )
                 )
+        if backend.strip().lower() in {"mineru_vl", "mineru_vl_page"}:
+            drop_mineru_aggregate_duplicates(page)
         _promote_specialized_page_number_blocks(page)
         pages.append(page)
     return sorted(pages, key=lambda page: page.index)
+
+
 
 
 def _split_paddleocr_vl_ocr_text_blocks(blocks: list[Any]) -> list[Any]:
@@ -731,7 +733,7 @@ def _mineru_ref_text_should_be_footnote(
 ) -> bool:
     if str(raw_label or "").strip().lower() != "ref_text":
         return False
-    if not _FOOTNOTE_LEADING_MARKER_RE.match(text or ""):
+    if match_leading_footnote_marker(text or "") is None:
         return False
     bbox = _bbox(block.get("bbox") or block.get("block_bbox") or block.get("coordinate"))
     if isinstance(page_height, (int, float)) and page_height > 0 and bbox:

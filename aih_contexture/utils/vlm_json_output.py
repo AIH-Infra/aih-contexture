@@ -9,6 +9,7 @@ import re
 from typing import Optional, Tuple
 
 from aih_contexture.logger import get_logger
+from aih_contexture.utils.footnote_markers import match_leading_footnote_marker
 from aih_contexture.utils.markdown_filters import strip_blockquote_markers, strip_margin_comment_markers
 
 logger = get_logger()
@@ -139,7 +140,12 @@ def _convert_region_to_markdown(label: str, text: str, config: dict) -> str:
     if not text:
         return ""
 
-    text = _sanitize_text(text)
+    leading_footnote = match_leading_footnote_marker(text) if label == "Footnote" else None
+    if leading_footnote is not None:
+        body = _sanitize_text(text[leading_footnote.body_start:])
+        text = f"{leading_footnote.original} {body}".strip()
+    else:
+        text = _sanitize_text(text)
     if not text:
         return ""
 
@@ -207,25 +213,14 @@ def _convert_region_to_markdown(label: str, text: str, config: dict) -> str:
 
     # Footnote（含联动锚点）
     elif label == "Footnote":
-        # 🔧 修复2：支持多种脚注格式
-        match = re.match(r'<sup>([0-9ivxlcdmIVXLCDM]+|\*+)</sup>\s*(.*)', text, re.DOTALL)
-        if not match:
-            # 格式2: ^1)^ text
-            match = re.match(r'\^(\d+|\*+)\)\^\s*(.*)', text, re.DOTALL)
-        if not match:
-            # 格式3: 1) text
-            match = re.match(r'([0-9ivxlcdmIVXLCDM]+|\*+)\)\s*(.*)', text, re.DOTALL)
-        if not match:
-            # 格式4: 1. text
-            match = re.match(r'([0-9ivxlcdmIVXLCDM]+|\*+)\.\s*(.*)', text, re.DOTALL)
-
-        if match:
-            fn_id = match.group(1)
-            fn_text = match.group(2)
+        marker_match = match_leading_footnote_marker(text)
+        if marker_match:
+            fn_id = marker_match.original
+            fn_text = text[marker_match.body_start:].strip()
             if use_markdown_footnotes or footnote_backlink:
                 logger.debug("Legacy VLM footnote switches are ignored for canonical Contexture Markdown output.")
             return _render_footnote_block(fn_id, fn_text)
-        return _render_footnote_block("1", text)
+        return text
 
     # List-Group
     elif label == "List-Group":

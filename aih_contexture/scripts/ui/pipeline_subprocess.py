@@ -24,6 +24,8 @@ def run_pipeline_file_subprocess(
     *,
     repo_root: str | os.PathLike[str],
     runner: Callable[..., subprocess.CompletedProcess] | None = None,
+    event_callback: Callable[[dict[str, Any]], None] | None = None,
+    progress_timeout: int | float | None = None,
 ) -> dict[str, Any]:
     job_spec = _prepare_pipeline_job_spec(job_spec)
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pipeline_job.json", mode="w", encoding="utf-8") as job_file:
@@ -49,6 +51,8 @@ def run_pipeline_file_subprocess(
             cwd=os.fspath(repo_root),
             env=_pipeline_worker_env(),
             prefix="[Contexture Pipeline Worker]",
+            event_callback=event_callback,
+            progress_timeout=progress_timeout,
         )
     else:
         proc = runner(
@@ -79,9 +83,18 @@ def run_pipeline_file_subprocess(
                 pass
 
     returncode = getattr(proc, "returncode", 0)
+    stalled = bool(getattr(proc, "stalled", False))
+    stalled_for = float(getattr(proc, "stalled_for", 0.0) or 0.0)
+    last_progress_event = getattr(proc, "last_progress_event", None)
     if result is None:
         returncode_text = _format_returncode(returncode)
-        if returncode == 0 and result_read_error:
+        if stalled:
+            error_message = (
+                f"子进程连续 {int(stalled_for)} 秒无进展，已自动终止并跳过当前文件"
+            )
+            if result_read_error:
+                error_message += f"；{result_read_error}"
+        elif returncode == 0 and result_read_error:
             error_message = f"子进程未执行处理逻辑；{result_read_error}"
         elif returncode != 0 and result_read_error:
             error_message = f"子进程异常退出（返回码 {returncode_text}）；{result_read_error}"
@@ -99,6 +112,14 @@ def run_pipeline_file_subprocess(
             "error": error_message,
             "traceback": "",
         }
+    elif stalled:
+        result["success"] = False
+        result["partial"] = bool(result.get("partial") or result.get("file_outputs"))
+        existing_error = result.get("error") or "Pipeline worker stopped making progress"
+        result["error"] = (
+            f"子进程连续 {int(stalled_for)} 秒无进展，已自动终止并跳过当前文件；"
+            f"{existing_error}"
+        )
     elif returncode != 0:
         returncode_text = _format_returncode(returncode)
         result["success"] = False
@@ -109,6 +130,9 @@ def run_pipeline_file_subprocess(
     result["returncode"] = returncode
     result["stdout"] = getattr(proc, "stdout", None)
     result["stderr"] = getattr(proc, "stderr", None)
+    result["stalled"] = stalled
+    result["stalled_for"] = stalled_for
+    result["last_progress_event"] = last_progress_event
     return result
 
 
@@ -118,6 +142,7 @@ def _pipeline_worker_env() -> dict[str, str]:
     env.setdefault("PYTHONUTF8", "1")
     env.setdefault("TQDM_DISABLE", "1")
     env.setdefault("DISABLE_TQDM", "1")
+    env.setdefault("CONTEXTURE_PROGRESS_EVENTS", "1")
     return env
 
 

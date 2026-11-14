@@ -236,6 +236,9 @@ call :verify_torch
 if !errorlevel! neq 0 (
     echo.
     echo [Error] The installed PyTorch build does not match the selected profile
+    echo [Action] If the error mentions c10.dll, WinError 1114, or DLL initialization,
+    echo [Action] Run repair_windows_runtime.bat to rerun the standard installer.
+    echo [Action] Restart Windows if the DLL initialization error remains afterward.
     pause
     exit /b 1
 )
@@ -263,6 +266,7 @@ if !errorlevel! neq 0 (
     echo.
     echo [Error] Project dependency installation changed the verified PyTorch profile
     echo Re-run install.bat and keep the displayed verification error for diagnosis.
+    echo If the error mentions c10.dll or WinError 1114, run repair_windows_runtime.bat to rerun the installer.
     pause
     exit /b 1
 )
@@ -311,7 +315,11 @@ if "!TESS_FOUND!"=="0" (
         set /p INSTALL_TESS="Try installing Tesseract with winget now? (y/N): "
         if /i "!INSTALL_TESS!"=="y" (
             winget install --id UB-Mannheim.TesseractOCR -e
-            echo [Info] If installation succeeded, restart this terminal before using Tesseract.
+            if !errorlevel! neq 0 (
+                echo [Warning] Optional Tesseract installation failed. Install it manually or set CONTEXTURE_TESSERACT_CMD.
+            ) else (
+                echo [Info] Restart this terminal before using Tesseract.
+            )
         )
     ) else (
         echo        Manual install: https://github.com/UB-Mannheim/tesseract/wiki

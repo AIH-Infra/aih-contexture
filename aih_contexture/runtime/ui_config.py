@@ -190,7 +190,7 @@ def vlm_specialized_cli_config(config_params: dict[str, Any]) -> dict[str, Any]:
         "emit_middle_full_json": emit_middle_full_json,
         "chrome_screenai_light": bool(config_params.get("chrome_screenai_light", False)),
         "chrome_preprocess_mode": config_params.get("chrome_preprocess_mode", "native"),
-        "chrome_workers": _int_param(config_params, "chrome_workers", _int_param(config_params, "ocr_concurrency", 2)),
+        "chrome_workers": _int_param(config_params, "chrome_workers", _int_param(config_params, "ocr_concurrency", 4)),
         "chrome_chunk_pages": _int_param(config_params, "chrome_chunk_pages", _int_param(config_params, "ocr_batch_size", 4)),
         "chrome_emit_searchable_pdf": bool(config_params.get("chrome_emit_searchable_pdf", False)),
         "chrome_rasterize_dpi": _int_param(config_params, "chrome_rasterize_dpi", 144),
@@ -237,8 +237,11 @@ def pipeline_base_cli_config(
         "use_llm": bool(config_params.get("use_llm", False)),
         "ocr_backend": ocr_backend if (disable_ocr and ocr_backend == "chrome_screenai") else ("surya" if disable_ocr else ocr_backend),
         "disable_ocr": disable_ocr,
-        "layout_backend": "surya" if disable_layout else layout_backend,
+        # Keep the explicit sentinel so runtime.run_job can select the
+        # model-free text-layer fast path before ConfigParser/model creation.
+        "layout_backend": layout_backend,
         "disable_layout": disable_layout,
+        "text_layer_file_concurrency": _int_param(config_params, "text_layer_file_concurrency", 4),
         "surya_layout_quality": config_params.get("surya_layout_quality", "fast"),
         "layout_dpi_override": config_params.get("layout_dpi_override"),
         "ocr_quality": config_params.get("ocr_quality", "auto"),

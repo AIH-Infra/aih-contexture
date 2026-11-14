@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime
-from typing import Any
+from typing import Any, TextIO
 
 from aih_contexture.converters.pdf import PdfConverter
 from aih_contexture.logger import get_logger
@@ -32,9 +35,45 @@ from aih_contexture.runtime.pipeline_preprocess import (
 )
 from aih_contexture.backends.sidecar_pool import SidecarRuntimePool
 from aih_contexture.runtime.job import ContextureResult
+from aih_contexture.runtime.run_summary import utc_now_iso, write_document_summary
 from aih_contexture.settings import settings
 
 logger = get_logger()
+
+
+@contextmanager
+def atomic_text_writer(path: str, *, encoding: str = "utf-8") -> Iterator[TextIO]:
+    """Write a text artifact completely before replacing its destination."""
+
+    destination = os.path.abspath(path)
+    output_dir = os.path.dirname(destination)
+    os.makedirs(output_dir, exist_ok=True)
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{os.path.basename(destination)}.",
+        suffix=".tmp",
+        dir=output_dir,
+    )
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as stream:
+            yield stream
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp_path, destination)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_text(path: str, content: str, *, encoding: str = "utf-8") -> None:
+    with atomic_text_writer(path, encoding=encoding) as stream:
+        stream.write(content)
 
 
 def append_text(path: str | None, content: str):
@@ -50,8 +89,7 @@ def write_meta_once(meta: dict, out_dir: str, fname_base: str):
     meta_path = os.path.join(out_dir, f"{fname_base}_meta.json")
     if os.path.exists(meta_path):
         return
-    with open(meta_path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(meta, ensure_ascii=False, indent=2))
+    atomic_write_text(meta_path, json.dumps(meta, ensure_ascii=False, indent=2))
 
 
 def update_meta_semantic_resolution(out_dir: str, fname_base: str, semantic_resolution: dict[str, Any] | None):
@@ -68,8 +106,7 @@ def update_meta_semantic_resolution(out_dir: str, fname_base: str, semantic_reso
         except (OSError, json.JSONDecodeError):
             meta = {}
     meta["semantic_resolution"] = semantic_resolution
-    with open(meta_path, "w", encoding="utf-8") as f:
-        f.write(json.dumps(meta, ensure_ascii=False, indent=2))
+    atomic_write_text(meta_path, json.dumps(meta, ensure_ascii=False, indent=2))
 
 
 def save_images(images_dict: dict, out_dir: str):
@@ -77,20 +114,30 @@ def save_images(images_dict: dict, out_dir: str):
         return
 
     for img_name, img in images_dict.items():
+        output_path = os.path.abspath(os.path.join(out_dir, img_name))
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(
+            prefix=f".{os.path.basename(output_path)}.",
+            suffix=".tmp",
+            dir=os.path.dirname(output_path),
+        )
+        os.close(fd)
         try:
             img = convert_if_not_rgb(img)
-            img.save(os.path.join(out_dir, img_name), settings.OUTPUT_IMAGE_FORMAT)
+            img.save(temp_path, settings.OUTPUT_IMAGE_FORMAT)
+            os.replace(temp_path, output_path)
         except Exception:
             logger.exception("Failed to save image artifact: %s", img_name)
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 def write_pipeline_checkpoint(result_path: str | None, payload: dict[str, Any]) -> None:
     if not result_path:
         return
-    temp_path = f"{result_path}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    os.replace(temp_path, result_path)
+    atomic_write_text(result_path, json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 def pipeline_checkpoint_payload(
@@ -177,14 +224,15 @@ def save_contexture_result(
     output_format: str,
 ) -> dict[str, str]:
     os.makedirs(output_dir, exist_ok=True)
+    if result.middle_json is None:
+        raise ValueError("ContextureResult is missing mandatory Middle JSON")
     text, ext = text_from_contexture_result(result, output_format)
     text = text.encode(settings.OUTPUT_ENCODING, errors="replace").decode(
         settings.OUTPUT_ENCODING
     )
 
     output_path = os.path.join(output_dir, f"{fname_base}.{ext}")
-    with open(output_path, "w+", encoding=settings.OUTPUT_ENCODING) as f:
-        f.write(text)
+    atomic_write_text(output_path, text, encoding=settings.OUTPUT_ENCODING)
 
     metadata_to_write = dict(result.metadata or {})
     if result.middle_json is not None:
@@ -204,8 +252,11 @@ def save_contexture_result(
             metadata_to_write["semantic_resolution"] = semantic_resolution
 
     meta_path = os.path.join(output_dir, f"{fname_base}_meta.json")
-    with open(meta_path, "w+", encoding=settings.OUTPUT_ENCODING) as f:
-        f.write(json.dumps(metadata_to_write, indent=2, ensure_ascii=False))
+    atomic_write_text(
+        meta_path,
+        json.dumps(metadata_to_write, indent=2, ensure_ascii=False),
+        encoding=settings.OUTPUT_ENCODING,
+    )
 
     middle_outputs = {}
     if result.middle_json is not None:
@@ -283,16 +334,22 @@ def save_middle_json_artifacts(
     )
     compact_middle_json = compact_middle_json_for_storage(resolved_middle_json)
     middle_json_path = os.path.join(output_dir, f"{fname_base}_middle.json")
-    with open(middle_json_path, "w+", encoding=settings.OUTPUT_ENCODING) as f:
-        f.write(json.dumps(compact_middle_json, ensure_ascii=False, separators=(",", ":")))
+    atomic_write_text(
+        middle_json_path,
+        json.dumps(compact_middle_json, ensure_ascii=False, separators=(",", ":")),
+        encoding=settings.OUTPUT_ENCODING,
+    )
 
     outputs = {
         "middle_json_path": middle_json_path,
     }
     if emit_middle_full_json:
         middle_full_json_path = os.path.join(output_dir, f"{fname_base}_middle_full.json")
-        with open(middle_full_json_path, "w+", encoding=settings.OUTPUT_ENCODING) as f:
-            f.write(json.dumps(resolved_middle_json, ensure_ascii=False, separators=(",", ":")))
+        atomic_write_text(
+            middle_full_json_path,
+            json.dumps(resolved_middle_json, ensure_ascii=False, separators=(",", ":")),
+            encoding=settings.OUTPUT_ENCODING,
+        )
         outputs["middle_full_json_path"] = middle_full_json_path
 
     if emit_middle_report:
@@ -310,14 +367,20 @@ def save_middle_json_artifacts(
             ],
         }
         middle_report_path = os.path.join(output_dir, f"{fname_base}_middle_report.json")
-        with open(middle_report_path, "w+", encoding=settings.OUTPUT_ENCODING) as f:
-            f.write(json.dumps(report_payload, ensure_ascii=False, indent=2))
+        atomic_write_text(
+            middle_report_path,
+            json.dumps(report_payload, ensure_ascii=False, indent=2),
+            encoding=settings.OUTPUT_ENCODING,
+        )
         outputs["middle_report_path"] = middle_report_path
 
     if emit_middle_debug:
         middle_debug_path = os.path.join(output_dir, f"{fname_base}_middle_debug.md")
-        with open(middle_debug_path, "w+", encoding=settings.OUTPUT_ENCODING) as f:
-            f.write(render_middle_debug_markdown(compact_middle_json))
+        atomic_write_text(
+            middle_debug_path,
+            render_middle_debug_markdown(compact_middle_json),
+            encoding=settings.OUTPUT_ENCODING,
+        )
         outputs["middle_debug_path"] = middle_debug_path
 
     middle_scholarly_text = None
@@ -338,8 +401,11 @@ def save_middle_json_artifacts(
         )
 
     if emit_middle_scholarly and middle_scholarly_text is not None:
-        with open(middle_scholarly_path, "w+", encoding=settings.OUTPUT_ENCODING) as f:
-            f.write(middle_scholarly_text)
+        atomic_write_text(
+            middle_scholarly_path,
+            middle_scholarly_text,
+            encoding=settings.OUTPUT_ENCODING,
+        )
         outputs["middle_scholarly_path"] = middle_scholarly_path
 
     if emit_middle_scholarly_report and middle_scholarly_text is not None:
@@ -348,8 +414,11 @@ def save_middle_json_artifacts(
             source_path=middle_scholarly_path,
         )
         middle_scholarly_report_path = os.path.join(output_dir, f"{fname_base}_middle_scholarly_report.json")
-        with open(middle_scholarly_report_path, "w+", encoding=settings.OUTPUT_ENCODING) as f:
-            f.write(json.dumps(scholarly_report, ensure_ascii=False, indent=2))
+        atomic_write_text(
+            middle_scholarly_report_path,
+            json.dumps(scholarly_report, ensure_ascii=False, indent=2),
+            encoding=settings.OUTPUT_ENCODING,
+        )
         outputs["middle_scholarly_report_path"] = middle_scholarly_report_path
     source_pdf = resolved_middle_json.get("source_name")
     if emit_layout_overlay:
@@ -532,7 +601,7 @@ def _keep_value(value: Any) -> bool:
 
 
 def merge_json_batches(output_path: str, batch_paths: list[str], metadata: dict):
-    with open(output_path, "w", encoding="utf-8") as out_f:
+    with atomic_text_writer(output_path) as out_f:
         out_f.write('{\n  "children": [\n')
         first_child = True
         for batch_path in batch_paths:
@@ -543,19 +612,20 @@ def merge_json_batches(output_path: str, batch_paths: list[str], metadata: dict)
                     out_f.write(',\n')
                 out_f.write(json.dumps(child, ensure_ascii=False, indent=2))
                 first_child = False
-            try:
-                os.remove(batch_path)
-            except OSError:
-                pass
         out_f.write('\n  ],\n')
         out_f.write('  "block_type": "Document",\n')
         out_f.write('  "metadata": ')
         out_f.write(json.dumps(metadata, ensure_ascii=False, indent=2))
         out_f.write('\n}')
+    for batch_path in batch_paths:
+        try:
+            os.remove(batch_path)
+        except OSError:
+            pass
 
 
 def merge_chunk_batches(output_path: str, batch_paths: list[str], metadata: dict):
-    with open(output_path, "w", encoding="utf-8") as out_f:
+    with atomic_text_writer(output_path) as out_f:
         out_f.write('{\n  "blocks": [\n')
         first_block = True
         page_info_items = []
@@ -568,10 +638,6 @@ def merge_chunk_batches(output_path: str, batch_paths: list[str], metadata: dict
                 out_f.write(json.dumps(block, ensure_ascii=False, indent=2))
                 first_block = False
             page_info_items.extend(batch_data.get("page_info", {}).items())
-            try:
-                os.remove(batch_path)
-            except OSError:
-                pass
         out_f.write('\n  ],\n')
         out_f.write('  "page_info": {\n')
         for idx, (page_key, page_value) in enumerate(page_info_items):
@@ -583,9 +649,16 @@ def merge_chunk_batches(output_path: str, batch_paths: list[str], metadata: dict
         out_f.write('  "metadata": ')
         out_f.write(json.dumps(metadata, ensure_ascii=False, indent=2))
         out_f.write('\n}')
+    for batch_path in batch_paths:
+        try:
+            os.remove(batch_path)
+        except OSError:
+            pass
 
 
 def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
+    from aih_contexture.runtime.progress_events import emit_progress_event, set_progress_context
+
     start = time.time()
     file_path = job["file_path"]
     source_file_path = file_path
@@ -594,10 +667,30 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
     output_formats = job["output_formats"]
     fname_base = job["fname_base"]
     batch_jobs = job["batch_jobs"]
+    if _is_text_layer_pipeline_job(batch_jobs):
+        return _process_text_layer_pipeline_job(job)
     total_batches = len(batch_jobs)
+    batch_page_counts = [_pipeline_batch_page_count(batch_job) for batch_job in batch_jobs]
+    document_total_pages = sum(batch_page_counts)
     checkpoint_path = job.get("_pipeline_result_json")
     result_key = f"{file_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     completed_batches: list[str] = []
+    set_progress_context(
+        file_name=file_name,
+        total_batches=total_batches,
+        document_total_pages=document_total_pages,
+        batch_page_offset=0,
+    )
+    emit_progress_event(
+        "file_started",
+        "starting",
+        file_name=file_name,
+        current=0,
+        total=document_total_pages,
+        unit="pages",
+        absolute_progress=True,
+        message=f"Starting {file_name}",
+    )
 
     os.makedirs(out_dir_final, exist_ok=True)
 
@@ -616,10 +709,8 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
         "emit_span_overlay",
         "emit_middle_full_json",
     )
-    emit_middle_json = any(
-        any(bool(batch_job.get("config_dict", {}).get(key, False)) for key in middle_artifact_keys)
-        for batch_job in batch_jobs
-    )
+    # Middle JSON is a mandatory artifact for every successful Pipeline job.
+    emit_middle_json = True
     emit_middle_report = any(
         bool(batch_job.get("config_dict", {}).get("emit_middle_report", False))
         for batch_job in batch_jobs
@@ -701,8 +792,11 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
                 error="Pipeline worker started; no batch completed yet.",
             ),
         )
+        emit_progress_event("stage_changed", "model_loading", message="Loading models")
         artifacts = create_model_dict()
+        emit_progress_event("stage_completed", "model_loading", message="Models loaded")
         preprocess_config = dict(batch_jobs[0].get("config_dict", {}) or {}) if batch_jobs else {}
+        emit_progress_event("stage_changed", "preprocess", message="Preprocessing PDF")
         preprocess_result = apply_pipeline_pdf_preprocess(
             file_path=file_path,
             output_dir=out_dir_final,
@@ -710,6 +804,7 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
             config=preprocess_config,
         )
         file_path = preprocess_result.effective_file_path
+        emit_progress_event("stage_completed", "preprocess", message="PDF preprocessing completed")
         backend_summary = _backend_summary_from_batch_jobs(batch_jobs)
         if preprocess_result.exported_artifact_path:
             file_outputs.append(
@@ -720,9 +815,28 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
                 }
             )
 
+        completed_page_count = 0
         for bidx, batch_job in enumerate(batch_jobs):
             batch_label = batch_job["label"]
-            logger.info("[pipeline-worker] batch %s/%s: %s", bidx + 1, total_batches, batch_label)
+            batch_page_count = batch_page_counts[bidx]
+            set_progress_context(
+                batch_index=bidx + 1,
+                total_batches=total_batches,
+                batch_label=batch_label,
+                batch_page_offset=completed_page_count,
+                batch_page_count=batch_page_count,
+            )
+            emit_progress_event(
+                "batch_started",
+                "batch",
+                batch_index=bidx + 1,
+                total_batches=total_batches,
+                current=0,
+                total=batch_page_count,
+                unit="pages",
+                message=f"Processing pages {batch_label}",
+            )
+            logger.debug("[pipeline-worker] batch %s/%s: %s", bidx + 1, total_batches, batch_label)
             write_pipeline_checkpoint(
                 checkpoint_path,
                 pipeline_checkpoint_payload(
@@ -773,6 +887,7 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
                 middle_backends.update(batch_middle.backends)
 
             saved_batch_images = False
+            emit_progress_event("stage_changed", "render", message=f"Rendering batch {bidx + 1}/{total_batches}")
             for fmt in output_formats:
                 renderer = renderer_map[fmt](render_config_dict)
                 rendered = renderer(document)
@@ -783,7 +898,7 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
                     merged_metadata.setdefault(
                         "semantic_resolution",
                         {
-                            "version": "footnote-superscript/0.1",
+                            "version": "footnote-superscript/0.2",
                             "footnote_enabled": bool(config_dict.get("footnote_enabled", True)),
                             "marginal_detection_enabled": True,
                             "superscript_policy": str(config_dict.get("superscript_policy", "footnote_safe")),
@@ -806,19 +921,28 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
                         saved_batch_images = True
                 elif fmt == "json":
                     batch_json_path = os.path.join(out_dir_final, f"{fname_base}.json.batch{bidx:04d}")
-                    with open(batch_json_path, "w", encoding="utf-8") as f:
-                        f.write(text)
+                    atomic_write_text(batch_json_path, text)
                     json_batch_paths.append(batch_json_path)
                 elif fmt == "chunks":
                     batch_chunks_path = os.path.join(out_dir_final, f"{fname_base}_chunks.json.batch{bidx:04d}")
-                    with open(batch_chunks_path, "w", encoding="utf-8") as f:
-                        f.write(text)
+                    atomic_write_text(batch_chunks_path, text)
                     chunks_batch_paths.append(batch_chunks_path)
 
                 del renderer, rendered, text, images
 
             del document, converter
             completed_batches.append(batch_label)
+            emit_progress_event(
+                "batch_completed",
+                "batch",
+                batch_index=bidx + 1,
+                total_batches=total_batches,
+                current=batch_page_count,
+                total=batch_page_count,
+                unit="pages",
+                message=f"Completed pages {batch_label}",
+            )
+            completed_page_count += batch_page_count
             write_pipeline_checkpoint(
                 checkpoint_path,
                 pipeline_checkpoint_payload(
@@ -839,6 +963,15 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
                 ),
             )
 
+        emit_progress_event(
+            "stage_changed",
+            "saving",
+            current=document_total_pages,
+            total=document_total_pages,
+            unit="pages",
+            absolute_progress=True,
+            message="Merging and saving outputs",
+        )
         if "markdown" in output_formats and markdown_path:
             file_outputs.append({"format": "markdown", "path": markdown_path, "name": os.path.basename(markdown_path)})
 
@@ -914,11 +1047,39 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
                     logger.exception("Failed to update semantic_resolution in meta artifact")
 
         elapsed = time.time() - start
+        summary_path = write_document_summary(
+            output_dir=out_dir_final,
+            source_name=file_name,
+            processing_id=str(job.get("processing_id") or "0000"),
+            file_index=job.get("file_index"),
+            mode="pipeline",
+            strategy="middle_first",
+            models=backend_summary or {},
+            config=(batch_jobs[0].get("config_dict", {}) if batch_jobs else {}),
+            started_at=datetime.fromtimestamp(start).astimezone().isoformat(timespec="seconds"),
+            finished_at=utc_now_iso(),
+            elapsed_seconds=elapsed,
+            status="succeeded",
+            page_count=document_total_pages,
+            output_paths=[item.get("path") for item in file_outputs if item.get("path")],
+            source_path=source_file_path,
+        )
+        emit_progress_event(
+            "file_completed",
+            "completed",
+            current=document_total_pages,
+            total=document_total_pages,
+            unit="pages",
+            absolute_progress=True,
+            elapsed_seconds=elapsed,
+            message=f"Completed {file_name}",
+        )
         return {
             "success": True,
             "file_name": file_name,
             "result_key": result_key,
             "file_outputs": file_outputs,
+            "summary_path": summary_path,
             "elapsed_seconds": elapsed,
             "backend_summary": backend_summary,
             "error": None,
@@ -927,6 +1088,107 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
     finally:
         sidecar_pool.close_all()
         cleanup_pipeline_preprocess(preprocess_result)
+
+
+def _is_text_layer_pipeline_job(batch_jobs: list[dict[str, Any]]) -> bool:
+    if not batch_jobs:
+        return False
+    return all(
+        str((batch_job.get("config_dict") or {}).get("layout_backend") or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        == "none"
+        for batch_job in batch_jobs
+    )
+
+
+def _process_text_layer_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
+    """Use runtime.run_job for the GUI worker's model-free text-layer route."""
+    from aih_contexture.runtime.job import ContextureJob
+    from aih_contexture.runtime.progress_events import emit_progress_event, set_progress_context
+    from aih_contexture.runtime.runner import run_job
+
+    started = time.time()
+    file_path = job["file_path"]
+    file_name = job["file_name"]
+    output_dir = job["output_dir"]
+    fname_base = job["fname_base"]
+    output_formats = list(job["output_formats"])
+    config = dict(job["batch_jobs"][0].get("config_dict") or {})
+    result_key = f"{file_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    set_progress_context(file_name=file_name, total_batches=1)
+    emit_progress_event("file_started", "starting", file_name=file_name, message=f"Starting {file_name}")
+    emit_progress_event("stage_changed", "extracting", message="Extracting embedded PDF text")
+    result = run_job(
+        ContextureJob(
+            input_path=file_path,
+            input_name=file_name,
+            mode="pipeline",
+            output_formats=output_formats,
+            page_range=config.get("page_range"),
+            config=config,
+        )
+    )
+    markdown_path = os.path.join(output_dir, f"{fname_base}.md")
+    atomic_write_text(markdown_path, result.markdown or "")
+    middle_path = os.path.join(output_dir, f"{fname_base}_middle.json")
+    if result.middle_json is None:
+        raise ValueError("Text-layer pipeline result is missing mandatory Middle JSON")
+    atomic_write_text(
+        middle_path,
+        json.dumps(result.middle_json, ensure_ascii=False, indent=2),
+    )
+    elapsed = time.time() - started
+    summary_path = write_document_summary(
+        output_dir=output_dir, source_name=file_name, processing_id=str(job.get("processing_id") or "0000"),
+        file_index=job.get("file_index"), mode="pipeline", strategy="text_layer",
+        models={"ocr": "none", "layout": "none"}, config=config,
+        started_at=datetime.fromtimestamp(started).astimezone().isoformat(timespec="seconds"),
+        finished_at=utc_now_iso(), elapsed_seconds=elapsed, status="succeeded",
+        page_count=result.page_count, output_paths=[markdown_path, middle_path],
+        warnings=result.warnings, source_path=file_path,
+    )
+    emit_progress_event(
+        "file_completed",
+        "completed",
+        current=result.page_count,
+        total=result.page_count,
+        unit="pages",
+        absolute_progress=True,
+        elapsed_seconds=elapsed,
+        message=f"Completed {file_name}",
+    )
+    return {
+        "success": True,
+        "file_name": file_name,
+        "result_key": result_key,
+        "file_outputs": [
+            {"format": "markdown", "path": markdown_path, "name": os.path.basename(markdown_path)},
+            {"format": "middle_json", "path": middle_path, "name": os.path.basename(middle_path)},
+        ],
+        "elapsed_seconds": elapsed,
+        "backend_summary": _backend_summary_from_batch_jobs(job["batch_jobs"]),
+        "warnings": result.warnings,
+        "metadata": result.metadata,
+        "summary_path": summary_path,
+        "error": None,
+        "traceback": None,
+    }
+
+
+def _pipeline_batch_page_count(batch_job: dict[str, Any]) -> int:
+    page_range = str((batch_job.get("config_dict") or {}).get("page_range") or "")
+    try:
+        start_text, end_text = page_range.split("-", 1)
+        return max(0, int(end_text) - int(start_text) + 1)
+    except (TypeError, ValueError):
+        label = str(batch_job.get("label") or "")
+        try:
+            start_text, end_text = label.split("-", 1)
+            return max(0, int(end_text) - int(start_text) + 1)
+        except (TypeError, ValueError):
+            return 0
 
 
 def _backend_summary_from_batch_jobs(batch_jobs: list[dict[str, Any]]) -> dict[str, Any]:
@@ -978,4 +1240,13 @@ def _layout_model_from_config(config: dict[str, Any]) -> str | None:
         return "PP-DocLayoutV3"
     if layout_backend == "paddle_pp_doclayout_plus_l":
         return "PP-DocLayout_plus-L"
+    if layout_backend == "mineru_pp_doclayout_v2_direct":
+        return "PP-DocLayoutV2"
+    if layout_backend == "surya":
+        return "surya"
+    if layout_backend == "surya2_layout":
+        return "surya2"
+    if layout_backend == "vlm_layout":
+        return str(config.get("vlm_layout_model") or "vlm_layout")
+    # 未知后端交给调用方回退到 layout_backends，避免整条布局信息丢失。
     return None

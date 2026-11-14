@@ -81,7 +81,7 @@ class EquationProcessor(BaseProcessor):
             equation_block_ids.append(page_equation_block_ids)
 
         if total_equation_blocks == 0:
-            logger.info("[EquationProcessor] completed: equation_blocks=0 batch_size=%s", self.get_batch_size())
+            logger.debug("[EquationProcessor] completed: equation_blocks=0 batch_size=%s", self.get_batch_size())
             return
 
         predictions = self.get_latex_batched(images, equation_boxes)
@@ -99,7 +99,7 @@ class EquationProcessor(BaseProcessor):
                 block = document.get_block(block_id)
                 block.html = self.fix_latex(block_prediction)
 
-        logger.info(
+        logger.debug(
             "[EquationProcessor] completed: equation_blocks=%s predicted_pages=%s predicted_equations=%s batch_size=%s",
             total_equation_blocks,
             predicted_pages,

@@ -7,6 +7,7 @@ from aih_contexture.backends.ocr import default_ocr_registry
 
 
 LAYOUT_BACKEND_LABELS = {
+    "none": "文本层快速路径（跳过 Layout）",
     "surya": "Surya（内置通用版面分析）",
     "mineru_pp_doclayout_v2_direct": "MinerU PP-DocLayoutV2 Direct",
     "mineru_vl_layout": "MinerU-VL Layout（API）",
@@ -44,7 +45,9 @@ def layout_backend_options() -> list[str]:
         "surya2_layout",
         "external_layout_sidecar",
     ]
-    return [name for name in preferred if name in names] + [name for name in names if name not in preferred]
+    ordered = [name for name in preferred if name in names]
+    ordered.extend(name for name in names if name not in preferred)
+    return [*ordered, "none"]
 
 
 def ocr_backend_options() -> list[str]:
@@ -91,6 +94,23 @@ def normalize_ocr_backend_state(value: str | None) -> tuple[str | None, str | No
     return value, None
 
 
+def should_migrate_legacy_screenai_preprocess(
+    legacy_preprocess_backend: str | None,
+    current_ocr_backend: str | None,
+) -> bool:
+    """Migrate only stale ScreenAI preprocess state, never an explicit user choice.
+
+    Older saved sessions stored ScreenAI under ``ocr_preprocess_backend``.
+    The current UI stores it in ``ocr_backend``.  In particular, a user who
+    selects ``none`` must remain on the embedded-text fast path.
+    """
+    legacy = str(legacy_preprocess_backend or "none").strip().lower().replace("-", "_")
+    return legacy == "chrome_screenai_searchable_pdf" and current_ocr_backend not in {
+        "none",
+        "chrome_screenai",
+    }
+
+
 def normalize_backend_session_state(session_state: MutableMapping[str, str]) -> list[str]:
     warnings = []
 
@@ -123,13 +143,17 @@ def render_layout_backend_selector(st):
     )
 
 
-def render_ocr_backend_selector(st):
+def render_ocr_backend_selector(st, *, options: list[str] | None = None):
     for warning in _normalize_ocr_state(st.session_state):
         st.warning(warning)
 
+    available_options = options or ocr_backend_options()
+    if st.session_state.get("ocr_backend") not in available_options:
+        st.session_state["ocr_backend"] = available_options[0]
+
     return st.selectbox(
         "选择 OCR 引擎",
-        options=ocr_backend_options(),
+        options=available_options,
         index=0,
         format_func=lambda value: OCR_BACKEND_LABELS.get(value, value),
         help="选择文字来源：禁用 OCR 时使用 PDF 文本层；Chrome ScreenAI 会先生成 searchable PDF 再回流文本层，其他 OCR 后端会直接重新识别。",

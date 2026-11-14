@@ -405,10 +405,10 @@ class PrintedPageNumberCorrectorProcessor(BaseProcessor):
             document: 文档对象
         """
         if not self.printed_page_correction_enabled:
-            logger.info("[PrintedPageNumberCorrectorProcessor] ❌ Disabled")
+            logger.debug("[PrintedPageNumberCorrectorProcessor] Disabled")
             return
 
-        logger.info(f"[PrintedPageNumberCorrectorProcessor] ✅ Enabled, processing {len(document.pages)} pages")
+        logger.debug("[PrintedPageNumberCorrectorProcessor] Enabled, processing %s pages", len(document.pages))
 
         # 创建修正器
         corrector = PrintedPageNumberCorrector(min_confidence=self.min_confidence)
@@ -428,7 +428,7 @@ class PrintedPageNumberCorrectorProcessor(BaseProcessor):
             corrected_value = corrected.get(page_idx)
             if corrected_value is None:
                 if original is not None:
-                    logger.info(
+                    logger.debug(
                         "[PrintedPageNumberCorrectorProcessor] Page %s: dropping non-sequential page candidate %s",
                         page_idx,
                         original,
@@ -461,7 +461,7 @@ class PrintedPageNumberCorrectorProcessor(BaseProcessor):
                 page._internal_metadata["printed_page_number_corrected"] = True
 
                 if original != corrected_value:
-                    logger.info(f"[PrintedPageNumberCorrectorProcessor] Page {page_idx}: {original} → {corrected_value}")
+                    logger.debug(f"[PrintedPageNumberCorrectorProcessor] Page {page_idx}: {original} -> {corrected_value}")
                     corrected_count += 1
 
-        logger.info(f"[PrintedPageNumberCorrectorProcessor] Completed: {corrected_count} pages corrected")
+        logger.debug("[PrintedPageNumberCorrectorProcessor] Completed: %s pages corrected", corrected_count)

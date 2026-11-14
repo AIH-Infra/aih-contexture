@@ -16,6 +16,7 @@ from lxml import etree
 from bs4 import BeautifulSoup
 
 from aih_contexture.logger import get_logger
+from aih_contexture.utils.footnote_markers import marker_from_value, match_leading_footnote_marker
 
 logger = get_logger()
 
@@ -94,6 +95,7 @@ def _inline_text(elem: etree._Element, *, preserve_emphasis_markers: bool = Fals
         child_tag = _local_tag(child)
         child_text = _text(child)
         marker_match = _INLINE_EMPHASIS_MARKER_RE.match(child_text)
+        shared_marker = marker_from_value(child_text)
         if (
             preserve_emphasis_markers
             and (
@@ -103,9 +105,13 @@ def _inline_text(elem: etree._Element, *, preserve_emphasis_markers: bool = Fals
                     and str(child.get("type") or "").strip().lower() == "other"
                 )
             )
-            and marker_match
+            and (marker_match or shared_marker)
         ):
-            marker = marker_match.group(1).translate(str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789"))
+            marker = (
+                shared_marker.original
+                if shared_marker is not None
+                else marker_match.group(1).translate(str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789"))
+            )
             parts.append(f"<sup>{html.escape(marker, quote=False)}</sup>")
         else:
             parts.append(_inline_text(child, preserve_emphasis_markers=preserve_emphasis_markers))
@@ -135,6 +141,8 @@ def _join_lines(elem: etree._Element, *, preserve_emphasis_markers: bool = False
 
 
 def _looks_like_footnote(text: str) -> bool:
+    # Churro MarginalNote is not a footnote label. Keep the legacy numeric
+    # bottom-note heuristic; enclosed markers alone do not change semantics.
     return _FOOTNOTE_START_RE.match(text or "") is not None
 
 
@@ -158,11 +166,11 @@ def _inline_marks_from_text(text: str) -> list[dict[str, Any]]:
 
 
 def _markdown_footnote_text(text: str) -> str:
-    match = _FOOTNOTE_MARKER_BODY_RE.match(text or "")
+    match = match_leading_footnote_marker(text)
     if not match:
         return text
-    marker = match.group(1).translate(str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789"))
-    body = match.group(2).strip()
+    marker = match.original
+    body = str(text or "")[match.body_start:].strip()
     return f"<sup>{html.escape(marker, quote=False)}</sup> {body}"
 
 

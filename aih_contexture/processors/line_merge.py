@@ -129,7 +129,7 @@ class LineMergeProcessor(BaseProcessor):
 
     def __call__(self, document: Document):
         if not self.use_llm:
-            logger.info("[LineMergeProcessor] skipped: use_llm=%s", self.use_llm)
+            logger.debug("[LineMergeProcessor] skipped: use_llm=%s", self.use_llm)
             return
 
         processed_blocks = 0
@@ -154,7 +154,7 @@ class LineMergeProcessor(BaseProcessor):
                 merged_groups += stats["merged_group_count"]
                 merged_lines += stats["merged_line_count"]
 
-        logger.info(
+        logger.debug(
             "[LineMergeProcessor] completed: processed_blocks=%s original_lines=%s candidate_lines=%s merged_groups=%s merged_lines=%s",
             processed_blocks,
             original_lines,

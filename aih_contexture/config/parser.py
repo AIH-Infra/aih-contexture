@@ -11,6 +11,7 @@ from aih_contexture.renderers.html import HTMLRenderer
 from aih_contexture.renderers.json import JSONRenderer
 from aih_contexture.renderers.markdown import MarkdownRenderer
 from aih_contexture.settings import settings
+from aih_contexture.runtime.output_contract import document_output_folder, document_output_basename
 from aih_contexture.util import classes_to_strings, parse_range_str, strings_to_classes
 
 logger = get_logger()
@@ -317,7 +318,7 @@ class ConfigParser:
         fn = click.option(
             "--chrome_workers",
             type=int,
-            default=2,
+            default=4,
             help="Chrome ScreenAI OCR worker count for searchable-PDF preprocessing.",
         )(fn)
         fn = click.option(
@@ -421,6 +422,8 @@ class ConfigParser:
         fn = click.option("--paddleocr_vl_image_quality", type=int, default=None, help="Image quality for JPEG/WEBP PaddleOCR-VL requests.")(fn)
         fn = click.option("--paddleocr_vl_crop_padding_px", type=int, default=None, help="Pixel padding around Pipeline layout block crops for PaddleOCR-VL OCR.")(fn)
         fn = click.option("--paddleocr_vl_crop_padding_frac", type=float, default=None, help="Fractional padding around Pipeline layout block crops for PaddleOCR-VL OCR.")(fn)
+        fn = click.option("--running_furniture_enabled", is_flag=True, default=False, help="Enable conservative running header/footer suppression.")(fn)
+        fn = click.option("--text_layer_quality_enabled", type=bool, default=True, help="Record block-level text-layer quality diagnostics.")(fn)
         fn = click.option(
             "--disable_ocr",
             is_flag=True,
@@ -432,6 +435,12 @@ class ConfigParser:
             is_flag=True,
             default=False,
             help="Emit the core Contexture Middle JSON alongside the selected output.",
+        )(fn)
+        fn = click.option(
+            "--render_from_middle",
+            is_flag=True,
+            default=False,
+            help="Validate generated Middle JSON and use it as the source for Markdown rendering.",
         )(fn)
         fn = click.option(
             "--emit_middle_report",
@@ -657,11 +666,7 @@ class ConfigParser:
 
     def get_output_folder(self, filepath: str):
         output_dir = self.cli_options.get("output_dir", settings.OUTPUT_DIR)
-        fname_base = os.path.splitext(os.path.basename(filepath))[0]
-        output_dir = os.path.join(output_dir, fname_base)
-        os.makedirs(output_dir, exist_ok=True)
-        return output_dir
+        return document_output_folder(output_dir, filepath)
 
     def get_base_filename(self, filepath: str):
-        basename = os.path.basename(filepath)
-        return os.path.splitext(basename)[0]
+        return document_output_basename(filepath)

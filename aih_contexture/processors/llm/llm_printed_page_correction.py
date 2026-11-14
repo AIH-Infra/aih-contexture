@@ -79,7 +79,7 @@ class LLMPrintedPageCorrectionProcessor(BaseLLMProcessor):
         pages = parse_markdown_pages(markdown)
         valid_count = sum(1 for page in pages if page.normalized_candidate is not None)
         if valid_count == 0:
-            logger.info("[LLMPrintedPageCorrectionProcessor] No printed page numbers found, skipping")
+            logger.debug("[LLMPrintedPageCorrectionProcessor] No printed page numbers found, skipping")
             return
 
         adapter = self._build_adapter_from_service()

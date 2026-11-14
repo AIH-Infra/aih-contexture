@@ -28,6 +28,14 @@ from aih_contexture.schema.text.span import Span
 logging.getLogger("pypdfium2").setLevel(logging.ERROR)
 logger = get_logger()
 
+# pdftext's superscript heuristic is designed for Latin/digit footnote markers
+# and misflags CJK glyphs whose char boxes are slightly shorter or raised.
+# CJK body text can never be such a marker, so drop the script flags for it.
+# Enclosed markers (①②③, U+2460-...) are intentionally NOT in these ranges.
+CJK_SCRIPT_FLAG_RE = re.compile(
+    r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\u3040-\u30ff\uac00-\ud7af]"
+)
+
 
 class PdfProvider(BaseProvider):
     """
@@ -88,7 +96,7 @@ class PdfProvider(BaseProvider):
         super().__init__(filepath, config)
 
         self.filepath = filepath
-        logger.info("[Provider.Pdf] Initializing: filepath=%s", filepath)
+        logger.debug("[Provider.Pdf] Initializing: filepath=%s", filepath)
 
         with self.get_doc() as doc:
             self.page_count = len(doc)
@@ -115,9 +123,9 @@ class PdfProvider(BaseProvider):
     def get_doc(self):
         doc = None
         try:
-            logger.info("[Provider.Pdf] Opening document: %s", self.filepath)
+            logger.debug("[Provider.Pdf] Opening document: %s", self.filepath)
             doc = pdfium.PdfDocument(self.filepath)
-            logger.info("[Provider.Pdf] Document opened: pages=%d", len(doc))
+            logger.debug("[Provider.Pdf] Document opened: pages=%d", len(doc))
 
             # Must be called on the parent pdf, before retrieving pages to render correctly
             if self.flatten_pdf:
@@ -208,7 +216,7 @@ class PdfProvider(BaseProvider):
 
     def pdftext_extraction(self) -> ProviderPageLines:
         page_lines: ProviderPageLines = {}
-        logger.info(
+        logger.debug(
             "[PdfProvider] Starting dictionary_output: filepath=%s page_range=%s workers=%s",
             self.filepath,
             list(self.page_range),
@@ -223,7 +231,7 @@ class PdfProvider(BaseProvider):
             quote_loosebox=False,
             disable_links=self.disable_links,
         )
-        logger.info("[PdfProvider] dictionary_output completed: pages=%s", len(page_char_blocks))
+        logger.debug("[PdfProvider] dictionary_output completed: pages=%s", len(page_char_blocks))
         self.page_bboxes = {
             i: [0, 0, page["width"], page["height"]]
             for i, page in zip(self.page_range, page_char_blocks)
@@ -260,7 +268,11 @@ class PdfProvider(BaseProvider):
                             subscript = span.get("subscript", False)
                             text = self.normalize_spaces(fix_text(span["text"]))
                             if superscript or subscript:
-                                text = text.strip()
+                                if CJK_SCRIPT_FLAG_RE.search(text):
+                                    superscript = False
+                                    subscript = False
+                                else:
+                                    text = text.strip()
 
                             spans.append(
                                 SpanClass(
