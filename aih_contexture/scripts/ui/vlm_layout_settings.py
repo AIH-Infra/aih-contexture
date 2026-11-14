@@ -48,10 +48,9 @@ def render_vlm_layout_settings(
     prompt_template: str,
     prompt: str,
 ) -> dict[str, object]:
-    st.info(description)
+    if str(description or "").strip():
+        st.caption(description)
     with st.expander("VLM 版面识别配置", expanded=False):
-        st.caption("仅用于版面区域检测；OCR 后端仍由下方单独选择。")
-
         base_url = st.text_input(
             "Base URL",
             value=base_url,

@@ -62,13 +62,16 @@ class EquationProcessor(BaseProcessor):
         total_equation_blocks = 0
 
         for page in document.pages:
+            equation_blocks = page.contained_blocks(document, self.block_types)
+            if not equation_blocks:
+                continue
+
             page_image = page.get_image(highres=True)
             page_size = page.polygon.width, page.polygon.height
             image_size = page_image.size
 
             page_equation_boxes = []
             page_equation_block_ids = []
-            equation_blocks = page.contained_blocks(document, self.block_types)
             for block in equation_blocks:
                 page_equation_boxes.append(
                     block.polygon.rescale(page_size, image_size).bbox

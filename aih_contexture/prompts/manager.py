@@ -178,4 +178,5 @@ class PromptTemplateManager:
                 json.dump(self.custom, f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.error(f"Failed to save custom templates: {e}")
+            raise
 

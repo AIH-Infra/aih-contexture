@@ -4,9 +4,9 @@
 
 AIH-Infra 的第一层：面向人文学科的本地文献结构化工具。Contexture 将 PDF、图片及其他文献材料转化为可校阅、可追溯、可进入知识库的结构化输出，而不把 OCR 仅视为纯文本提取。
 
-当前发行版本：**1.0.0**
+当前发行版本：**1.1.0**
 
-发行内容与依赖基线见 [RELEASE_MANIFEST.md](RELEASE_MANIFEST.md)。
+发行变化见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 位置与目标
 
@@ -19,7 +19,7 @@ AIH-Infra 由三层松耦合系统组成：
   -> AIH-Infra MCP：面向 Agent 的受作用域约束的任务工具
 ~~~
 
-Contexture 的责任是让材料进入后续系统前仍保留可复核的结构与引用坐标。它不提供知识库问答、公共服务队列、多用户认证或 Agent 编排。
+Contexture 的责任是让材料进入后续系统前仍保留可复核的结构与引用坐标。主程序是本地单用户工具；另附可选的局域网网关，提供认证后的任务队列和原生工作节点，不会随主程序自动启动。部署说明见 [deploy/cluster/README.md](deploy/cluster/README.md)。
 
 ## 核心产物
 
@@ -45,7 +45,7 @@ Contexture 的责任是让材料进入后续系统前仍保留可复核的结构
 | Pipeline | 通用、可审计的基础流程 | Layout、OCR 与后处理可以独立选择和组合。 |
 | VLM 泛化 | 复杂版式、手稿或需要整页视觉理解 | 使用用户配置的视觉语言模型服务。 |
 | VLM 特化 | 已有匹配的专用模型或本地运行时 | 效果依赖模型训练领域，需抽检。 |
-| 结构化源导入 | 已有 TEI/XML 或 EPUB 源文件 | 保留章节、导航、锚点和原始元数据。 |
+| 结构化源导入 | 导入已有 Markdown、HTML、EPUB、TEI/XML 或结构数据 | 将外部结果转换为 Contexture 的中间表示和输出格式。 |
 | Markdown 后处理 | 已有结果需要复核、重渲染或修订 | 用于保守地修复页码、结构与格式。 |
 
 所有路线都可生成 Middle JSON，并可渲染为 Scholarly Markdown。编号段落会规范为 201\. 这类非缩进 Markdown 形式；脚注引用和定义使用 <sup>n</sup> 语义。
@@ -53,10 +53,6 @@ Contexture 的责任是让材料进入后续系统前仍保留可复核的结构
 ## 安装与启动
 
 要求：Python **3.10、3.11 或 3.12**，首次安装和首次下载模型时需要网络。
-
-兼容基线固定为 **Surya OCR 0.17.1、Transformers 4.57.6、PDFText 0.6.3、pypdfium2 4.30.0**。Surya 0.17.1 与本版 Pipeline 调用接口匹配。
-
-VLM 特化模式中的“Surya 2”是单独的模型服务入口；主环境中的 `surya-ocr` 仍固定为 0.17.1。
 
 ### Windows
 
@@ -67,7 +63,7 @@ start.bat
 
 ### macOS
 
-双击 **install.command**，完成后双击 **start.command**。
+在项目目录执行一次 `chmod +x install.command start.command`，然后双击 **install.command**；安装完成后双击 **start.command**。
 
 ### Linux
 
@@ -85,7 +81,7 @@ Apple Silicon（包括 M4/M5）使用固定版本的标准 macOS ARM64 PyTorch w
 
 ## 后端与外部运行时
 
-Surya 是主安装环境中的默认本地后端。其他能力是可选项：
+Surya 0.17.1 是主安装环境中的默认本地后端，使用 Transformers 4.57.6。其他能力是可选项：
 
 Pipeline 的 **Paddle OCR Torch** 已内置检测、识别和前后处理代码，与主环境共用 PyTorch，不需要完整 MinerU 或 PaddlePaddle。以下命令在现有项目环境中按需安装，不创建额外虚拟环境，也不会下载模型权重：
 
@@ -110,6 +106,8 @@ PP-DocLayoutV3 默认使用项目内置的 CPU ONNX 推理与后处理，共用�
 | Chrome ScreenAI | 自动寻找 Chrome 已下载组件或本地 locro 组件；缺失时需先准备组件。 |
 | Indra | 在主环境安装 `.[indra]`，设置 `INDRA_OCR_MODEL_DIR` 或 UI/CLI 模型目录。仍可显式指定其他 Python。权重不随主包分发。 |
 
+ScreenAI 的 PDF 预处理可选择按原页识别、清理隐藏文字层、栅格化或先清理再栅格化。默认会在识别前清理批注、标记、印章和链接，并保留正文与表单可见值；重建页面背景时可调整 DPI。ScreenAI 需要用户自行准备的 Chrome 组件，不包含在发行包中。
+
 检查当前环境：
 
 ~~~text
@@ -119,13 +117,13 @@ macOS/Linux: .venv/bin/contexture_doctor
 
 缺失的可选后端不会阻止主流程安装；被选中时需要相应依赖和模型完整可用。内置 Torch/CPU 组件复用主环境，服务型后端需要配置已部署的接口。
 
-Indra 的版面与 OCR 可以分别选择。两项同时选择 Indra 且未禁用 OCR 时，UI 和 CLI 都使用 CPU 原生直连，当前接受 PDF 输入及 Markdown/JSON 输出；UI 的页面分片会合并为同一任务，由 Indra 的核心数设置控制内部并行，不使用普通 Pipeline 的分批检查点。只选择 Indra 版面时可搭配 PDF 文字层或 ScreenAI；只选择 Indra OCR 时走普通 Pipeline。
+Indra 的版面与 OCR 可以分别选择。两项同时选择 Indra 且未禁用 OCR 时，UI 和 CLI 都使用 CPU 原生直连，只接受 PDF 输入及 Markdown/JSON 输出。UI 选定的页面范围会合并为一个 Indra 任务，内部并行由 CPU 核心数设置控制；该路径不走 Pipeline 的跨文件短文件队列。只选择 Indra 版面时可搭配 PDF 文字层或 ScreenAI；只选择 Indra OCR 时走普通 Pipeline。
 
 诊断独立 Indra 环境可使用 `contexture_doctor --indra-python <python路径> --indra-model-dir <模型目录>`。该检查确认配置路径及必需文件存在，真实导入与识别仍需转换测试。逐页磁盘缓存绑定本地模型文件内容；替换同目录模型后不会继续使用原有结果。未显式指定模型目录时只在当前运行时内缓存，不保存磁盘缓存。
 
 ## 命令行与本地服务
 
-安装后可从项目虚拟环境直接使用单文件、批量、诊断和本地服务入口。Pipeline 支持独立选择 Layout 与 OCR；当两者均设为禁用时，应用走 PDF 文本层快速路径，默认以 **4 个文件子进程**并行处理，允许在 1–16 间调整。
+安装后可从项目虚拟环境直接使用单文件、批量、诊断和本地服务入口。Pipeline 支持独立选择 Layout 与 OCR，并以“每批页数”规划文档处理：页数不超过该值的文件整份处理，较长文件按该页数拆分。UI 默认每批 100 页；CLI 自动模式可按资源规划调整批次页数。连续短文件由资源规划器决定并行度，使用常驻进程在文件间复用模型；长文件按页面批次调度，避免文件并行与批次并行叠加。
 
 Chrome ScreenAI 默认使用 **4 个 worker** 生成 searchable PDF 后再回流到 Contexture。该能力仍是可选本地后端。
 
@@ -148,9 +146,20 @@ contexture_vlm_specialized input.pdf \
 
 两种 VLM CLI 都支持 `--config-json` 和重复的 `--set KEY=VALUE`，用于透传运行参数；`--dry-run` 会打印脱敏后的最终配置。API Key 建议通过环境变量提供。
 
+### VLM 中断恢复范围
+
+- **VLM 泛化**：按页追加成功结果到输出目录中的检查点，并核对源文件、页码范围、模型、服务端点和有效配置。重新运行时只复用身份匹配且成功的页面；缺失或失败页面仍需处理。这是页面级复用，不是服务队列或完整任务编排。
+- **VLM 特化**：模型崩溃后可从失败批次重新开始，已完成批次保存的文件会保留。恢复状态属于当前 UI 会话，没有泛化模式那样的逐页检查点，也不提供应用重启后的持久任务恢复。
+
+## 批量上传与下载
+
+Web UI 最多同时上传四个文件，各文件以 256 KiB 分块暂存到系统临时目录，队列保存路径与文件信息。整批上传完成后可开始任务。任务收尾删除成功输入，失败和暂停输入保留重试；可通过“清理上传缓存”释放暂存文件。异常退出遗留的缓存按三天保留期在后续创建上传会话时清扫。ZIP 和诊断文件按下载请求流式读取。
+
+`CONTEXTURE_UPLOAD_ROOT` 可指定暂存目录。上传与下载共用一个独立 HTTP 传输端口，默认由系统分配，可通过 `CONTEXTURE_TRANSFER_PORT` 固定。局域网访问需放行该传输端口。
+
 ## 与 DataLab 上游项目的关系
 
-Contexture 是 AIH-Infra 的独立文献结构化框架，不是 Marker、Surya、Chandra 或 PDFText 的分支，也不拥有这些上游项目的模型与代码产权。
+Contexture 是基于 Marker 演化的文献结构化框架，主程序独立运行，并按所选后端调用 Surya、Chandra、PDFText 等上游组件。第三方代码与模型的权利归各自权利人所有。
 
 其 Pipeline 的处理器链设计参考了 **Datalab（Endless Labs, Inc.）** 的 Marker；主环境和可选后端根据具体模式接入下列上游能力：
 
@@ -176,13 +185,13 @@ Contexture 在这些引擎之上统一页码锚点、Middle JSON、学术 Markdo
 
 ## 边界与使用建议
 
-- Contexture 是本地单用户工具，不是多用户 Web 服务。
+- 主 Web UI 面向本地单用户使用，不是默认启用的公网多用户服务。可选局域网网关提供 Bearer 认证、持久化任务队列和工作节点；部署前应设置私有配置并限制网络访问，详见 [部署说明](deploy/cluster/README.md)。
 - 文献处理结果应抽检，尤其是复杂版式、历史字体、手稿与 VLM 输出。
 - VLM 结果需要受原始页面、页码锚点与 Middle JSON 的约束和复核。
 - 外部模型服务、MinerU、Paddle、Tesseract 与 Chrome ScreenAI 均不随主包强制安装。
 
-发行内容见 **RELEASE_MANIFEST.md**。
+发行内容见 [RELEASE_MANIFEST.md](RELEASE_MANIFEST.md)。
 
 ## 许可证
 
-GPL-3.0-or-later。第三方模型、外部服务及其权重分别受其自身许可证和服务条款约束。
+本项目按 [GPL-3.0-or-later](LICENSE) 发布，第三方代码和模型的来源与许可见 [NOTICE](NOTICE)。Indra 权重采用修改版 OpenRAIL-M 条款，见 [MODEL_LICENSE](MODEL_LICENSE)；权重不随发行包分发。Chrome ScreenAI 的 DLL 和模型属于 Google 专有组件，也不随包分发。其他第三方权重及外部服务仍受各自许可证和服务条款约束。

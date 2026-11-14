@@ -47,7 +47,8 @@ class IndraOcrBuilder(PaddleOcrBuilder):
         indices = [int(page.page_id) for page in pages_to_ocr]
 
         plan = plan_indra_workers(self.config, total_pages=len(indices))
-        runtime = self.runtime or IndraRuntime(self.settings)
+        pool = self.config.get("_sidecar_runtime_pool")
+        runtime = self.runtime or IndraRuntime(self.settings, pool=pool)
         try:
             indra_pages = runtime.run(pdf_path, indices, cores=plan.workers)
         except RuntimeError as exc:

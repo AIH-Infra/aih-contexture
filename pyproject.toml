@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "aih-contexture"
-version = "1.0.0"
+version = "1.1.0"
 description = "Weaving Data from History - 面向人文学科的文献结构化提取平台"
 authors = ["Güriedrich & Baireinhold <aih-infra@example.com>"]
 readme = "README.md"
@@ -34,19 +34,19 @@ tqdm = "^4.66.1"
 ftfy = "^6.1.1"
 rapidfuzz = "^3.8.1"
 surya-ocr = "0.17.1"
-regex = "^2024.4.28"
+regex = ">=2024.11.0"
 pdftext = "0.6.3"
 markdownify = "^1.1.0"
 click = "^8.2.0"
 markdown2 = "^2.5.2"
 filetype = "^1.2.0"
-google-genai = "^1.0.0"
-anthropic = "^0.46.0"
+google-genai = ">=1.60.0"
+anthropic = ">=0.46.0"
 scikit-learn = [
     {version = ">=1.6.1,<1.7", python = ">=3.10,<3.11"},
     {version = ">=1.8.0", python = ">=3.11,<3.13"},
 ]
-openai = "^1.65.2"
+openai = ">=1.109.0"
 PyYAML = "^6.0.3"
 numpy = [
     {version = ">=2.2,<2.3", python = ">=3.10,<3.11"},
@@ -61,12 +61,12 @@ requests = "^2.32.0"
 aiohttp = "^3.13.0"
 streamlit = "^1.53.0"
 streamlit-ace = "*"
-fastapi = "^0.115.4"
-uvicorn = "^0.32.0"
-python-multipart = "^0.0.16"
+fastapi = ">=0.115.4"
+uvicorn = ">=0.32.0"
+python-multipart = ">=0.0.16"
 psutil = "^7.2.0"
-huggingface-hub = "^0.34.0"
-lxml = "^5.3.0"
+huggingface-hub = ">=0.34.0"
+lxml = ">=5.3.0"
 
 # Optional dependencies for extended document formats
 mammoth = {version = "^1.9.0", optional = true}

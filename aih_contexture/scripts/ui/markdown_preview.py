@@ -120,8 +120,7 @@ def _saved_page_manifest(path: str, size: int, modified_ns: int):
     return (payload.get('metadata') or payload).get('reading_page_manifest')
 
 
-def load_reading_page_manifest(markdown_path, markdown, *, middle_path=None):
-    """Read only paired operational metadata; diagnostics are not required."""
+def _manifest_candidates(markdown_path, middle_path=None):
     path = Path(markdown_path)
     stems = [path.stem]
     if path.name.endswith('_middle_scholarly.md'):
@@ -132,7 +131,12 @@ def load_reading_page_manifest(markdown_path, markdown, *, middle_path=None):
     candidates = [path.with_name(stem + '_meta.json') for stem in dict.fromkeys(stems)]
     candidates += ([Path(middle_path)] if middle_path else [])
     candidates += [path.with_name(stem + '_middle.json') for stem in dict.fromkeys(stems)]
-    for candidate in dict.fromkeys(candidates):
+    return tuple(dict.fromkeys(candidates))
+
+
+def load_reading_page_manifest(markdown_path, markdown, *, middle_path=None):
+    """Read only paired operational metadata; diagnostics are not required."""
+    for candidate in _manifest_candidates(markdown_path, middle_path):
         try:
             if not candidate.is_file() or candidate.stat().st_size > 256 * 1024 * 1024:
                 continue
@@ -145,6 +149,25 @@ def load_reading_page_manifest(markdown_path, markdown, *, middle_path=None):
     return None
 
 
+@lru_cache(maxsize=2)
+def _prepared_preview(path, size, modified_ns, middle_path, manifest_versions):
+    text = Path(path).read_text(encoding='utf-8-sig')
+    manifest = load_reading_page_manifest(path, text, middle_path=middle_path)
+    return split_reading_pages(text, manifest), (path, hashlib.sha256(text.encode('utf-8')).hexdigest())
+
+
+def prepare_reading_preview(path, *, middle_path=None):
+    source = Path(path)
+    stat = source.stat()
+    versions = []
+    for candidate in _manifest_candidates(source, middle_path):
+        if candidate.is_file():
+            paired = candidate.stat()
+            versions.append((str(candidate.resolve()), paired.st_size, paired.st_mtime_ns))
+    return _prepared_preview(str(source.resolve()), stat.st_size, stat.st_mtime_ns,
+                             str(middle_path) if middle_path else None, tuple(versions))
+
+
 def render_markdown_preview(st, processed_files: dict) -> None:
     choices = {}
     records_by_path = {}
@@ -154,7 +177,10 @@ def render_markdown_preview(st, processed_files: dict) -> None:
             if record.get("format") in {"markdown", "middle_scholarly"} and path and Path(path).is_file():
                 choices[path] = f"{group} · {record.get('name') or Path(path).name}"
                 records_by_path[path] = record
-    if not choices or not st.checkbox("预览阅读 Markdown", value=False, key="reading_preview_enabled"):
+    if not choices:
+        return
+    st.subheader("阅读预览")
+    if not st.checkbox("显示 Markdown 阅读预览", value=True, key="reading_preview_enabled"):
         return
     path = st.selectbox("阅读文件", options=list(choices), format_func=choices.get, key="reading_preview_file")
     if path not in choices:
@@ -163,19 +189,16 @@ def render_markdown_preview(st, processed_files: dict) -> None:
         if Path(path).stat().st_size > 128 * 1024 * 1024:
             st.info("文件较大，请下载后查看。")
             return
-        text = Path(path).read_text(encoding="utf-8-sig")
+        pages, identity = prepare_reading_preview(path, middle_path=records_by_path[path].get('middle_json_path'))
     except (OSError, UnicodeError) as exc:
         st.error(f"无法读取阅读文件：{exc}")
         return
-    manifest = load_reading_page_manifest(path, text, middle_path=records_by_path[path].get('middle_json_path'))
-    pages = split_reading_pages(text, manifest)
     # The physical labels must participate in widget identity. Reusing numeric
     # offsets with a changed format_func can leave a previous book's labels in
     # the browser while the server already renders a different page.
     labels = [label for label, _ in pages]
-    identity = (path, hashlib.sha256(text.encode('utf-8')).hexdigest())
     previous = st.session_state.get('reading_preview_identity')
-    if previous and previous[0] != path:
+    if previous and previous[0] != identity[0]:
         st.session_state.pop('reading_preview_page', None)
     st.session_state['reading_preview_identity'] = identity
     if st.session_state.get("reading_preview_page") not in labels:
@@ -185,7 +208,7 @@ def render_markdown_preview(st, processed_files: dict) -> None:
         return
     selected_index = labels.index(selected)
     page_number = re.search(r'\{(\d+)\}', selected)
-    st.caption("预览显示已保存结果；修改转换设置后需重新生成。定位注释在阅读视图中隐藏。{n} 为从 0 开始的输入物理页索引，Page 表示印刷页码；定位范围若无 … 延展标记，不能据此认定为闭区间。")
+    st.caption("预览为已保存结果；设置变更后需重新处理。输入页按 PDF 物理页定位，印刷页码显示为 Page。定位注释在阅读视图中隐藏。")
     st.markdown(
         '<style>.st-key-reading_preview_body {max-width:90ch; margin-inline:auto;}'
         '.st-key-reading_preview_body [data-testid="stMarkdownContainer"] '

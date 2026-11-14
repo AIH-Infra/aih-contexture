@@ -6,6 +6,8 @@ from collections.abc import Callable, MutableMapping
 from contextlib import contextmanager
 from typing import Any
 
+from aih_contexture.scripts.ui.task_state import finish_staged_uploads
+
 
 STREAMLIT_LOG_METHODS = ("write", "error", "success", "info", "warning")
 
@@ -60,3 +62,12 @@ def run_proc_body_with_streamlit_log(
             ctx["status"] = "error"
             log.append(("error", f"处理异常: {exc}"))
             log.append(("error", traceback.format_exc()))
+        finally:
+            try:
+                finish_staged_uploads(ctx)
+            except Exception as exc:
+                ctx['status'] = 'error'
+                log.append(('error', f'上传暂存清理失败: {exc}'))
+                log.append(('error', traceback.format_exc()))
+            if ctx['status'] == 'failed':
+                ctx['status'] = 'error'

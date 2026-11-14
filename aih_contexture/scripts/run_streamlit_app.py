@@ -318,12 +318,7 @@ def streamlit_app_cli(app_name: str = "streamlit_app.py"):
         "--browser.serverAddress", "localhost",  # 自动打开的地址（服务仍绑定 0.0.0.0；直接开 0.0.0.0 浏览器会报"找不到网页"）
         "--browser.gatherUsageStats", "false", # 不收集统计
 
-        # 🎨 主题配置（可选）
-        "--theme.base", "light",
-        "--theme.primaryColor", "#FF4B4B",
-        "--theme.backgroundColor", "#FFFFFF",
-        "--theme.secondaryBackgroundColor", "#F0F2F6",
-        "--theme.textColor", "#262730",
+        # Theme comes from .streamlit/config.toml.
     ]
     # =====================================
 

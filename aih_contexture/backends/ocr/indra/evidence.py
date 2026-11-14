@@ -89,7 +89,7 @@ def make_indra_evidence(
     }
     review_mean = _finite_or_none(settings.review_mean)
     review_min = _finite_or_none(settings.review_min)
-    return {
+    record = {
         "source": page.get("source"),
         "model": page.get("model") or "indra-ocr",
         "version": version,
@@ -102,6 +102,12 @@ def make_indra_evidence(
         "thresholds": {"mean": review_mean, "min": review_min},
         "text_used": stage == "ocr",
     }
+    if page.get("source") == "layout_only":
+        record.update(internal_ocr_disabled=True,
+                      detected_lines=len(lines),
+                      missing_text_layer="missing text layer" in str(page.get("note") or ""),
+                      note=page.get("note"), timings=page.get("timings"))
+    return record
 
 
 def _finite_or_none(value: Any) -> float | None:

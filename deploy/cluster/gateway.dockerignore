@@ -1,0 +1,8 @@
+*
+!Dockerfile
+!cluster.py
+!cluster_gateway.py
+!cluster_admin.py
+!cluster_production.py
+!cluster_ui/
+!cluster_ui/**

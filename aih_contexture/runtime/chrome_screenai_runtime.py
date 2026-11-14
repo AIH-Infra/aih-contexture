@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import base64
 import json
 import html
 import gc
@@ -11,7 +10,6 @@ import sys
 import tempfile
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -22,7 +20,11 @@ from PIL import Image
 from aih_contexture.logger import get_logger
 from aih_contexture.runtime.errors import ContextureCancelledError
 from aih_contexture.vendor.locro import ScreenAI
-from aih_contexture.vendor.locro.ocr import _find_cjk_font, _insert_invisible_word
+from aih_contexture.backends.ocr.screenai.text_layer import UnicodeTextWriter
+from aih_contexture.utils.pdf_text_layer import (
+    COMPACT_PDF_SAVE_OPTIONS, insert_compact_background, remove_page_annotations,
+    searchable_background, strip_hidden_text,
+)
 from aih_contexture.vendor.locro.models import OcrBlock, OcrPage
 
 logger = get_logger()
@@ -39,6 +41,65 @@ class _ChromePageResult:
     clean_html: str
     printed_page: str | None
     chunk_page: dict[str, Any]
+
+
+@dataclass
+class _ChromeWorkerLane:
+    chunks: list[tuple[int, list[int]]]
+    process: subprocess.Popen
+    result_dir: Path
+    temporary_directory: Any
+    reported_chunks: set[int]
+
+    def poll_completed(self) -> list[tuple[int, dict[str, Any]]]:
+        completed: list[tuple[int, dict[str, Any]]] = []
+        for chunk_index, _page_indices in self.chunks:
+            if chunk_index in self.reported_chunks:
+                continue
+            result_path = self.result_dir / f"chunk_{chunk_index}.json"
+            if not result_path.exists():
+                continue
+            self.reported_chunks.add(chunk_index)
+            try:
+                outcome = json.loads(result_path.read_text(encoding="utf-8"))
+                if not isinstance(outcome, dict):
+                    raise ValueError("worker chunk result is not an object")
+                completed.append((chunk_index, outcome))
+            except Exception as exc:
+                completed.append((chunk_index, {
+                    "chunk_index": chunk_index,
+                    "ok": False,
+                    "error": f"worker wrote an unusable chunk result ({exc})",
+                }))
+        return completed
+
+    def missing_after_exit(self) -> list[tuple[int, dict[str, Any]]]:
+        exit_code = self.process.poll()
+        if exit_code is None:
+            return []
+        missing: list[tuple[int, dict[str, Any]]] = []
+        for chunk_index, _page_indices in self.chunks:
+            if chunk_index in self.reported_chunks:
+                continue
+            self.reported_chunks.add(chunk_index)
+            missing.append((chunk_index, {
+                "chunk_index": chunk_index,
+                "ok": False,
+                "error": f"worker exited with code {exit_code} before writing this chunk result",
+            }))
+        return missing
+
+    def close(self, *, terminate: bool = False) -> None:
+        if terminate and self.process.poll() is None:
+            self.process.terminate()
+        try:
+            self.process.wait(timeout=2.0 if terminate else None)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+        if self.temporary_directory is not None:
+            self.temporary_directory.cleanup()
+            self.temporary_directory = None
 
 
 def _chrome_result_to_payload(result: _ChromePageResult) -> dict[str, Any]:
@@ -62,81 +123,62 @@ def _chrome_result_from_payload(payload: dict[str, Any]) -> _ChromePageResult:
 
 
 def _process_pdf_chunk_worker(
-    pdf_path: str,
-    page_indices: list[int],
-    model_dir: str | None,
-    light_mode: bool,
-    preprocess_mode: str,
-    rasterize_dpi: int,
-    max_retries: int,
-) -> list[dict[str, Any]]:
-    runtime = ChromeScreenAIRuntime(
-        model_dir=model_dir,
-        light_mode=light_mode,
-        preprocess_mode=preprocess_mode,
-        workers=1,
-        chunk_pages=max(1, len(page_indices)),
-        batch_rest=0.0,
-        rasterize_dpi=rasterize_dpi,
-        emit_searchable_pdf=False,
-        max_retries=max_retries,
-        progress_callback=None,
-    )
-    results: list[dict[str, Any]] = []
-    try:
-        pdf = Path(pdf_path)
-        for page_index in page_indices:
-            result = runtime._ocr_pdf_page_with_retry(pdf, page_index, page_index)
-            results.append(_chrome_result_to_payload(result))
-    finally:
-        runtime._close_thread_pdf_docs()
-    return results
-
-
-def _process_pdf_chunk_subprocess_worker(
     pdf_path: Path,
-    page_indices: list[int],
+    chunks: list[tuple[int, list[int]]],
     model_dir: Path | None,
     light_mode: bool,
     preprocess_mode: str,
     rasterize_dpi: int,
     max_retries: int,
-) -> list[dict[str, Any]]:
-    """Run the native OCR worker outside the parent process."""
-    with tempfile.TemporaryDirectory(prefix="contexture-chrome-chunk-") as temp_dir:
-        result_path = Path(temp_dir) / "result.json"
-        progress_path = Path(temp_dir) / "progress.json"
+    batch_rest: float,
+    remove_annotations: bool = True,
+) -> _ChromeWorkerLane:
+    """Start one isolated worker that will reuse its runtime across assigned chunks."""
+    temporary_directory = tempfile.TemporaryDirectory(prefix="contexture-chrome-lane-")
+    try:
+        work_dir = Path(temporary_directory.name)
+        job_path = work_dir / "job.json"
+        result_dir = work_dir / "chunks"
+        result_dir.mkdir()
         payload = {
             "input_pdf": str(pdf_path),
-            "result_json": str(result_path),
-            "progress_json": str(progress_path),
+            "result_dir": str(result_dir),
             "model_dir": str(model_dir) if model_dir is not None else None,
             "light_mode": light_mode,
             "preprocess_mode": preprocess_mode,
+            "remove_annotations": remove_annotations,
             "rasterize_dpi": rasterize_dpi,
             "max_retries": max_retries,
-            "page_indices": page_indices,
-            "page_count": len(page_indices),
-            "collect_pages": True,
+            "batch_rest": batch_rest,
+            "collect_chunks": True,
+            "chunks": [
+                {"chunk_index": chunk_index, "page_indices": page_indices}
+                for chunk_index, page_indices in chunks
+            ],
         }
-        token = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("ascii")
+        job_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
         env = os.environ.copy()
         repo_root = Path(__file__).resolve().parents[2]
         pythonpath = env.get("PYTHONPATH")
         env["PYTHONPATH"] = str(repo_root) if not pythonpath else f"{repo_root}{os.pathsep}{pythonpath}"
-        subprocess.run(
-            [sys.executable, "-m", "aih_contexture.scripts.chrome_screenai_chunk_worker", token],
+        process = subprocess.Popen(
+            [sys.executable, "-m", "aih_contexture.scripts.chrome_screenai_chunk_worker", f"@{job_path}"],
             cwd=str(repo_root),
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            check=True,
         )
-        result = json.loads(result_path.read_text(encoding="utf-8"))
-        if not result.get("ok"):
-            raise RuntimeError(str(result.get("error") or "Chrome ScreenAI worker failed"))
-        return list(result.get("pages") or [])
+        return _ChromeWorkerLane(
+            chunks=chunks,
+            process=process,
+            result_dir=result_dir,
+            temporary_directory=temporary_directory,
+            reported_chunks=set(),
+        )
+    except Exception:
+        temporary_directory.cleanup()
+        raise
 
 
 class ChromeScreenAIRuntime:
@@ -146,6 +188,7 @@ class ChromeScreenAIRuntime:
         model_dir: str | None = None,
         light_mode: bool = False,
         preprocess_mode: str = "native",
+        remove_annotations: bool = True,
         workers: int = 4,
         chunk_pages: int = 4,
         batch_rest: float = 0.0,
@@ -157,6 +200,7 @@ class ChromeScreenAIRuntime:
         self.model_dir = Path(model_dir).expanduser() if model_dir else None
         self.light_mode = bool(light_mode)
         self.preprocess_mode = self.normalize_preprocess_mode(preprocess_mode)
+        self.remove_annotations = bool(remove_annotations)
         self.workers = max(1, int(workers))
         self.chunk_pages = max(1, int(chunk_pages))
         self.batch_rest = max(0.0, float(batch_rest))
@@ -231,54 +275,143 @@ class ChromeScreenAIRuntime:
             )
 
         if worker_count == 1:
-            self._process_chunks_sequential(pdf_path, chunks, ordered_results)
+            chunk_failures = self._process_chunks_sequential(pdf_path, chunks, ordered_results)
         else:
+            completed_chunks: set[int] = set()
+            chunk_failures: dict[int, str] = {}
+            lanes: list[list[tuple[int, list[int]]]] = [[] for _ in range(worker_count)]
+            for chunk_index, chunk in enumerate(chunks):
+                lanes[chunk_index % worker_count].append((chunk_index, chunk))
+            active_lanes = [lane for lane in lanes if lane]
+            worker_lanes: list[_ChromeWorkerLane] = []
+
+            def accept_outcome(chunk_index: int, chunk: list[int], outcome: dict[str, Any]) -> None:
+                if chunk_index in completed_chunks:
+                    return
+                completed_chunks.add(chunk_index)
+                try:
+                    outcome_index = int(outcome.get("chunk_index", chunk_index))
+                except (TypeError, ValueError):
+                    outcome_index = -1
+                if outcome_index != chunk_index:
+                    chunk_failures[chunk_index] = "worker returned a result for a different chunk"
+                    return
+                if not outcome.get("ok"):
+                    chunk_failures[chunk_index] = str(outcome.get("error") or "worker chunk failed")
+                    return
+                try:
+                    chunk_results = [
+                        _chrome_result_from_payload(payload)
+                        for payload in outcome.get("pages") or []
+                    ]
+                    if [result.page_index for result in chunk_results] != chunk:
+                        raise RuntimeError("worker page results did not match the submitted chunk")
+                except Exception as exc:
+                    chunk_failures[chunk_index] = str(exc)
+                    return
+
+                ordered_results.extend(chunk_results)
+                for result in chunk_results:
+                    self._emit_progress(
+                        event="page_done",
+                        page_num=result.page_index + 1,
+                        ok=True,
+                        stage="processing",
+                        backend="chrome_screenai",
+                    )
+                gc.collect()
+
+            aborted = False
             try:
-                with ThreadPoolExecutor(max_workers=worker_count) as pool:
-                    future_map = {}
-                    for chunk_index, chunk in enumerate(chunks):
-                        future = pool.submit(
-                            _process_pdf_chunk_subprocess_worker,
+                for lane_index, lane_chunks in enumerate(active_lanes):
+                    try:
+                        worker_lanes.append(_process_pdf_chunk_worker(
                             pdf_path,
-                            chunk,
+                            lane_chunks,
                             self.model_dir,
                             self.light_mode,
                             self.preprocess_mode,
                             self.rasterize_dpi,
                             self.max_retries,
-                        )
-                        future_map[future] = chunk
-                        if chunk_index + 1 < len(chunks) and self.batch_rest > 0:
-                            logger.info("[Chrome ScreenAI] Sleeping %.2fs between chunk submissions", self.batch_rest)
-                            time.sleep(self.batch_rest)
+                            self.batch_rest,
+                            remove_annotations=self.remove_annotations,
+                        ))
+                    except Exception as exc:
+                        for chunk_index, chunk in lane_chunks:
+                            accept_outcome(chunk_index, chunk, {
+                                "chunk_index": chunk_index,
+                                "ok": False,
+                                "error": f"worker could not start: {exc}",
+                            })
+                    if lane_index + 1 < len(active_lanes) and self.batch_rest > 0:
+                        logger.info("[Chrome ScreenAI] Sleeping %.2fs between worker starts", self.batch_rest)
+                        time.sleep(self.batch_rest)
 
-                    for future in as_completed(future_map):
-                        chunk_payloads = future.result()
-                        for payload in chunk_payloads:
-                            result = _chrome_result_from_payload(payload)
-                            ordered_results.append(result)
-                            self._emit_progress(
-                                event="page_done",
-                                page_num=result.page_index + 1,
-                                ok=True,
-                                stage="processing",
-                                backend="chrome_screenai",
-                            )
-                        gc.collect()
-            except Exception as exc:
-                logger.warning(
-                    "[Chrome ScreenAI] Parallel worker pool failed, falling back to sequential OCR: %s",
-                    exc,
-                )
+                while len(completed_chunks) < len(chunks):
+                    made_progress = False
+                    for lane in worker_lanes:
+                        for chunk_index, outcome in lane.poll_completed():
+                            chunk = chunks[chunk_index]
+                            accept_outcome(chunk_index, chunk, outcome)
+                            made_progress = True
+                        for chunk_index, outcome in lane.missing_after_exit():
+                            chunk = chunks[chunk_index]
+                            accept_outcome(chunk_index, chunk, outcome)
+                            made_progress = True
+                    if len(completed_chunks) < len(chunks) and not made_progress:
+                        time.sleep(0.05)
+
+                # Chunk result files can be published just before a worker closes
+                # its PDF document. Wait for every lane before temp inputs can go.
+                for lane in worker_lanes:
+                    lane.process.wait()
+            except BaseException:
+                aborted = True
+                raise
+            finally:
+                for lane in worker_lanes:
+                    lane.close(terminate=aborted)
+
+            if chunk_failures:
+                failed_indices = sorted(chunk_failures)
+                for index in failed_indices:
+                    chunk = chunks[index]
+                    page_list = ",".join(str(page_index + 1) for page_index in chunk)
+                    logger.warning(
+                        "[Chrome ScreenAI] Recovering failed pages [%s]: %s",
+                        page_list,
+                        chunk_failures[index],
+                    )
                 self._emit_progress(
                     event="parallel_fallback",
                     stage="processing",
                     backend="chrome_screenai",
                     ok=False,
-                    message="并行处理失败，正在自动回退到串行模式",
+                    message=(
+                        f"正在串行恢复失败页块："
+                        + "; ".join(
+                            f"{chunks[index][0] + 1}-{chunks[index][-1] + 1}"
+                            for index in failed_indices
+                        )
+                    ),
                 )
-                ordered_results.clear()
-                self._process_chunks_sequential(pdf_path, chunks, ordered_results)
+                retry_chunks = [chunks[index] for index in failed_indices]
+                retry_failures = self._process_chunks_sequential(pdf_path, retry_chunks, ordered_results)
+                if retry_failures:
+                    details = []
+                    for chunk, error in retry_failures:
+                        pages = ",".join(str(page_index + 1) for page_index in chunk)
+                        details.append(f"pages [{pages}]: {error}")
+                    raise RuntimeError(
+                        "Chrome ScreenAI failed after retrying only failed chunks: " + "; ".join(details)
+                    )
+
+        if worker_count == 1 and chunk_failures:
+            details = []
+            for chunk, error in chunk_failures:
+                pages = ",".join(str(page_index + 1) for page_index in chunk)
+                details.append(f"pages [{pages}]: {error}")
+            raise RuntimeError("Chrome ScreenAI failed after configured page retries: " + "; ".join(details))
 
         ordered_results.sort(key=lambda item: item.page_index)
 
@@ -309,25 +442,43 @@ class ChromeScreenAIRuntime:
         pdf_path: Path,
         chunks: list[list[int]],
         ordered_results: list[_ChromePageResult],
-    ) -> None:
+    ) -> list[tuple[list[int], str]]:
+        failures: list[tuple[list[int], str]] = []
         try:
             for chunk_index, chunk in enumerate(chunks):
-                for page_index in chunk:
-                    result = self._ocr_pdf_page_with_retry(pdf_path, page_index, page_index)
-                    ordered_results.append(result)
-                    self._emit_progress(
-                        event="page_done",
-                        page_num=result.page_index + 1,
-                        ok=True,
-                        stage="processing",
-                        backend="chrome_screenai",
+                chunk_results: list[_ChromePageResult] = []
+                try:
+                    for page_index in chunk:
+                        chunk_results.append(
+                            self._ocr_pdf_page_with_retry(pdf_path, page_index, page_index)
+                        )
+                except ContextureCancelledError:
+                    raise
+                except Exception as exc:
+                    failures.append((list(chunk), str(exc)))
+                    logger.warning(
+                        "[Chrome ScreenAI] Sequential chunk failed for pages %s-%s: %s",
+                        chunk[0] + 1,
+                        chunk[-1] + 1,
+                        exc,
                     )
+                else:
+                    ordered_results.extend(chunk_results)
+                    for result in chunk_results:
+                        self._emit_progress(
+                            event="page_done",
+                            page_num=result.page_index + 1,
+                            ok=True,
+                            stage="processing",
+                            backend="chrome_screenai",
+                        )
                 gc.collect()
                 if chunk_index + 1 < len(chunks) and self.batch_rest > 0:
                     logger.info("[Chrome ScreenAI] Sleeping %.2fs between page chunks", self.batch_rest)
                     time.sleep(self.batch_rest)
         finally:
             self._close_thread_pdf_docs()
+        return failures
 
     def _process_image(self, image_path: Path) -> dict[str, Any]:
         with Image.open(image_path) as source_image:
@@ -372,11 +523,12 @@ class ChromeScreenAIRuntime:
         return self._page_result_from_ocr_page(page_index=original_page_index, ocr_page=ocr_page)
 
     def _render_pdf_page_for_ocr(self, pdf_path: Path, page_index: int, *, max_dim: int) -> Image.Image:
+        doc = self._get_thread_pdf_doc(pdf_path)
+        if self.remove_annotations:
+            remove_page_annotations(doc[page_index])
         if self.preprocess_mode == "native":
-            doc = self._get_thread_pdf_doc(pdf_path)
             return self._render_page(doc[page_index], max_dim=max_dim)
         if self.preprocess_mode == "rasterize_pdf":
-            doc = self._get_thread_pdf_doc(pdf_path)
             return self._render_page(doc[page_index], dpi=self.rasterize_dpi)
         with self._open_stripped_doc(pdf_path, page_index) as stripped_doc:
             stripped_page = stripped_doc[0]
@@ -520,16 +672,21 @@ class ChromeScreenAIRuntime:
         output_pdf: Path,
     ) -> None:
         page_map = {result.page_index: result for result in ordered_results}
+        writer = UnicodeTextWriter()
         with fitz.open(pdf_path) as source_doc:
             output_doc = fitz.open()
             for page_index in page_indices:
                 source_page = source_doc[page_index]
+                if self.remove_annotations:
+                    remove_page_annotations(source_page)
                 target_page = output_doc.new_page(width=source_page.rect.width, height=source_page.rect.height)
                 if self.preprocess_mode == "native":
-                    target_page.show_pdf_page(target_page.rect, source_doc, page_index)
+                    searchable_background(target_page, source_doc, page_index, dpi=self.rasterize_dpi,
+                                          remove_annotations=self.remove_annotations)
                 elif self.preprocess_mode == "strip_existing_ocr":
                     with self._open_stripped_doc(pdf_path, page_index) as stripped_doc:
-                        target_page.show_pdf_page(target_page.rect, stripped_doc, 0)
+                        searchable_background(target_page, stripped_doc, 0, dpi=self.rasterize_dpi,
+                                              remove_annotations=self.remove_annotations)
                 else:
                     if self.preprocess_mode == "strip_then_rasterize":
                         with self._open_stripped_doc(pdf_path, page_index) as stripped_doc:
@@ -537,7 +694,7 @@ class ChromeScreenAIRuntime:
                             pix = stripped_page.get_pixmap(dpi=self.rasterize_dpi, alpha=False)
                     else:
                         pix = source_page.get_pixmap(dpi=self.rasterize_dpi, alpha=False)
-                    target_page.insert_image(target_page.rect, stream=pix.tobytes("png"))
+                    insert_compact_background(target_page, pix)
                 result = page_map.get(page_index)
                 if result is None:
                     continue
@@ -550,11 +707,13 @@ class ChromeScreenAIRuntime:
                     continue
                 sx = float(target_page.rect.width) / width
                 sy = float(target_page.rect.height) / height
-                self._overlay_page_text_from_raw(target_page, ocr_result, sx, sy)
-            output_doc.save(output_pdf, deflate=True)
+                self._overlay_page_text_from_raw(target_page, ocr_result, sx, sy, writer=writer)
+            output_doc.subset_fonts()
+            output_doc.save(output_pdf, **COMPACT_PDF_SAVE_OPTIONS)
             output_doc.close()
 
-    def _overlay_page_text_from_raw(self, page: fitz.Page, ocr_result: dict[str, Any], sx: float, sy: float) -> None:
+    def _overlay_page_text_from_raw(self, page: fitz.Page, ocr_result: dict[str, Any], sx: float, sy: float, *, writer=None) -> None:
+        writer = writer or UnicodeTextWriter()
         blocks = ocr_result.get("blocks")
         if not isinstance(blocks, list):
             return
@@ -566,9 +725,10 @@ class ChromeScreenAIRuntime:
                 continue
             for line in lines:
                 if isinstance(line, dict):
-                    self._overlay_line_words_from_raw(page, line, sx, sy)
+                    self._overlay_line_words_from_raw(page, line, sx, sy, writer=writer)
 
-    def _overlay_line_words_from_raw(self, page: fitz.Page, line: dict[str, Any], sx: float, sy: float) -> None:
+    def _overlay_line_words_from_raw(self, page: fitz.Page, line: dict[str, Any], sx: float, sy: float, *, writer=None) -> None:
+        writer = writer or UnicodeTextWriter()
         words = line.get("words")
         if not isinstance(words, list):
             return
@@ -589,12 +749,10 @@ class ChromeScreenAIRuntime:
             y0 = y * sy
             x1 = (x + width) * sx
             y1 = (y + height) * sy
-            font_size = max(1.0, (y1 - y0) * 0.8)
-            _insert_invisible_word(
+            writer.insert_word(
                 page,
                 fitz.Rect(x0, y0, x1, y1),
                 text,
-                _find_cjk_font(),
             )
 
     def _get_screen_ai(self) -> ScreenAI:
@@ -630,28 +788,16 @@ class ChromeScreenAIRuntime:
                 logger.debug("[Chrome ScreenAI] ignored PDF close error: %s", exc)
         docs.clear()
 
-    def _strip_text_layer(self, page: fitz.Page) -> None:
-        words = page.get_text("words")
-        if not words:
-            return
-        for word in words:
-            if len(word) < 4:
-                continue
-            rect = fitz.Rect(word[:4])
-            if rect.is_empty or rect.is_infinite:
-                continue
-            page.add_redact_annot(rect, fill=None, cross_out=False)
-        page.apply_redactions(images=0, graphics=0, text=0)
-        page.clean_contents()
-
     @contextmanager
     def _open_stripped_doc(self, pdf_path: Path, page_index: int):
         source_doc = self._get_thread_pdf_doc(pdf_path)
+        if self.remove_annotations:
+            remove_page_annotations(source_doc[page_index])
         temp_doc = fitz.open()
         try:
             temp_doc.insert_pdf(source_doc, from_page=page_index, to_page=page_index)
-            self._strip_text_layer(temp_doc[0])
-            yield temp_doc
+            with fitz.open(stream=strip_hidden_text(temp_doc.tobytes()), filetype="pdf") as clean:
+                yield clean
         finally:
             temp_doc.close()
 

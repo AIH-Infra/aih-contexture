@@ -56,6 +56,7 @@ def write_source_package(
     source_name: str,
     raw_artifacts: dict[str, bytes] | None = None,
     emit_line_indexes: bool = False,
+    markdown: str | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     assert_valid_source_document(document)
     destination_root = Path(output_dir).resolve()
@@ -65,6 +66,8 @@ def write_source_package(
     document_version_sha = sha256_bytes(version_payload)
     version = document_version_sha[:12]
     destination = destination_root / f"{stem}.source.{version}"
+    if destination.exists():
+        return destination, validate_source_package(destination)
     temp_dir = Path(tempfile.mkdtemp(prefix=f".{stem}.source.", dir=destination_root))
     try:
         components: dict[str, dict[str, Any]] = {}
@@ -88,7 +91,7 @@ def write_source_package(
                 components[f"{key}_index"] = path_record(index_path, count, "record_number")
 
         markdown_path = temp_dir / "document.md"
-        _write_bytes(markdown_path, render_scholarly_markdown(document).encode("utf-8"))
+        _write_bytes(markdown_path, (markdown if markdown is not None else render_scholarly_markdown(document)).encode("utf-8"))
         components["markdown"] = path_record(markdown_path, None, "reading_order")
 
         document_json_path = temp_dir / "document.json"

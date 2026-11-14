@@ -118,16 +118,28 @@ def run_vlm_generalized_batch(
                 file_index=file_idx,
                 total_files=len(file_objects),
             )
+            base_progress_callback = progress_callback
+
+            def progress_callback(event):
+                if cancel is not None and cancel.is_set():
+                    raise ContextureCancelledError("VLM job was cancelled")
+                base_progress_callback(event)
+
+            checkpoint_name = get_output_basename(
+                file_name,
+                vlm_start_page if vlm_use_page_range else None,
+                vlm_end_page if vlm_use_page_range else None,
+            )
             runtime_config = {
                 **vlm_direct_config,
                 "vlm_direct_checkpoint_dir": os.path.join(os.fspath(output_dir), "_vlm_checkpoints"),
-                "vlm_direct_checkpoint_name": get_output_basename(
-                    file_name,
-                    vlm_start_page if vlm_use_page_range else None,
-                    vlm_end_page if vlm_use_page_range else None,
-                ),
+                "vlm_direct_checkpoint_name": f"{checkpoint_name}_{file_idx + 1}",
+                "vlm_direct_legacy_checkpoint_name": checkpoint_name,
                 "vlm_direct_streaming_batches": True,
                 "vlm_direct_resume_checkpoint": True,
+                "vlm_direct_batch_rest": max(0.0, float(vlm_batch_rest or 0.0))
+                if vlm_concurrency_mode == "serial_file"
+                else 0.0,
             }
             if vlm_concurrency_mode == "serial_file":
                 job = ContextureJob(
@@ -310,7 +322,7 @@ def run_vlm_generalized_batch(
             process_batch=process_vlm_batch_and_save,
             cancel=cancel,
             ctx=work_ctx,
-            batch_rest=vlm_batch_rest,
+            batch_rest=vlm_batch_rest if vlm_concurrency_mode == "batch_single_page" else 0.0,
             on_batch_start=on_vlm_batch_start,
             on_batch_done=on_vlm_batch_done,
             on_rest=on_vlm_batch_rest,

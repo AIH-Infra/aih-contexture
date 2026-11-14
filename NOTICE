@@ -15,17 +15,17 @@ Authors: Güriedrich & Baireinhold (橘里德里希 & 白茵霍尔德)
   - 仓库：https://github.com/VikParuchuri/marker
 
 ================================================================================
-主要修改内容
+主要功能与修改
 ================================================================================
 
-Contexture 在 Marker 基础上进行了以下重大修改和创新：
+Contexture 在 Marker 基础上进行了以下修改：
 
-1. 架构创新
-   - OCR 与 Layout 后端可独立选择，并可导入已有识别和版面结果
-   - 五模式工作流（Pipeline / VLM 泛化 / VLM 特化 / 结构化源导入 / Markdown 后处理）
-   - 异步并发处理架构
+1. 可组合的文献处理
+   - 五种工作流程：Pipeline、VLM 泛化、VLM 特化、结构化源导入和 Markdown 后处理
+   - Pipeline 的版面、OCR、PDF 文字层和后处理可以按任务组合
+   - 支持本地模型、外部 OCR 服务及用户配置的视觉语言模型
 
-2. 人文学科专用功能（完全原创）
+2. 文献语义处理
    - 双重页码系统（PDF 页码 + 印刷页码）
    - 页码锚点系统（{n} 包裹结构）
    - 页码模式识别与自动修正
@@ -33,7 +33,12 @@ Contexture 在 Marker 基础上进行了以下重大修改和创新：
    - 行内小字注处理器
    - 模板系统（中国古籍、德语哥特体等）
 
-3. 集成创新
+3. 本地与局域网运行
+   - 本地主程序提供批量处理、结果复核和导出
+   - 可选局域网网关提供 Bearer 认证、持久化任务队列和原生工作节点
+   - 局域网部署组件需要单独配置，不随主程序自动启动
+
+4. 第三方集成
    - Calamari OCR 集成（欧洲历史文献专用）
    - Chandra OCR 集成（手写/表单/复杂文档）
 
@@ -66,14 +71,15 @@ Datalab 项目（Endless Labs, Inc.）：
     aih_contexture/backends/layout/doclayout_postprocess.py 与 doclayout_box_ops.py；
     许可保留于 aih_contexture/vendor/licenses/paddlex-layout-LICENSE，
     来源说明见 DOCLAYOUT_V3_PROVENANCE.md。ONNX 权重不随主包分发。
-  - Indra OCR (代码 Apache-2.0；模型权重为修改版 OpenRAIL-M) - CPU 版面标签与 OCR
+  - Indra OCR（代码 Apache-2.0；模型权重采用修改版 OpenRAIL-M）- CPU 版面标签与 OCR
     仅作为可选依赖（`pip install ".[indra]"`）在独立解释器的 sidecar 中调用，
     本项目不并入其代码、不随包分发权重；权重由使用者自行下载，其使用限制
-    由使用者按权重许可自行遵守，默认不联网下载。
+    由使用者按权重许可自行遵守，默认不联网下载。模型条款副本见根目录 `MODEL_LICENSE`。
     仓库：https://github.com/datalab-to/indra
   - locro (MIT) - Chrome Screen AI OCR 的 ctypes 直调封装
     以源码形式并入 aih_contexture/backends/ocr/screenai/
-    （上游 commit ba53ee2），版权归 Sergio Correia 所有。
+    （上游 commit ba53ee2），版权归 Sergio Correia 所有；MIT 许可证保留于
+    aih_contexture/vendor/locro/LICENSE。
     仓库：https://github.com/sergiocorreia/clv-locro
     注意：其调用的 chrome_screen_ai.dll 与模型文件为 Google 专有
     组件，不随本项目分发，仅由使用者在本地经 Chrome 组件更新

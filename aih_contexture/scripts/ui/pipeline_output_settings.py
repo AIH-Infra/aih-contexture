@@ -13,7 +13,7 @@ def default_pipeline_output_formats() -> list[str]:
 
 
 def render_pipeline_output_settings(st, *, force_middle_json: bool = False):
-    st.markdown("**📄 输出格式**")
+    st.subheader("输出格式")
     session_state = st.session_state
     current_formats = session_state.get("pipeline_output_formats", PIPELINE_DEFAULT_OUTPUT_FORMATS)
     optional_formats = [name for name in PIPELINE_OUTPUT_FORMATS if name != "markdown"]
@@ -29,9 +29,10 @@ def render_pipeline_output_settings(st, *, force_middle_json: bool = False):
     def save_output_formats():
         session_state["pipeline_output_formats"] = ["markdown", *session_state[optional_key]]
 
-    st.checkbox("Markdown（必需）", value=True, disabled=True, key="_pipeline_markdown_required")
+    session_state["_pipeline_markdown_required"] = True
+    st.caption("阅读 Markdown 与结构数据始终保存。")
     selected = st.multiselect(
-        "其他输出格式（可全部取消）",
+        "附加格式",
         optional_formats,
         help="Markdown 始终生成；JSON、HTML、Chunks 按需选择。Indra 原生直连支持 Markdown 和 JSON，后者为 Middle 文档。",
         key=optional_key,

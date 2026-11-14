@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#303858" />
+    <title>Contexture · 文献处理网关</title>
+    <link rel="icon" href="/assets/logo.png" />
+    <link rel="stylesheet" href="/assets/admin.css" />
+    <script src="/assets/admin.js" defer></script>
+  </head>
+  <body>
+    <div id="boot" class="boot" role="status">正在连接网关…</div>
+    <section id="login" class="login-screen" hidden>
+      <form id="login-form" class="login-card">
+        <img class="brand-logo" src="/assets/logo.png" alt="" />
+        <h1>經緯 · Contexture</h1>
+        <p class="login-title">文献处理网关</p>
+        <label for="access-key">访问密钥</label>
+        <input
+          id="access-key"
+          type="password"
+          autocomplete="current-password"
+          required
+          autofocus
+        />
+        <p id="login-error" class="form-error" role="alert"></p>
+        <button class="button primary login-submit" type="submit">
+          进入管理台
+        </button>
+      </form>
+    </section>
+
+    <div id="app" class="app-shell" hidden>
+      <aside class="sidebar">
+        <a href="#overview" class="brand"
+          ><img class="brand-logo" src="/assets/logo.png" alt="" /><span
+            >Contexture<small>文献处理网关</small></span
+          ></a
+        >
+        <nav aria-label="主导航">
+          <a href="#overview" data-nav="overview"
+            ><span aria-hidden="true">◫</span>总览</a
+          >
+          <a href="#tasks" data-nav="tasks"
+            ><span aria-hidden="true">▤</span>任务</a
+          >
+          <a href="#nodes" data-nav="nodes"
+            ><span aria-hidden="true">⌘</span>工作节点</a
+          >
+          <a href="#settings" data-nav="settings"
+            ><span aria-hidden="true">⚙</span>运行配置</a
+          >
+        </nav>
+        <div class="sidebar-footer">
+          <span class="avatar" aria-hidden="true">管</span><span>管理员</span
+          ><button
+            id="logout"
+            class="icon-button"
+            aria-label="退出登录"
+            title="退出登录"
+          >
+            ↪
+          </button>
+        </div>
+      </aside>
+
+      <main>
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Contexture Gateway</p>
+            <h1 id="page-title">处理总览</h1>
+          </div>
+          <div class="top-actions">
+            <span id="connection" class="connection"><i></i>连接中</span
+            ><button id="refresh" class="button secondary">刷新</button
+            ><button id="new-task" class="button primary">
+              <span aria-hidden="true">＋</span>提交文件
+            </button>
+          </div>
+        </header>
+        <p id="page-error" class="page-error" role="alert" hidden></p>
+
+        <section id="view-overview" data-view="overview">
+          <div id="metrics" class="metrics"></div>
+          <div class="section-heading">
+            <h2>工作节点</h2>
+            <a href="#nodes" class="text-link">管理节点 →</a>
+          </div>
+          <div id="overview-nodes" class="node-grid"></div>
+          <div class="section-heading">
+            <h2>最近任务</h2>
+            <a href="#tasks" class="text-link">全部任务 →</a>
+          </div>
+          <div class="panel table-wrap" id="recent-tasks"></div>
+        </section>
+
+        <section id="view-tasks" data-view="tasks" hidden>
+          <div class="panel">
+            <div class="toolbar">
+              <label class="search"
+                ><span aria-hidden="true">⌕</span
+                ><input
+                  id="search"
+                  type="search"
+                  placeholder="搜索文件名或任务编号"
+                  aria-label="搜索任务" /></label
+              ><select id="status-filter" aria-label="任务状态">
+                <option value="">全部状态</option>
+                <option value="queued">排队中</option>
+                <option value="running">处理中</option>
+                <option value="done">已完成</option>
+                <option value="failed">失败</option>
+                <option value="cancelled">已取消</option></select
+              ><span id="task-total" class="muted"></span>
+            </div>
+            <div id="task-table" class="table-wrap"></div>
+            <div class="pagination">
+              <span id="page-count" class="muted"></span>
+              <div>
+                <button id="previous-page" class="button secondary">
+                  上一页</button
+                ><button id="next-page" class="button secondary">下一页</button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-nodes" data-view="nodes" hidden>
+          <div id="node-list" class="node-grid"></div>
+          <div class="panel note-panel">
+            <h2>接单管理</h2>
+            <p>暂停接单后，节点继续完成当前批次。恢复后参与后续任务调度。</p>
+          </div>
+        </section>
+
+        <section id="view-settings" data-view="settings" hidden>
+          <div class="settings-grid">
+            <div class="panel">
+              <div class="panel-heading">
+                <h2>模型并发</h2>
+                <span class="muted">节点上报</span>
+              </div>
+              <div id="resource-table" class="table-wrap"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-heading"><h2>任务恢复规则</h2></div>
+              <dl id="settings-table" class="settings-list"></dl>
+            </div>
+          </div>
+          <div class="panel note-panel">
+            <h2>文件提交</h2>
+            <p id="upload-limit"></p>
+          </div>
+          <div class="settings-grid">
+            <div class="panel">
+              <div class="panel-heading"><h2>容量与保存</h2></div>
+              <dl id="production-policy" class="settings-list"></dl>
+            </div>
+            <div class="panel">
+              <div class="panel-heading"><h2>备份与恢复</h2></div>
+              <dl id="backup-status" class="settings-list"></dl>
+            </div>
+          </div>
+        </section>
+        <footer class="main-footer">
+          <span>Indra 版面分析 · ScreenAI 文字识别</span
+          ><span id="last-refresh"></span>
+        </footer>
+      </main>
+    </div>
+
+    <dialog id="upload-dialog" class="upload-dialog">
+      <form id="upload-form">
+        <div class="dialog-heading">
+          <div>
+            <p class="eyebrow">新任务</p>
+            <h2>提交文献</h2>
+          </div>
+          <button
+            type="button"
+            class="icon-button"
+            data-close="upload-dialog"
+            aria-label="关闭提交窗口"
+          >
+            ×
+          </button>
+        </div>
+        <label class="drop-zone" id="drop-zone" for="file-picker"
+          ><span class="upload-symbol" aria-hidden="true">↑</span
+          ><strong>选择或拖入文件</strong
+          ><span id="file-hint">PDF 或包含 PDF 的 ZIP 文件</span
+          ><input id="file-picker" type="file" accept=".pdf,.zip" multiple
+        /></label>
+        <div id="selected-files" class="selected-files"></div>
+        <div class="form-grid">
+          <label
+            >每批页数<input
+              id="batch-pages"
+              type="number"
+              min="1"
+              step="1"
+              value="40"
+              required /></label
+          ><label
+            >优先节点<select id="preferred-node">
+              <option value="">自动调度</option>
+              <option value="amd66">AMD · .66</option>
+              <option value="intel88">Intel · .88</option>
+              <option value="mac100">Mac · .100</option>
+            </select></label
+          >
+        </div>
+        <p id="upload-error" class="form-error" role="alert"></p>
+        <div class="dialog-actions">
+          <button type="button" id="reset-files" class="button secondary">
+            重新选择</button
+          ><button type="submit" id="submit-files" class="button primary">
+            提交任务
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="detail-dialog" class="detail-dialog">
+      <div class="dialog-heading">
+        <div>
+          <p class="eyebrow">任务详情</p>
+          <h2 id="detail-title"></h2>
+        </div>
+        <button
+          type="button"
+          class="icon-button"
+          data-close="detail-dialog"
+          aria-label="关闭任务详情"
+        >
+          ×
+        </button>
+      </div>
+      <div id="detail-body"></div>
+    </dialog>
+    <dialog id="confirm-dialog" class="confirm-dialog">
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-copy"></p>
+      <div class="dialog-actions">
+        <button id="confirm-back" class="button secondary">返回</button
+        ><button id="confirm-action" class="button primary">确认</button>
+      </div>
+    </dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

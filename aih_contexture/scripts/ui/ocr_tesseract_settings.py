@@ -59,7 +59,8 @@ TESSERACT_PROFILE_LANGUAGE_HINTS = {
 
 
 def render_tesseract_ocr_settings(st, *, description: str) -> dict[str, object]:
-    st.info(description)
+    if str(description or "").strip():
+        st.caption(description)
 
     service = TesseractOcrService({})
     status = _status_payload(service)

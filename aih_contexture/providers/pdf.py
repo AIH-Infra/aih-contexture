@@ -448,10 +448,18 @@ class PdfProvider(BaseProvider):
 
     def get_images(self, idxs: List[int], dpi: int) -> List[Image.Image]:
         with self.get_doc() as doc:
-            images = [
-                self._render_image(doc, idx, dpi, self.flatten_pdf) for idx in idxs
-            ]
-        return images
+            return self.get_images_from_doc(doc, idxs, dpi)
+
+    def get_images_from_doc(
+        self, doc: pdfium.PdfDocument, idxs: List[int], dpi: int
+    ) -> List[Image.Image]:
+        """Render pages from an already-open document.
+
+        Callers that keep ``doc`` open must serialize access and close it on the
+        same worker thread. The ordinary ``get_images`` path retains its
+        per-call document lifetime.
+        """
+        return [self._render_image(doc, idx, dpi, self.flatten_pdf) for idx in idxs]
 
     def get_page_bbox(self, idx: int) -> PolygonBox | None:
         bbox = self.page_bboxes.get(idx)

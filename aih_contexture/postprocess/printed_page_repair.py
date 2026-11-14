@@ -658,8 +658,8 @@ def _build_query_zones(segments: list[PageSegment]) -> list[QueryZone]:
     return zones
 
 
-def build_segment_diagnostics(markdown: str) -> dict[str, Any]:
-    pages = parse_markdown_pages(markdown)
+def build_segment_diagnostics(markdown: str, *, pages=None) -> dict[str, Any]:
+    pages = parse_markdown_pages(markdown) if pages is None else pages
     observations = _build_page_observations(pages)
     segments = _build_page_segments(observations)
     segments = _refine_long_mixed_segments(segments, pages)
@@ -746,8 +746,8 @@ def _projection_mismatch(pages: list[ParsedPageBlock], idx: int, page: ParsedPag
     return min(abs(current_numeric - target) for target in projected)
 
 
-def build_segment_review_proposals(markdown: str) -> dict[str, Any]:
-    pages = parse_markdown_pages(markdown)
+def build_segment_review_proposals(markdown: str, *, pages=None) -> dict[str, Any]:
+    pages = parse_markdown_pages(markdown) if pages is None else pages
     observations = _build_page_observations(pages)
     segments = _build_page_segments(observations)
     segments = _refine_long_mixed_segments(segments, pages)
@@ -1197,8 +1197,8 @@ def build_review_spans(markdown: str, max_span_length: int = 8) -> list[PrintedP
     return spans
 
 
-def infer_sequence_repairs(markdown: str) -> tuple[str, list[PrintedPageAction], list[str]]:
-    pages = parse_markdown_pages(markdown)
+def infer_sequence_repairs(markdown: str, *, pages=None, proposal_payload=None) -> tuple[str, list[PrintedPageAction], list[str]]:
+    pages = parse_markdown_pages(markdown) if pages is None else pages
     actions: list[PrintedPageAction] = []
     warnings: list[str] = []
     rewritten = markdown
@@ -1206,7 +1206,7 @@ def infer_sequence_repairs(markdown: str) -> tuple[str, list[PrintedPageAction],
     if not pages:
         return markdown, actions, ["No page anchors found; markdown postprocess skipped."]
 
-    proposal_payload = build_segment_review_proposals(markdown)
+    proposal_payload = build_segment_review_proposals(markdown, pages=pages) if proposal_payload is None else proposal_payload
     proposals = proposal_payload.get("proposals", []) if isinstance(proposal_payload, dict) else []
     if not proposals:
         warnings.append("No conservative printed-page repairs were applied.")

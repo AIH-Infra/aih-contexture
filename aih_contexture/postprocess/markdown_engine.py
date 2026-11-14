@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from aih_contexture.postprocess.markdown_config import MarkdownPostprocessConfig
 from aih_contexture.postprocess.markdown_lm import MarkdownLMAdapter
-from aih_contexture.postprocess.printed_page_repair import build_segment_diagnostics, build_segment_review_proposals, infer_sequence_repairs
+from aih_contexture.postprocess.printed_page_repair import build_segment_diagnostics, build_segment_review_proposals, infer_sequence_repairs, parse_markdown_pages
 import re
 from aih_contexture.utils.markdown_regions import markdown_lines
 
@@ -56,9 +56,11 @@ class MarkdownPostprocessEngine:
             current = _cleanup_text(current)
 
         review_base = current
+        pages = parse_markdown_pages(review_base)
+        proposals = build_segment_review_proposals(review_base, pages=pages)
 
         if self.config.markdown_postprocess_enable_printed_page_repair:
-            current, actions, repair_warnings = infer_sequence_repairs(current)
+            current, actions, repair_warnings = infer_sequence_repairs(current, pages=pages, proposal_payload=proposals)
             warnings.extend(repair_warnings)
 
         final_markdown = review_base if self.config.markdown_postprocess_review_only else current
@@ -75,8 +77,8 @@ class MarkdownPostprocessEngine:
                 "review_span_count": 0,
                 "mode": "review" if self.config.markdown_postprocess_review_only else "apply",
                 "status": "review_only" if self.config.markdown_postprocess_review_only else "applied",
-                "segment_diagnostics": build_segment_diagnostics(review_base),
-                "segment_review_proposals": build_segment_review_proposals(review_base),
+                "segment_diagnostics": build_segment_diagnostics(review_base, pages=pages),
+                "segment_review_proposals": proposals,
             },
         )
 

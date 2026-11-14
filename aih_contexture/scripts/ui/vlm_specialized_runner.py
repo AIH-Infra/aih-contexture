@@ -70,7 +70,9 @@ def run_vlm_specialized_batch(
     work_ctx["mode"] = "vlm_specialized"
     work_ctx["config"] = ocr_direct_config
     work_ctx["models"] = {"vlm": ocr_direct_config.get("vlm_direct_model") or ocr_direct_config.get("ocr_model") or ocr_direct_config.get("ocr_backend")}
-    global_semaphore = asyncio.Semaphore(max(1, int(ocr_total_concurrent or 1)))
+    # Shared by every per-file OCR service in this run. The service acquires it
+    # before region cropping/base64 encoding and keeps it through each retry.
+    request_budget = asyncio.Semaphore(max(1, int(ocr_total_concurrent or 1)))
     batch_size = max(1, int(ocr_max_concurrent_files or 1))
 
     file_objects = input_file_objects(upload_mode, uploaded_files, work_ctx)
@@ -143,7 +145,7 @@ def run_vlm_specialized_batch(
                 return {"file_idx": file_idx, "file_path": file_path, "file_name": file_name, "error": "文件被锁定（可能被PDF阅读器打开）", "is_crash": False, "started_at": file_started_at, "elapsed_seconds": time.perf_counter() - file_started_clock}
             progress_callback = make_vlm_progress_callback(work_ctx, mode="vlm_specialized", file_name=file_name, file_index=file_idx, total_files=len(file_objects))
             file_converter = OcrDirectAsyncConverter(ocr_direct_config, progress_callback=progress_callback)
-            markdown = await file_converter(file_path, global_semaphore)
+            markdown = await file_converter(file_path, request_budget)
             return {"file_idx": file_idx, "file_path": file_path, "file_name": file_name, "markdown": markdown, "converter": file_converter, "is_crash": False, "started_at": file_started_at, "elapsed_seconds": time.perf_counter() - file_started_clock}
         except ModelCrashError as e:
             return {"file_idx": file_idx, "file_path": file_path, "file_name": file_name, "error": str(e), "is_crash": True, "started_at": file_started_at, "elapsed_seconds": time.perf_counter() - file_started_clock}

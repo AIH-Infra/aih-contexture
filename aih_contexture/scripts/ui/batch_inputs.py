@@ -19,7 +19,8 @@ def input_file_objects(upload_mode: str, uploaded_files: Iterable, ctx: dict | N
             return list(ctx["_staged_upload_files"])
         if ctx is not None and ctx.get("_preread_files") is not None:
             return list(ctx["_preread_files"])
-        return [(file_obj.getvalue(), file_obj.name) for file_obj in uploaded_files]
+        return [(os.fspath(file_obj) if isinstance(file_obj, os.PathLike) else file_obj.getvalue(), file_obj.name)
+                for file_obj in uploaded_files]
     return [(os.fspath(file_obj), os.path.basename(os.fspath(file_obj))) for file_obj in uploaded_files]
 
 

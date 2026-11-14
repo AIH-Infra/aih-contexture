@@ -9,6 +9,7 @@ from aih_contexture.config.parser import ConfigParser
 from aih_contexture.runtime.backend_field_sets import (
     chrome_screenai_preprocess_fields,
     external_layout_sidecar_fields,
+    indra_fields,
     mineru_direct_layout_fields,
     mineru_vl_layout_fields,
     mineru_ocr_fields,
@@ -192,6 +193,7 @@ def vlm_specialized_cli_config(config_params: dict[str, Any]) -> dict[str, Any]:
         "emit_middle_full_json": emit_middle_full_json,
         "chrome_screenai_light": bool(config_params.get("chrome_screenai_light", False)),
         "chrome_preprocess_mode": config_params.get("chrome_preprocess_mode", "native"),
+        "chrome_remove_annotations": bool(config_params.get("chrome_remove_annotations", True)),
         "chrome_workers": _int_param(config_params, "chrome_workers", _int_param(config_params, "ocr_concurrency", 4)),
         "chrome_chunk_pages": _int_param(config_params, "chrome_chunk_pages", _int_param(config_params, "ocr_batch_size", 4)),
         "chrome_emit_searchable_pdf": bool(config_params.get("chrome_emit_searchable_pdf", False)),
@@ -348,6 +350,8 @@ def page_numbering_cli_config(config_params: dict[str, Any]) -> dict[str, Any]:
 
 
 def layout_backend_cli_config(layout_backend: str, config_params: dict[str, Any]) -> dict[str, Any]:
+    if layout_backend == "indra_layout":
+        return indra_fields(config_params)
     if layout_backend in ("vlm", "vlm_layout"):
         vlm_config = {
             "vlm_layout_timeout": _int_param(config_params, "vlm_layout_timeout", 120),
@@ -401,6 +405,8 @@ def layout_backend_cli_config(layout_backend: str, config_params: dict[str, Any]
 
 
 def ocr_backend_cli_config(ocr_backend: str, config_params: dict[str, Any]) -> dict[str, Any]:
+    if ocr_backend == "indra_ocr":
+        return indra_fields(config_params)
     if ocr_backend == "chrome_screenai":
         return preprocess_backend_cli_config(config_params)
 

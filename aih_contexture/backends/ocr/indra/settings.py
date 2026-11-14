@@ -38,6 +38,7 @@ class IndraSettings:
     timeout: int = 3600
     review_mean: float = REVIEW_MEAN_CONFIDENCE
     review_min: float = REVIEW_MIN_CONFIDENCE
+    layout_only: bool = False
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any] | None) -> "IndraSettings":
@@ -50,18 +51,22 @@ class IndraSettings:
         if dpi < 72:
             raise ValueError("indra_dpi must be at least 72")
         cores = config.get("indra_cores")
+        layout_only = config.get("layout_backend") == "indra_layout" and (
+            config.get("disable_ocr") or config.get("ocr_backend") == "none"
+        )
         return cls(
             python=_text(config.get("indra_python")) or os.environ.get(PYTHON_ENV) or None,
-            model_dir=_text(config.get("indra_model_dir")) or os.environ.get(MODEL_DIR_ENV) or None,
+            model_dir=_text(config.get("indra_model_dir")) or os.environ.get(MODEL_DIR_ENV) or default_indra_model_dir(),
             mode=mode,
             dpi=dpi,
-            math=bool(config.get("indra_math", False)),
+            math=bool(config.get("indra_math", False)) and not layout_only,
+            layout_only=bool(layout_only),
             cores=int(cores) if cores not in (None, "", 0) else None,
             allow_download=bool(config.get("indra_allow_download", False)),
             cache_dir=_text(config.get("indra_cache_dir")) or None,
             timeout=int(config.get("indra_timeout") or 3600),
-            review_mean=float(config.get("indra_review_mean") or REVIEW_MEAN_CONFIDENCE),
-            review_min=float(config.get("indra_review_min") or REVIEW_MIN_CONFIDENCE),
+            review_mean=float(REVIEW_MEAN_CONFIDENCE if config.get("indra_review_mean") in (None, "") else config["indra_review_mean"]),
+            review_min=float(REVIEW_MIN_CONFIDENCE if config.get("indra_review_min") in (None, "") else config["indra_review_min"]),
         )
 
     def interpreter(self) -> str:
@@ -86,12 +91,20 @@ def _text(value: Any) -> str | None:
     return text or None
 
 
-def missing_model_files(model_dir: str | Path, *, math: bool = False) -> list[str]:
+def missing_model_files(model_dir: str | Path, *, math: bool = False, layout_only: bool = False) -> list[str]:
     folder = Path(model_dir)
-    wanted = list(MODEL_FILES)
+    wanted = ["det.onnx", "meta.json"] if layout_only else list(MODEL_FILES)
     if math:
         wanted += ["mathcls.onnx", "math_enc.onnx", "math_dec_init.onnx", "math_dec_step.onnx", "math_meta.json"]
     return [name for name in wanted if not (folder / name).exists()]
+
+
+def default_indra_model_dir() -> str | None:
+    """Use installed shared weights when neither config nor environment sets a path."""
+    from aih_contexture.backends.external_config import default_runtime_root
+
+    folder = default_runtime_root() / "contexture/data/shared/models/OCR/Indra"
+    return str(folder) if folder.is_dir() else None
 
 
 def check_ready(settings: IndraSettings) -> list[str]:
@@ -104,7 +117,7 @@ def check_ready(settings: IndraSettings) -> list[str]:
     except IndraUnavailable as exc:
         problems.append(str(exc))
     if settings.model_dir:
-        missing = missing_model_files(settings.model_dir, math=settings.math)
+        missing = missing_model_files(settings.model_dir, math=settings.math, layout_only=settings.layout_only)
         if missing:
             problems.append(f"model folder {settings.model_dir} lacks {', '.join(missing)}")
     elif not settings.allow_download:

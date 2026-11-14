@@ -14,17 +14,17 @@ from aih_contexture.config.dpi_presets import (
 
 _LAYOUT_QUALITY_OPTIONS = ["fast", "standard", "high"]
 _LAYOUT_QUALITY_LABELS = {
-    "fast": "快速 - 96 DPI",
-    "standard": "标准 - 144 DPI",
-    "high": "高质量 - 192 DPI",
+    "fast": "快速 96 DPI",
+    "standard": "标准 144 DPI",
+    "high": "高质量 192 DPI",
 }
 
 _OCR_QUALITY_OPTIONS = ["auto", "low", "medium", "high"]
 _OCR_QUALITY_LABELS = {
-    "auto": "自动 - 按 OCR 后端默认值",
-    "low": "低档 - 192 DPI",
-    "medium": "中档 - 300 DPI",
-    "high": "高档 - 400 DPI",
+    "auto": "自动",
+    "low": "低 192 DPI",
+    "medium": "中 300 DPI",
+    "high": "高 400 DPI",
 }
 
 
@@ -54,28 +54,30 @@ def render_pipeline_layout_dpi_settings(
     selected_quality = str(surya_layout_quality or "fast").strip().lower().replace("-", "_")
     override_value = _positive_or_none(layout_dpi_override)
 
-    with st.expander("版面渲染 DPI", expanded=False):
+    with st.expander("版面页面图像 DPI", expanded=False):
         if backend_name == "surya":
             selected_quality = st.selectbox(
-                "Surya 版面质量",
+                "Surya 页面图像质量",
                 options=_LAYOUT_QUALITY_OPTIONS,
                 index=_option_index(_LAYOUT_QUALITY_OPTIONS, selected_quality, "fast"),
                 format_func=lambda value: _LAYOUT_QUALITY_LABELS.get(value, value),
-                help="只影响 Surya 版面分析的页面渲染 DPI；坐标会统一转换为 PDF 点。",
+                help="控制送入 Surya 版面模型的页面图像分辨率。",
                 key="surya_layout_quality",
             )
             preset_dpi = LAYOUT_QUALITY_PRESETS.get(selected_quality, LAYOUT_QUALITY_PRESETS["fast"])
         else:
             preset_dpi = LAYOUT_BACKEND_DEFAULT_DPI.get(backend_name, 96)
-            st.caption(f"当前版面后端默认使用 {preset_dpi} DPI；需要诊断或特殊材料时可手动覆盖。")
+            if backend_name == "indra_layout":
+                st.caption("此项控制 Pipeline 页面图像；Indra 模型输入 DPI 在 Indra 设置中调整。")
+            st.caption(f"默认页面图像分辨率：{preset_dpi} DPI。")
 
         override_input = st.number_input(
-            "版面 DPI 覆盖",
+            "页面图像 DPI 覆盖",
             min_value=0,
             max_value=1200,
             value=override_value or 0,
             step=1,
-            help="0 表示使用所选版面后端的默认 DPI。",
+            help="0 表示使用所选后端的默认页面图像分辨率。",
             key="layout_dpi_override",
         )
         override_value = _positive_or_none(override_input)
@@ -84,7 +86,12 @@ def render_pipeline_layout_dpi_settings(
             surya_quality=selected_quality,
             override=override_value,
         )
-        st.caption(f"实际版面渲染 DPI：{effective_dpi}。")
+        if backend_name == "indra_layout":
+            st.caption(f"Pipeline 页面图像：{effective_dpi} DPI。Indra 模型输入分辨率由 Indra 设置控制。")
+        elif backend_name == "surya":
+            st.caption(f"Surya 模型输入页面图像：{effective_dpi} DPI。")
+        else:
+            st.caption(f"Pipeline 页面图像：{effective_dpi} DPI。")
 
     return {
         "surya_layout_quality": selected_quality,
@@ -111,22 +118,22 @@ def render_pipeline_ocr_dpi_settings(
         selected_quality = "auto"
     override_value = _positive_or_none(ocr_dpi_override)
 
-    with st.expander("OCR 渲染 DPI", expanded=False):
+    with st.expander("OCR 页面图像 DPI", expanded=False):
         selected_quality = st.selectbox(
-            "OCR DPI 档位",
+            "页面图像质量",
             options=_OCR_QUALITY_OPTIONS,
             index=_option_index(_OCR_QUALITY_OPTIONS, selected_quality, "auto"),
             format_func=lambda value: _OCR_QUALITY_LABELS.get(value, value),
-            help="自动模式下，Surya/Paddle OCR 使用 192 DPI，Tesseract/Calamari/VLM 使用 300 DPI。",
+            help="自动模式使用所选 OCR 后端的默认页面图像分辨率。",
             key="ocr_quality",
         )
         override_input = st.number_input(
-            "OCR DPI 覆盖",
+            "页面图像 DPI 覆盖",
             min_value=0,
             max_value=1200,
             value=override_value or 0,
             step=1,
-            help="0 表示使用所选 OCR 档位或后端自动默认值。",
+            help="0 表示使用所选 OCR 档位或后端默认分辨率。",
             key="ocr_dpi_override",
         )
         override_value = _positive_or_none(override_input)
@@ -136,10 +143,14 @@ def render_pipeline_ocr_dpi_settings(
             override=override_value,
         )
         default_quality = OCR_BACKEND_DEFAULT_QUALITY.get(backend_name, "low")
-        st.caption(
-            "实际 OCR 渲染 DPI："
-            f"{effective_dpi}；当前后端自动档为 {OCR_QUALITY_PRESETS[default_quality]} DPI。"
-        )
+        if backend_name == "indra_ocr":
+            st.caption(
+                f"Pipeline 页面图像：{effective_dpi} DPI。Indra 模型输入 DPI 在 Indra 设置中调整。"
+            )
+        else:
+            st.caption(
+                f"OCR 输入页面图像：{effective_dpi} DPI；后端默认值为 {OCR_QUALITY_PRESETS[default_quality]} DPI。"
+            )
 
     return {
         "ocr_quality": selected_quality,

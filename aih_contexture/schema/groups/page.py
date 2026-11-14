@@ -1,11 +1,11 @@
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 import numpy as np
 
 from PIL import Image, ImageDraw
 
 from pdftext.schema import Reference
-from pydantic import computed_field
+from pydantic import PrivateAttr, computed_field
 
 from aih_contexture.providers import ProviderOutput
 from aih_contexture.schema import BlockTypes
@@ -35,6 +35,31 @@ class PageGroup(Group):
     block_description: str = "A single page in the document."
     refs: List[Reference] | None = None
     ocr_errors_detected: bool = False
+    _lowres_image_loader: Callable[[], Image.Image | None] | None = PrivateAttr(default=None)
+    _highres_image_loader: Callable[[], Image.Image | None] | None = PrivateAttr(default=None)
+
+    def set_image_loader(
+        self,
+        loader: Callable[[], Image.Image | None] | None,
+        *,
+        highres: bool = False,
+    ) -> None:
+        if highres:
+            self._highres_image_loader = loader
+        else:
+            self._lowres_image_loader = loader
+
+    def _get_stored_or_loaded_image(self, *, highres: bool) -> Image.Image | None:
+        field = "highres_image" if highres else "lowres_image"
+        image = getattr(self, field)
+        if image is None:
+            loader_name = "_highres_image_loader" if highres else "_lowres_image_loader"
+            loader = getattr(self, loader_name)
+            if loader is not None:
+                image = loader()
+                setattr(self, field, image)
+                setattr(self, loader_name, None)
+        return image
 
     def incr_block_id(self):
         if self.block_id is None:
@@ -55,9 +80,9 @@ class PageGroup(Group):
         remove_blocks: Sequence[BlockTypes] | None = None,
         **kwargs,
     ):
-        image = self.highres_image if highres else self.lowres_image
+        image = self._get_stored_or_loaded_image(highres=highres)
         if image is None and highres:
-            image = self.lowres_image
+            image = self._get_stored_or_loaded_image(highres=False)
 
         # Check if RGB, convert if needed
         if isinstance(image, Image.Image) and image.mode != "RGB":

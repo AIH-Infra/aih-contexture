@@ -53,7 +53,6 @@ def plan_pipeline_page_ranges(
     start_page_1based: int | None = None,
     end_page_1based: int | None = None,
 ) -> list[tuple[int, int]]:
-    should_batch = should_batch_pages(total_pages, process_mode, batch_threshold)
     targets = target_page_ranges(
         total_pages=total_pages,
         use_page_range=use_page_range,
@@ -62,7 +61,7 @@ def plan_pipeline_page_ranges(
     )
     return split_page_ranges(
         targets,
-        should_batch=should_batch,
+        should_batch=should_batch_pages(sum(end - start for start, end in targets), process_mode, pages_per_batch),
         pages_per_batch=pages_per_batch,
     )
 

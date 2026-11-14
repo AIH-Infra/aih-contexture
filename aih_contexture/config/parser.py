@@ -445,6 +445,11 @@ class ConfigParser:
             help="Chrome ScreenAI PDF preprocessing mode: native, strip_existing_ocr, rasterize_pdf, or strip_then_rasterize.",
         )(fn)
         fn = click.option(
+            "--chrome_remove_annotations/--no_chrome_remove_annotations",
+            default=True,
+            help="Remove PDF annotations and links before ScreenAI recognition.",
+        )(fn)
+        fn = click.option(
             "--chrome_workers",
             type=int,
             default=4,

@@ -50,7 +50,8 @@ def render_paddle_ocr_settings(
     *,
     description: str,
 ) -> dict[str, object]:
-    st.info(description)
+    if str(description or "").strip():
+        st.caption(description)
 
     paddle_ocr_python = st.text_input(
         "Paddle 外部 Python",

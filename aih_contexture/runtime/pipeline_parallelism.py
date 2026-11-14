@@ -1,9 +1,9 @@
-"""Pipeline performance plan: worker processes and pages per batch from free memory.
+"""Pipeline resource estimates shared by the UI and execution-time planner.
 
-The UI (recommendation) and the pipeline worker (final check) both call
-``resolve_pipeline_parallelism`` so they cannot disagree. Each worker process
-loads its own model copy, so VRAM decides how many workers fit; pages per batch
-only changes host RAM, because the GPU sees ``layout_batch_size`` pages at a time.
+Automatic mode budgets worker processes from available resources. Manual mode
+keeps the requested count and reports estimates that exceed the budget.
+Each process loads its own models. Job pages affect host RAM, while the GPU
+inference batch size affects the estimated VRAM footprint.
 
 Profiles are measured whole-process footprints (CUDA context, every model the
 Pipeline loads, allocator cache), not ``torch.cuda.max_memory_allocated``.
@@ -11,6 +11,7 @@ Pipeline loads, allocator cache), not ``torch.cuda.max_memory_allocated``.
 from __future__ import annotations
 
 import math
+import importlib.metadata
 import os
 import shutil
 import subprocess
@@ -27,10 +28,10 @@ MAX_WORKERS = 8
 PARALLEL_PAGES_PER_BATCH = 25
 SINGLE_PAGES_PER_BATCH = 100
 MIN_PAGES_PER_BATCH = 10
-AUTO_MIN_PAGES_PER_WORKER = 50
-RAM_RESERVE_GB = 4.0
-VRAM_RESERVE_GB = 0.5
-VRAM_RESERVE_FRACTION = 0.03
+AUTO_MIN_PAGES_PER_WORKER = 25
+RAM_RESERVE_GB = 2.0
+VRAM_RESERVE_GB = 0.25
+VRAM_RESERVE_FRACTION = 0.01
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,8 +41,6 @@ class WorkerProfile:
     vram_base_gb: float
     vram_per_layout_item_gb: float
     default_layout_batch_size: int
-    # Beyond this the shared GPU (Surya) or CPU stages stop scaling.
-    useful_workers: int
     ram_base_gb: float = 3.0
     ram_per_page_gb: float = 0.02
     quality_extra_gb: tuple[tuple[str, float], ...] = ()
@@ -61,12 +60,12 @@ class WorkerProfile:
 # runs, 5.6 GB per worker with two in parallel over 304 pages; 192 DPI adds 1.2 GB.
 WORKER_PROFILES: dict[str, WorkerProfile] = {
     "surya": WorkerProfile(
-        vram_base_gb=4.4, vram_per_layout_item_gb=0.15, default_layout_batch_size=8, useful_workers=3,
+        vram_base_gb=4.4, vram_per_layout_item_gb=0.15, default_layout_batch_size=8,
         quality_extra_gb=(("standard", 0.6), ("high", 1.2)),
     ),
     # PP-DocLayoutV2 sidecar plus the Pipeline process: 2.7/3.4/4.6 GB at batch 1/4/8.
     "mineru_pp_doclayout_v2_direct": WorkerProfile(
-        vram_base_gb=2.6, vram_per_layout_item_gb=0.25, default_layout_batch_size=4, useful_workers=4,
+        vram_base_gb=2.6, vram_per_layout_item_gb=0.25, default_layout_batch_size=4,
     ),
 }
 LIMIT_LABELS = {"vram": "显存", "ram": "内存", "cpu": "CPU", "batches": "批次数", "useful": "收益上限", "pages": "页数", "small_job": "页数过少"}
@@ -128,14 +127,25 @@ def resolve_pipeline_parallelism(
     total_pages: int | None = None,
     probe: MemoryProbe | None = None,
 ) -> ParallelPlan:
-    """Return a safe worker count and batch size.
-
-    Auto picks both; manual keeps the user's values but never exceeds what
-    free VRAM and RAM can hold, because an over-committed Windows GPU spills
-    into shared memory and stalls instead of failing.
-    """
+    """Choose automatic concurrency or retain manual settings with budget notes."""
     mode = MANUAL if str(mode).strip().lower() == MANUAL else AUTO
     probe = probe if probe is not None else probe_memory()
+    if normalize_backend(layout_backend) == "indra_layout" or normalize_backend(ocr_backend) == "indra_ocr":
+        # Indra already creates a CPU pool inside each Pipeline batch. Starting
+        # multiple outer workers multiplies both the pools and their RAM use.
+        pages = max(1, int(pages_per_batch or SINGLE_PAGES_PER_BATCH))
+        if not pages_per_batch and mode == AUTO and probe.ram_available_gb is not None and probe.ram_available_gb - RAM_RESERVE_GB < 3.0 + 0.02 * pages:
+            pages = min(pages, PARALLEL_PAGES_PER_BATCH)
+        if total_pages and not pages_per_batch:
+            pages = min(pages, max(1, int(total_pages)))
+        return ParallelPlan(
+            mode=mode, workers=1, pages_per_batch=pages,
+            batch_threshold=pages,
+            worker_vram_gb=None, worker_ram_gb=round(3.0 + 0.02 * pages, 2),
+            limits={"indra_pool": 1},
+            notes=["Indra 使用内部 CPU 并行池，外层 Pipeline 固定单进程；请用 Indra CPU 核心数设置内部并行。"],
+            probe=probe,
+        )
     profile = worker_profile(layout_backend, ocr_backend)
     notes: list[str] = []
     limits: dict[str, int] = {}
@@ -144,24 +154,31 @@ def resolve_pipeline_parallelism(
         limits["requested"] = max(1, min(MAX_WORKERS, int(workers or 1)))
         pages = max(1, int(pages_per_batch or PARALLEL_PAGES_PER_BATCH))
     elif profile is None:
-        limits["profile"] = 1
-        notes.append("当前后端组合没有实测显存档案，自动配置保持单进程。")
-        pages = SINGLE_PAGES_PER_BATCH
-    else:
-        limits["useful"] = profile.useful_workers
+        limits["profile"] = 2
+        notes.append("当前后端组合缺少显存档案，自动最多使用 2 个进程。")
         pages = PARALLEL_PAGES_PER_BATCH
+    else:
+        limits["workers"] = MAX_WORKERS
+        pages = PARALLEL_PAGES_PER_BATCH
+
+    if pages_per_batch:
+        pages = max(1, int(pages_per_batch))
 
     worker_vram = profile.vram_gb(layout_batch_size, layout_quality) if profile else None
     if worker_vram is not None:
         if probe.vram_free_gb is None:
-            limits["vram"] = 1
-            notes.append("未检测到 GPU 可用显存，按单进程运行。")
+            if mode == AUTO:
+                limits["vram"] = 1
+                notes.append("未检测到 GPU 可用显存，自动使用单进程。")
+            else:
+                notes.append("未检测到 GPU 可用显存，按手动进程数运行。")
         else:
             reserve = VRAM_RESERVE_GB + VRAM_RESERVE_FRACTION * float(probe.vram_total_gb or probe.vram_free_gb)
             limits["vram"] = max(1, int((probe.vram_free_gb - reserve) // worker_vram))
     elif mode == MANUAL and limits["requested"] > 1:
-        notes.append("当前后端组合没有实测显存档案，按手动进程数运行，请留意显存。")
-    limits["cpu"] = max(1, probe.cpu_count // 4)
+        notes.append("当前后端组合缺少显存档案，按手动进程数运行。")
+    if mode == AUTO:
+        limits["cpu"] = max(1, probe.cpu_count // 2)
     if total_pages and mode == AUTO:
         # Model loading per worker only pays off with enough pages each.
         limits["pages"] = max(1, int(total_pages) // AUTO_MIN_PAGES_PER_WORKER)
@@ -171,23 +188,26 @@ def resolve_pipeline_parallelism(
 
     if probe.ram_available_gb is not None:
         limits["ram"] = max(1, int((probe.ram_available_gb - RAM_RESERVE_GB) // ram_per_worker(pages)))
-    chosen = min(limits.values())
+    chosen = limits["requested"] if mode == MANUAL else min(limits.values())
 
-    if mode == AUTO and chosen == 1:
+    if mode == AUTO and chosen == 1 and not pages_per_batch:
         # One worker: larger batches cut per-batch overhead, if RAM allows.
         fits = probe.ram_available_gb is None or probe.ram_available_gb - RAM_RESERVE_GB >= ram_per_worker(SINGLE_PAGES_PER_BATCH)
         pages = SINGLE_PAGES_PER_BATCH if fits else PARALLEL_PAGES_PER_BATCH
     if total_pages:
-        if mode == AUTO and chosen > 1:
+        if mode == AUTO and chosen > 1 and not pages_per_batch:
             # At least two batches per worker keeps the shared queue balanced.
             pages = max(MIN_PAGES_PER_BATCH, min(pages, math.ceil(int(total_pages) / (chosen * 2))))
         limits["batches"] = max(1, math.ceil(int(total_pages) / pages))
         chosen = min(chosen, limits["batches"])
 
     if mode == MANUAL and chosen < limits["requested"]:
-        binding = sorted(LIMIT_LABELS.get(key, key) for key, value in limits.items() if value == chosen and key != "requested")
-        notes.append(f"手动设置 {limits['requested']} 个进程超出安全上限，已限制为 {chosen}（受限于：{'、'.join(binding)}）。")
-    threshold = pages if mode == AUTO else int(batch_threshold or pages)
+        notes.append(f"当前文件共 {limits['batches']} 批，实际启用 {chosen} 个进程。")
+    if mode == MANUAL:
+        exceeded = [LIMIT_LABELS[key] for key in ("vram", "ram") if key in limits and chosen > limits[key]]
+        if exceeded:
+            notes.append(f"{'、'.join(exceeded)}估算预算不足，按手动设置的 {chosen} 个进程运行。")
+    threshold = pages
     return ParallelPlan(
         mode=mode, workers=chosen, pages_per_batch=pages, batch_threshold=threshold,
         worker_vram_gb=round(worker_vram, 2) if worker_vram is not None else None,
@@ -199,10 +219,10 @@ def plan_from_values(
     values: dict[str, Any], *, total_pages: int | None = None, probe: MemoryProbe | None = None,
 ) -> ParallelPlan:
     """Map Pipeline UI/config values onto the resolver; shared by UI and runner."""
-    ocr_backend = values.get("ocr_backend")
+    ocr_backend = "none" if values.get("disable_ocr") else values.get("ocr_backend")
     if str(values.get("ocr_preprocess_backend") or "none") not in ("", "none"):
         ocr_backend = "none"
-    return resolve_pipeline_parallelism(
+    plan = resolve_pipeline_parallelism(
         layout_backend=values.get("layout_backend", "surya"),
         ocr_backend=ocr_backend,
         layout_batch_size=layout_batch_size_for(values),
@@ -214,6 +234,15 @@ def plan_from_values(
         total_pages=total_pages,
         probe=probe,
     )
+    if "indra_pool" in plan.limits:
+        inner = plan_indra_workers(
+            {**values, "pipeline_performance_mode": AUTO},
+            total_pages=min(total_pages, plan.pages_per_batch) if total_pages else plan.pages_per_batch,
+            probe=plan.probe,
+        )
+        plan.notes.append(f"Indra 内部 CPU 核心预算：{inner.workers}；按物理核心、可用内存和每批页数规划，不按显存规划。")
+        plan.notes.extend(inner.notes)
+    return plan
 
 
 # Indra OCR (CPU) is planned in cores, not VRAM. Its own source says a single ONNX Runtime thread pool helps one page
@@ -244,16 +273,20 @@ def plan_indra_workers(
 ) -> ParallelPlan:
     """Cores for an Indra run: automatic from cores, free RAM and page count, or the user's ``indra_cores``.
 
-    A manual value is honoured up to what free RAM and the machine can hold, never silently beyond it.
+    Manual cores are bounded by physical cores; RAM estimates are advisory.
     """
     probe = probe if probe is not None else probe_memory()
     requested = config.get("indra_cores")
-    if requested in (None, "", 0) and str(config.get("pipeline_performance_mode") or AUTO).strip().lower() == MANUAL:
+    uses_indra = normalize_backend(config.get("layout_backend")) == "indra_layout" or normalize_backend(config.get("ocr_backend")) == "indra_ocr"
+    if not uses_indra and requested in (None, "", 0) and str(config.get("pipeline_performance_mode") or AUTO).strip().lower() == MANUAL:
         requested = config.get("pipeline_workers")
     manual = requested not in (None, "", 0)
     pages = max(1, int(total_pages or 1))
     physical = _physical_cores(probe)
-    limits: dict[str, int] = {"cpu": max(1, physical - INDRA_RESERVED_CORES if physical > INDRA_RESERVED_CORES + 1 else physical)}
+    cpu_budget = physical
+    if not manual and physical > INDRA_RESERVED_CORES + 1:
+        cpu_budget -= INDRA_RESERVED_CORES
+    limits: dict[str, int] = {"cpu": max(1, cpu_budget)}
     notes: list[str] = []
     if probe.ram_available_gb is not None:
         limits["ram"] = max(1, int((probe.ram_available_gb - RAM_RESERVE_GB) // INDRA_WORKER_RAM_GB))
@@ -264,10 +297,11 @@ def plan_indra_workers(
     else:
         limits["pages"] = max(1, pages // INDRA_MIN_PAGES_PER_WORKER)
         limits["useful"] = INDRA_USEFUL_WORKERS
-    chosen = min(limits.values())
+    chosen = min(limits["cpu"], limits["requested"]) if manual else min(limits.values())
     if manual and chosen < limits["requested"]:
-        binding = sorted(LIMIT_LABELS.get(key, key) for key, value in limits.items() if value == chosen and key != "requested")
-        notes.append(f"手动设置 {limits['requested']} 个核心超出安全上限，已限制为 {chosen}（受限于：{'、'.join(binding)}）。")
+        notes.append(f"手动设置 {limits['requested']} 个核心，本机有 {physical} 个物理核心，实际使用 {chosen} 个。")
+    if manual and "ram" in limits and chosen > limits["ram"]:
+        notes.append(f"内存估算预算不足，按手动设置的 {chosen} 个核心运行。")
     if not manual and pages < INDRA_MIN_POOL_PAGES:
         notes.append("页数少于 4：单进程，多核同时处理每一页。")
     return ParallelPlan(
@@ -288,7 +322,17 @@ def probe_memory(*, use_cache: bool = True, runner: Callable[..., Any] = subproc
         return _PROBE_CACHE[1]
     device = free = total = None
     source = "none"
-    nvidia = _probe_nvidia_smi(runner)
+    backend = os.environ.get('CONTEXTURE_EXPECT_BACKEND', '').strip().lower()
+    if not backend:
+        try:
+            version = importlib.metadata.version('torch').lower()
+        except importlib.metadata.PackageNotFoundError:
+            version = ''
+        if '+cu' in version:
+            backend = 'cuda'
+    # nvidia-smi reports NVIDIA hardware even when this interpreter runs ROCm.
+    # Only query it for a CUDA environment, otherwise ask this interpreter's Torch.
+    nvidia = _probe_nvidia_smi(runner) if backend == 'cuda' else None
     if nvidia is not None:
         device, free, total = nvidia
         source = "nvidia-smi"

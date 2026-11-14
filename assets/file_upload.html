@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8">
+<style>
+body{margin:0;font:14px system-ui,sans-serif;color:#252a35}button{border:1px solid #d9dce5;border-radius:8px;background:#fafaf8;color:inherit;padding:10px 18px;cursor:pointer}#drop{border:1px dashed #a8afc3;border-radius:10px;text-align:center;padding:16px;background:#f0f1f4}#status{margin-top:8px;max-height:66px;overflow:auto;line-height:1.5}.error{color:#ac3030}progress{width:100%;height:7px;margin-top:10px}
+</style>
+<div id="drop"><button id="choose" type="button">选择文件</button> <span>或拖放文件至此处</span><input id="files" type="file" multiple hidden></div>
+<progress id="progress" value="0" max="1" hidden></progress><div id="summary" aria-live="polite"></div><div id="status"></div>
+<script>
+const config=__CONFIG__;
+const input=document.getElementById('files'), drop=document.getElementById('drop');
+input.accept=config.accept;
+function host(){
+  try { return window.parent.location.hostname; } catch(error) {}
+  if(document.referrer) return new URL(document.referrer).hostname;
+  return window.location.hostname||'127.0.0.1';
+}
+const base='http://'+host()+':'+config.port;
+const batches = [];
+let processing = false;
+function report(text,error=false){
+  const row=document.createElement('div');row.textContent=text;
+  if(error)row.className='error';
+  document.getElementById('status').appendChild(row);
+  const status = document.getElementById('status');
+  while (status.children.length > 50) status.firstChild.remove();
+  status.scrollTop = status.scrollHeight;
+}
+async function batchState(id, complete) {
+  const response = await fetch(base + '/upload-batch?token=' + encodeURIComponent(config.token), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id, complete})
+  });
+  if (!response.ok) throw new Error((await response.json()).error);
+}
+async function sendBatch(files) {
+  const id = Date.now().toString(36) + Math.random().toString(36).slice(2);
+  await batchState(id, false);
+  const loaded = new Array(files.length).fill(0);
+  const totalBytes = files.reduce((sum, file) => sum + file.size, 0);
+  const progress = document.getElementById('progress');
+  const summary = document.getElementById('summary');
+  progress.hidden = false;
+  let nextIndex = 0, completed = 0, failed = 0;
+  function update() {
+    progress.value = loaded.reduce((sum, value) => sum + value, 0) / Math.max(totalBytes, 1);
+    summary.textContent = '已完成 ' + completed + ' / ' + files.length + ' 个文件' + (failed ? '，失败 ' + failed + ' 个' : '');
+  }
+  function send(index) {
+    return new Promise(resolve => {
+      const file = files[index];
+      const request = new XMLHttpRequest();
+      request.open('POST', base + '/upload?token=' + encodeURIComponent(config.token));
+      request.setRequestHeader('X-File-Name', encodeURIComponent(file.name));
+      request.setRequestHeader('X-Upload-Batch', id);
+      request.upload.onprogress = event => {
+        if (event.lengthComputable) { loaded[index] = event.loaded; update(); }
+      };
+      function finish(error) {
+        completed++;
+        loaded[index] = file.size;
+        if (error) { failed++; report('上传失败 ' + file.name + ' ' + error, true); }
+        else report('已暂存 ' + file.name);
+        update();
+        resolve();
+      }
+      request.onload = () => {
+        let error = '';
+        if (request.status !== 200) {
+          error = 'HTTP ' + request.status;
+          try { error = JSON.parse(request.responseText).error; } catch (ignored) {}
+        }
+        finish(error);
+      };
+      request.onerror = () => finish('连接中断，可重新选择该文件上传');
+      request.send(file);
+    });
+  }
+  try {
+    await Promise.all(Array.from({length: Math.min(4, files.length)}, async () => {
+      while (nextIndex < files.length) await send(nextIndex++);
+    }));
+  } finally {
+    await batchState(id, true);
+  }
+}
+async function drain() {
+  if (processing) return;
+  processing = true;
+  try {
+    while (batches.length) {
+      try { await sendBatch(batches.shift()); }
+      catch (error) { report(error.message, true); }
+    }
+  } finally { processing = false; }
+}
+function enqueue(files) {
+  const accepted = [];
+  for (const file of files) {
+    const suffix = '.' + file.name.split('.').pop().toLowerCase();
+    if (config.accept.split(',').includes(suffix)) accepted.push(file);
+    else report('文件类型不支持 ' + file.name, true);
+  }
+  if (accepted.length) { batches.push(accepted); drain(); }
+}
+document.getElementById('choose').onclick=()=>input.click();
+input.onchange=()=>{enqueue(input.files);input.value='';};
+drop.ondragover=event=>event.preventDefault();
+drop.ondrop=event=>{event.preventDefault();enqueue(event.dataTransfer.files);};
+</script></html>

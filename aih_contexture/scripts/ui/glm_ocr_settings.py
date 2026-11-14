@@ -12,7 +12,8 @@ def render_glm_ocr_settings(st, *, description: str, key_prefix: str = "ocr_glm"
     def state_value(name: str, default: Any) -> Any:
         return st.session_state.get(widget_key(name), st.session_state.get(name, default))
 
-    st.markdown(description)
+    if str(description or "").strip():
+        st.caption(description)
     endpoint = st.text_input(
         "GLM-OCR API 端点（OpenAI 兼容）",
         value=state_value("glm_ocr_endpoint", "http://127.0.0.1:1234/v1/chat/completions"),
@@ -65,7 +66,7 @@ def render_glm_ocr_settings(st, *, description: str, key_prefix: str = "ocr_glm"
             key=widget_key("glm_ocr_max_tokens"),
         )
     recognize_formulas = st.checkbox(
-        "同时识别公式块（公式提示词尚未验证）",
+        "同时识别公式块",
         value=bool(state_value("glm_ocr_recognize_formulas", False)),
         key=widget_key("glm_ocr_recognize_formulas"),
     )

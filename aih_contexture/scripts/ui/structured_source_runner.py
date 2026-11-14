@@ -4,7 +4,7 @@ import os
 import shutil
 import json
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from pathlib import Path
 
 from aih_contexture.middle.adapters.markdown import markdown_to_middle_document
@@ -94,35 +94,45 @@ def run_structured_source_batch(
             },
             output_paths=[archive, *readable_outputs], source_path=(content if isinstance(content, (str, os.PathLike)) else None),
         )
-        return name, result, archive, readable_outputs, summary_path
+        return name, result.package_manifest["components"], archive, readable_outputs, summary_path
 
 
     workers = max(1, min(int(max_workers), len(file_objects), 16))
     failures = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {
-            pool.submit(convert_one, item, file_index): item[1]
-            for file_index, item in enumerate(file_objects)
-        }
+        remaining = iter(enumerate(file_objects))
+        futures = {}
+        def submit_next():
+            if cancel.is_set():
+                return
+            entry = next(remaining, None)
+            if entry is not None:
+                file_index, item = entry
+                futures[pool.submit(convert_one, item, file_index)] = item[1]
+        for _ in range(workers):
+            submit_next()
         completed = 0
-        for future in as_completed(futures):
+        while futures:
             if cancel.is_set():
                 ctx["status"] = "cancelled"
-                break
-            name = futures[future]
-            try:
-                _, result, archive, readable_outputs, summary_path = future.result()
-                paths = [archive, *readable_outputs]
-                all_outputs.extend(paths)
-                record_processed_outputs(ctx, name, paths)
-                register_document_summary(ctx, summary_path)
-                stats = result.package_manifest["components"]
-                st.success(f"{name}: {stats['blocks']['records']} blocks, {stats['structures']['records']} structures")
-            except Exception as exc:
-                failures.append((name, str(exc)))
-                st.error(f"{name}: {exc}")
-            completed += 1
-            ctx["progress"] = completed / len(file_objects)
+            done, _ = wait(futures, return_when=FIRST_COMPLETED)
+            for future in done:
+                name = futures.pop(future)
+                try:
+                    _, stats, archive, readable_outputs, summary_path = future.result()
+                    paths = [archive, *readable_outputs]
+                    all_outputs.extend(paths)
+                    record_processed_outputs(ctx, name, paths)
+                    register_document_summary(ctx, summary_path)
+                    st.success(f"{name}: {stats['blocks']['records']} blocks, {stats['structures']['records']} structures")
+                except Exception as exc:
+                    failures.append((name, str(exc)))
+                    st.error(f"{name}: {exc}")
+                completed += 1
+                ctx["progress"] = completed / len(file_objects)
+                submit_next()
+        if cancel.is_set():
+            ctx["status"] = "cancelled"
     if failures:
         st.warning(f"结构化源导入完成，但 {len(failures)} 个文件失败")
     elif ctx.get("status") != "cancelled":

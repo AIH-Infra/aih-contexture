@@ -16,6 +16,17 @@ class ConfigManager:
     CONFIG_VERSION = "1.0.0"
     DEFAULT_CONFIG_NAME = "default"
     APP_SETTINGS_NAME = "_app_settings"
+    MASKED_API_KEY = "***MASKED***"
+    CONFIG_SECTIONS = (
+        "global",
+        "pipeline",
+        "vlm_generalized",
+        "vlm_specialized",
+        "markdown_postprocess",
+        "structured_source",
+    )
+    CONVERSION_MODES = CONFIG_SECTIONS[1:]
+    API_KEY_MODES = ("exclude", "placeholder", "include")
 
     # API Key 相关的字段名
     API_KEY_FIELDS = [
@@ -64,6 +75,21 @@ class ConfigManager:
         # 限制长度
         return safe_name[:50]
 
+    def _normalize_config_name(self, name: Any) -> Optional[str]:
+        if not isinstance(name, str):
+            return None
+        normalized = name.strip()
+        if not normalized or not self._sanitize_filename(normalized).strip(" ."):
+            return None
+        if normalized.casefold() == self.APP_SETTINGS_NAME.casefold():
+            return None
+        windows_reserved = {"CON", "PRN", "AUX", "NUL"}
+        windows_reserved.update(f"COM{index}" for index in range(1, 10))
+        windows_reserved.update(f"LPT{index}" for index in range(1, 10))
+        if normalized.split(".", 1)[0].rstrip(" .").upper() in windows_reserved:
+            return None
+        return normalized
+
     def _get_config_path(self, name: str) -> Path:
         """获取配置文件的完整路径"""
         safe_name = self._sanitize_filename(name)
@@ -89,33 +115,91 @@ class ConfigManager:
             if isinstance(value, dict):
                 result[key] = self._mask_api_keys(value, mode)
             elif isinstance(value, list):
-                if key in self.API_KEY_FIELDS:
+                if self._is_api_key_field(key):
                     if mode == "exclude":
                         result[key] = []
                     else:  # placeholder
-                        result[key] = ["***MASKED***"] * len(value) if value else []
+                        result[key] = [self.MASKED_API_KEY] * len(value) if value else []
                 else:
                     result[key] = [
                         self._mask_api_keys(item, mode) if isinstance(item, dict) else item
                         for item in value
                     ]
-            elif key in self.API_KEY_FIELDS:
+            elif self._is_api_key_field(key):
                 if mode == "exclude":
                     result[key] = ""
                 else:  # placeholder
-                    result[key] = "***MASKED***" if value else ""
+                    result[key] = self.MASKED_API_KEY if value else ""
             else:
                 result[key] = value
 
         return result
 
+    def _is_api_key_field(self, key: str) -> bool:
+        normalized = str(key).lower()
+        if normalized.endswith("_widget"):
+            normalized = normalized[:-len("_widget")]
+        known_fields = {field.lower() for field in self.API_KEY_FIELDS}
+        return (
+            normalized in known_fields
+            or normalized.endswith("_api_key")
+            or normalized.endswith("_api_keys")
+        )
+
+    def _restore_api_key_placeholders(self, imported: Dict, existing: Dict) -> None:
+        """Keep local secrets when an imported file contains mask markers."""
+        for key, value in list(imported.items()):
+            previous = existing.get(key)
+            if self._is_api_key_field(key):
+                if value == self.MASKED_API_KEY and isinstance(previous, str) and previous and previous != self.MASKED_API_KEY:
+                    imported[key] = previous
+                elif (
+                    isinstance(value, list)
+                    and value
+                    and all(item == self.MASKED_API_KEY for item in value)
+                    and isinstance(previous, list)
+                    and previous
+                    and not any(item == self.MASKED_API_KEY for item in previous)
+                ):
+                    imported[key] = previous
+            elif isinstance(value, dict) and isinstance(previous, dict):
+                self._restore_api_key_placeholders(value, previous)
+            elif isinstance(value, list) and isinstance(previous, list):
+                for index, item in enumerate(value):
+                    if index < len(previous) and isinstance(item, dict) and isinstance(previous[index], dict):
+                        self._restore_api_key_placeholders(item, previous[index])
+
+    def _clear_api_key_placeholders(self, data: Dict) -> Dict:
+        """Never expose a serialized mask marker to a backend as a credential."""
+        result = {}
+        for key, value in data.items():
+            if isinstance(value, dict):
+                result[key] = self._clear_api_key_placeholders(value)
+            elif self._is_api_key_field(key) and value == self.MASKED_API_KEY:
+                result[key] = ""
+            elif self._is_api_key_field(key) and isinstance(value, list):
+                result[key] = [item for item in value if item != self.MASKED_API_KEY and item]
+            elif isinstance(value, list):
+                result[key] = [
+                    self._clear_api_key_placeholders(item) if isinstance(item, dict) else item
+                    for item in value
+                ]
+            else:
+                result[key] = value
+        return result
+
     def _infer_conversion_mode(self, config_data: Dict) -> str:
-        global_mode = config_data.get("global", {}).get("conversion_mode")
-        if global_mode:
+        global_config = config_data.get("global")
+        global_mode = global_config.get("conversion_mode") if isinstance(global_config, dict) else None
+        if global_mode in self.CONVERSION_MODES:
             return global_mode
 
-        for mode in ("pipeline", "vlm_generalized", "vlm_specialized"):
-            if config_data.get(mode):
+        for mode in self.CONVERSION_MODES:
+            if isinstance(config_data.get(mode), dict) and config_data[mode]:
+                return mode
+
+        for mode in self.CONVERSION_MODES:
+            if isinstance(config_data.get(mode), dict):
                 return mode
 
         return "pipeline"
@@ -139,10 +223,81 @@ class ConfigManager:
             output_text = ",".join(outputs) if outputs else "markdown"
             return f"VLM 泛化 / Provider:{provider} / 输出:{output_text} / 页码:{printed_pages}"
 
-        specialized = config_data.get("vlm_specialized", {})
-        backend = specialized.get("ocr_backend", "chandra")
-        api_style = specialized.get("ocr_api_style", "lmstudio-native")
-        return f"VLM 特化 / Backend:{backend} / API:{api_style} / 页码:{printed_pages}"
+        if mode == "vlm_specialized":
+            specialized = config_data.get("vlm_specialized", {})
+            backend = specialized.get("ocr_backend", "chandra")
+            api_style = specialized.get("ocr_api_style", "lmstudio-native")
+            return f"VLM 特化 / Backend:{backend} / API:{api_style} / 页码:{printed_pages}"
+
+        if mode == "markdown_postprocess":
+            postprocess = config_data.get("markdown_postprocess", {})
+            input_kind = postprocess.get("markdown_postprocess_input_kind", "markdown")
+            return f"Markdown 后处理 / 功能:{input_kind} / 页码:{printed_pages}"
+
+        if mode == "structured_source":
+            return f"结构化源导入 / 页码:{printed_pages}"
+        return f"配置 / 页码:{printed_pages}"
+
+    def _is_valid_config_data(self, config_data: Any, *, allow_meta: bool = False) -> bool:
+        if not isinstance(config_data, dict):
+            return False
+        if not any(section in config_data for section in self.CONFIG_SECTIONS):
+            return False
+        if not allow_meta and "meta" in config_data:
+            return False
+        for key, value in config_data.items():
+            if key == "meta" and allow_meta:
+                if not isinstance(value, dict):
+                    return False
+            elif key not in self.CONFIG_SECTIONS or not isinstance(value, dict):
+                return False
+        global_config = config_data.get("global", {})
+        if isinstance(global_config, dict):
+            mode = global_config.get("conversion_mode")
+            if mode is not None and mode not in self.CONVERSION_MODES:
+                return False
+        return True
+
+    def _is_valid_config_document(self, data: Any) -> bool:
+        if not isinstance(data, dict) or not isinstance(data.get("meta"), dict):
+            return False
+        meta = data["meta"]
+        if not self._normalize_config_name(meta.get("name")):
+            return False
+        for key in (
+            "version", "description", "conversion_mode", "save_scope", "summary",
+            "created_at", "updated_at", "category",
+        ):
+            if key in meta and not isinstance(meta[key], str):
+                return False
+        config_data = {key: value for key, value in data.items() if key != "meta"}
+        return self._is_valid_config_data(config_data)
+
+    def _build_config_document(
+        self,
+        name: str,
+        config_data: Dict,
+        description: str,
+        api_key_mode: str,
+        *,
+        created_at: str | None = None,
+    ) -> Dict[str, Any]:
+        processed_data = self._mask_api_keys(config_data, api_key_mode)
+        now = datetime.now().isoformat()
+        conversion_mode = self._infer_conversion_mode(processed_data)
+        return {
+            "meta": {
+                "version": self.CONFIG_VERSION,
+                "name": name,
+                "description": description,
+                "conversion_mode": conversion_mode,
+                "save_scope": "current_mode",
+                "summary": self._build_summary(processed_data),
+                "created_at": created_at or now,
+                "updated_at": now,
+            },
+            **processed_data,
+        }
 
     def list_configs(self) -> List[Dict[str, Any]]:
         """
@@ -159,14 +314,16 @@ class ConfigManager:
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    meta = data.get("meta", {})
+                    if not self._is_valid_config_document(data):
+                        continue
+                    meta = data["meta"]
                     if meta.get("category") == "app_settings":
                         continue
 
                     configs.append({
                         "name": meta.get("name", filepath.stem),
                         "description": meta.get("description", ""),
-                        "mode": meta.get("conversion_mode", data.get("global", {}).get("conversion_mode", "unknown")),
+                        "mode": meta.get("conversion_mode", self._infer_conversion_mode(data)),
                         "save_scope": meta.get("save_scope", "unknown"),
                         "summary": meta.get("summary", ""),
                         "created_at": meta.get("created_at", ""),
@@ -187,6 +344,8 @@ class ConfigManager:
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                    if not isinstance(data, dict) or not isinstance(data.get("meta", {}), dict):
+                        continue
                     meta = data.get("meta", {})
                     profiles.append({
                         "name": meta.get("name", filepath.stem),
@@ -244,12 +403,17 @@ class ConfigManager:
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     old_data = json.load(f)
-                    data["meta"]["created_at"] = old_data.get("meta", {}).get("created_at", now)
+                    old_meta = old_data.get("meta") if isinstance(old_data, dict) else None
+                    if isinstance(old_meta, dict):
+                        data["meta"]["created_at"] = old_meta.get("created_at", now)
             except (json.JSONDecodeError, IOError):
                 pass
 
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except OSError:
+            return False
 
         return True
 
@@ -262,6 +426,8 @@ class ConfigManager:
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+                if not isinstance(data, dict) or not isinstance(data.get("meta", {}), dict):
+                    return None
                 data.pop("meta", None)
                 return data
         except (json.JSONDecodeError, IOError):
@@ -295,9 +461,9 @@ class ConfigManager:
         except (json.JSONDecodeError, IOError):
             return {}
 
-        data.pop("meta", None)
         if not isinstance(data, dict):
             return {}
+        data.pop("meta", None)
         return data
 
     def save_app_settings(self, settings_data: Dict[str, Any]) -> bool:
@@ -318,7 +484,10 @@ class ConfigManager:
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     old_data = json.load(f)
-                    full_settings["meta"]["created_at"] = old_data.get("meta", {}).get("created_at", now)
+                    old_meta = old_data.get("meta") if isinstance(old_data, dict) else None
+                    full_settings["meta"]["created_at"] = (
+                        old_meta.get("created_at", now) if isinstance(old_meta, dict) else now
+                    )
             except (json.JSONDecodeError, IOError):
                 full_settings["meta"]["created_at"] = now
         else:
@@ -334,6 +503,9 @@ class ConfigManager:
 
     def config_exists(self, name: str) -> bool:
         """检查配置是否已存在"""
+        name = self._normalize_config_name(name)
+        if name is None:
+            return False
         return self._get_config_path(name).exists()
 
     def save_config(
@@ -357,42 +529,33 @@ class ConfigManager:
         Returns:
             是否保存成功
         """
+        name = self._normalize_config_name(name)
+        if name is None or not self._is_valid_config_data(config_data) or api_key_mode not in self.API_KEY_MODES:
+            return False
         filepath = self._get_config_path(name)
 
         if filepath.exists() and not overwrite:
             return False
 
-        # 处理 API Key
-        processed_data = self._mask_api_keys(config_data, api_key_mode)
-
-        # 添加元数据
-        now = datetime.now().isoformat()
-        conversion_mode = self._infer_conversion_mode(processed_data)
-        full_config = {
-            "meta": {
-                "version": self.CONFIG_VERSION,
-                "name": name,
-                "description": description,
-                "conversion_mode": conversion_mode,
-                "save_scope": "current_mode",
-                "summary": self._build_summary(processed_data),
-                "created_at": now,
-                "updated_at": now
-            },
-            **processed_data
-        }
-
-        # 如果是更新，保留原创建时间
+        created_at = None
         if filepath.exists():
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     old_data = json.load(f)
-                    full_config["meta"]["created_at"] = old_data.get("meta", {}).get("created_at", now)
+                    old_meta = old_data.get("meta") if isinstance(old_data, dict) else None
+                    if isinstance(old_meta, dict):
+                        created_at = old_meta.get("created_at")
             except (json.JSONDecodeError, IOError):
                 pass
 
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(full_config, f, ensure_ascii=False, indent=2)
+        full_config = self._build_config_document(
+            name, config_data, description, api_key_mode, created_at=created_at
+        )
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(full_config, f, ensure_ascii=False, indent=2)
+        except OSError:
+            return False
 
         return True
 
@@ -406,6 +569,9 @@ class ConfigManager:
         Returns:
             配置数据，如果不存在返回 None
         """
+        name = self._normalize_config_name(name)
+        if name is None:
+            return None
         filepath = self._get_config_path(name)
 
         if not filepath.exists():
@@ -414,9 +580,10 @@ class ConfigManager:
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-                # 移除 meta 字段，只返回配置数据
+                if not self._is_valid_config_document(data):
+                    return None
                 data.pop("meta", None)
-                return data
+                return self._clear_api_key_placeholders(data)
         except (json.JSONDecodeError, IOError):
             return None
 
@@ -430,6 +597,9 @@ class ConfigManager:
         Returns:
             是否删除成功
         """
+        name = self._normalize_config_name(name)
+        if name is None:
+            return False
         filepath = self._get_config_path(name)
 
         if not filepath.exists():
@@ -440,6 +610,26 @@ class ConfigManager:
             return True
         except IOError:
             return False
+
+    def export_current_config(
+        self,
+        name: str,
+        config_data: Dict,
+        description: str = "",
+        api_key_mode: str = "exclude",
+    ) -> str:
+        """Export the current unsaved configuration in the importable format."""
+        normalized_name = self._normalize_config_name(name)
+        if normalized_name is None:
+            raise ValueError("配置名称无效或使用了保留名称")
+        if not self._is_valid_config_data(config_data):
+            raise ValueError("配置数据结构无效")
+        if api_key_mode not in self.API_KEY_MODES:
+            raise ValueError("API Key 处理方式无效")
+        document = self._build_config_document(
+            normalized_name, config_data, description, api_key_mode
+        )
+        return json.dumps(document, ensure_ascii=False, indent=2)
 
     def export_config(self, name: str, api_key_mode: str = "exclude") -> Optional[str]:
         """
@@ -452,6 +642,9 @@ class ConfigManager:
         Returns:
             JSON 字符串，如果失败返回 None
         """
+        name = self._normalize_config_name(name)
+        if name is None or api_key_mode not in self.API_KEY_MODES:
+            return None
         filepath = self._get_config_path(name)
 
         if not filepath.exists():
@@ -460,6 +653,8 @@ class ConfigManager:
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
                 data = json.load(f)
+            if not self._is_valid_config_document(data):
+                return None
 
             # 处理 API Key
             if api_key_mode != "include":
@@ -485,20 +680,46 @@ class ConfigManager:
         except json.JSONDecodeError as e:
             return False, f"JSON 解析错误: {e}"
 
-        # 获取配置名称
-        name = data.get("meta", {}).get("name")
-        if not name:
-            return False, "配置文件缺少名称"
+        if not self._is_valid_config_document(data):
+            return False, "配置文件结构无效，需包含有效名称及配置分区"
+
+        name = self._normalize_config_name(data["meta"].get("name"))
+        data["meta"]["name"] = name
 
         filepath = self._get_config_path(name)
 
         if filepath.exists() and not overwrite:
             return False, f"配置 '{name}' 已存在"
 
-        # 更新时间戳
-        data["meta"]["updated_at"] = datetime.now().isoformat()
+        now = datetime.now().isoformat()
+        old_data = None
+        if filepath.exists():
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    candidate = json.load(f)
+                if self._is_valid_config_document(candidate):
+                    old_data = candidate
+            except (json.JSONDecodeError, IOError):
+                pass
 
-        with open(filepath, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        if old_data is not None:
+            self._restore_api_key_placeholders(data, old_data)
+            data["meta"]["created_at"] = old_data["meta"].get(
+                "created_at", data["meta"].get("created_at", now)
+            )
+        else:
+            data["meta"].setdefault("created_at", now)
+
+        config_data = {key: value for key, value in data.items() if key != "meta"}
+        inferred_mode = self._infer_conversion_mode(config_data)
+        data["meta"]["conversion_mode"] = inferred_mode
+        data["meta"]["summary"] = self._build_summary(config_data)
+        data["meta"]["updated_at"] = now
+
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except OSError as e:
+            return False, f"配置写入失败: {e}"
 
         return True, f"配置 '{name}' 导入成功"

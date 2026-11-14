@@ -52,7 +52,8 @@ def render_vlm_ocr_settings(
     merge_max_blocks: int,
     full_page_max_tokens: int,
 ) -> dict[str, object]:
-    st.info(description)
+    if str(description or "").strip():
+        st.caption(description)
 
     st.markdown("**API 配置**")
     base_url = st.text_input(
@@ -79,7 +80,7 @@ def render_vlm_ocr_settings(
         min_value=1,
         max_value=50,
         value=int(max_concurrent),
-        help="同时发起的 OCR 请求数。本地模型显存有限时保持较低。",
+        help="同时发起的 OCR 请求数。",
         key="vlm_ocr_max_concurrent",
     )
 
@@ -94,7 +95,7 @@ def render_vlm_ocr_settings(
     st.markdown("---")
     st.markdown("**OCR 模式**")
     mode = st.radio(
-        "处理模式",
+        "识别方式",
         options=VLM_MODE_OPTIONS,
         index=option_index(VLM_MODE_OPTIONS, mode),
         format_func=vlm_mode_label,
@@ -103,25 +104,18 @@ def render_vlm_ocr_settings(
 
     if mode == "full_page":
         if layout_backend == "surya":
-            st.info(
-                "当前为 Surya 版面分析 + VLM 整页 OCR：Surya 提供区域结构，VLM 负责整页识别。"
-                "适用于复杂页面试验；速度和稳定性取决于 VLM 服务。"
-            )
+            st.caption("Surya 提供版面区域；VLM 对整页进行 OCR。")
         elif layout_backend == "none":
-            st.warning(
-                "整页 VLM OCR 需要版面结构来组织结果；应先启用一个版面识别后端。"
-            )
+            st.warning("当前未选择版面识别后端。")
         else:
-            st.info(
-                "整页模式会把页面整体交给 VLM；适用于复杂版式，但会增加 token 和显存压力。"
-            )
+            st.caption("VLM 将整页图像作为一次 OCR 输入。")
 
     response_mode = st.radio(
         "返回格式",
         options=VLM_RESPONSE_MODE_OPTIONS,
         index=option_index(VLM_RESPONSE_MODE_OPTIONS, response_mode),
         horizontal=True,
-        help="text 更稳；json 可保留结构但更依赖模型遵循格式。",
+        help="JSON 格式要求模型按结构化格式返回结果。",
     )
 
     with st.expander("高级参数", expanded=False):
@@ -129,7 +123,7 @@ def render_vlm_ocr_settings(
         use_stop = st.checkbox(
             "启用 stop 参数",
             value=bool(use_stop),
-            help="部分本地服务不兼容 stop 参数，默认关闭。",
+            help="向 OCR 服务请求停止标记。",
             key="openai_use_stop",
         )
 
@@ -184,7 +178,8 @@ def render_paddleocr_vl_ocr_settings(
     crop_padding_px: int,
     crop_padding_frac: float,
 ) -> dict[str, object]:
-    st.info(description)
+    if str(description or "").strip():
+        st.caption(description)
 
     st.markdown("**API 配置**")
     api_style_options = ["openai", "lmstudio-native"]

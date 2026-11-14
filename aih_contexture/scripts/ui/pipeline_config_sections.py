@@ -46,6 +46,7 @@ PIPELINE_UI_VALUE_KEYS = (
     "ocr_preprocess_backend",
     "chrome_screenai_light",
     "chrome_preprocess_mode",
+    "chrome_remove_annotations",
     "chrome_workers",
     "chrome_chunk_pages",
     "chrome_emit_searchable_pdf",

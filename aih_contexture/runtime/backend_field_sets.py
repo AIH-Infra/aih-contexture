@@ -31,6 +31,7 @@ def chrome_screenai_preprocess_fields(values: Mapping[str, Any]) -> dict[str, An
         "ocr_preprocess_backend": values.get("ocr_preprocess_backend", "none"),
         "chrome_screenai_light": bool(values.get("chrome_screenai_light", False)),
         "chrome_preprocess_mode": values.get("chrome_preprocess_mode", "native"),
+        "chrome_remove_annotations": bool(values.get("chrome_remove_annotations", True)),
         "chrome_workers": values.get("chrome_workers", values.get("ocr_concurrency", 4)),
         "chrome_chunk_pages": values.get("chrome_chunk_pages", values.get("ocr_batch_size", 4)),
         "chrome_emit_searchable_pdf": bool(values.get("chrome_emit_searchable_pdf", False)),

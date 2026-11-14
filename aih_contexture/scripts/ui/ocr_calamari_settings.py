@@ -34,7 +34,8 @@ def render_calamari_ocr_settings(
     upscale_min_height: int = 0,
     split_large_batches: bool = True,
 ) -> dict[str, object]:
-    st.info(description)
+    if str(description or "").strip():
+        st.caption(description)
 
     base_url = st.text_input(
         "API 地址",

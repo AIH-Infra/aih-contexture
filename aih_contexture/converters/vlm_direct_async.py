@@ -18,14 +18,18 @@ VLM Direct Async Converter - 异步并发版本
 
 import asyncio
 import base64
+import contextlib
+import hashlib
 import json
 import os
 import time
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Annotated, Any, Callable, List, Optional
+from typing import Annotated, Any, Callable, Iterable, List, Optional
 
 import aiohttp
 from PIL import Image
@@ -35,6 +39,7 @@ from aih_contexture.converters import BaseConverter
 from aih_contexture.logger import get_logger
 from aih_contexture.runtime.console_text import safe_endpoint_for_log
 from aih_contexture.runtime.errors import ContextureCancelledError
+from aih_contexture.providers.pdf import PdfProvider
 from aih_contexture.utils.markdown_filters import strip_blockquote_markers, strip_margin_comment_markers
 from aih_contexture.providers.registry import provider_from_filepath
 from aih_contexture.formatters import PageAnchorFormatter, PageAnchorPlugin, PrintedPageExtractor, join_markdown_pages
@@ -42,6 +47,10 @@ from aih_contexture.builders.markdown import MarkdownDocumentBuilder
 from aih_contexture.utils.api_key_pool import APIKeyPool
 
 logger = get_logger()
+
+# PDFium calls cannot overlap across threads, even for different documents.
+# Encoding and HTTP work run outside this process-wide rendering guard.
+_PDFIUM_RENDER_LOCK = threading.RLock()
 
 
 @dataclass
@@ -230,8 +239,10 @@ class VlmDirectAsyncConverter(BaseConverter):
     # 后处理配置
     vlm_direct_disable_postprocess: Annotated[bool, "禁用后处理（信任VLM原始输出）"] = False
     vlm_direct_streaming_batches: Annotated[bool, "按页并发数流式渲染/请求"] = True
+    vlm_direct_batch_rest: Annotated[float, "每个页面请求批次之间的等待秒数"] = 0.0
     vlm_direct_checkpoint_dir: Annotated[str | None, "VLM中途checkpoint目录"] = None
     vlm_direct_checkpoint_name: Annotated[str | None, "VLM中途checkpoint文件名"] = None
+    vlm_direct_legacy_checkpoint_name: Annotated[str | None, "旧版VLM快照文件名"] = None
     vlm_direct_resume_checkpoint: Annotated[bool, "从checkpoint恢复已成功页面"] = True
     vlm_auto_repair_failed_pages: Annotated[bool, "转换结束前自动低并发补跑失败页"] = False
     vlm_repair_max_concurrent: Annotated[int, "失败页补跑并发数"] = 2
@@ -296,9 +307,13 @@ class VlmDirectAsyncConverter(BaseConverter):
         self.footnote_fix_enabled = bool(config.get("vlm_footnote_fix", False))
         self.hyphenation_fix_enabled = bool(config.get("vlm_hyphenation_fix", False))
         self.streaming_batches = bool(config.get("vlm_direct_streaming_batches", True))
+        self.batch_rest = max(0.0, float(config.get("vlm_direct_batch_rest", 0.0) or 0.0))
         self.resume_checkpoint = bool(config.get("vlm_direct_resume_checkpoint", True))
         self.checkpoint_dir = config.get("vlm_direct_checkpoint_dir", self.vlm_direct_checkpoint_dir)
         self.checkpoint_name = config.get("vlm_direct_checkpoint_name", self.vlm_direct_checkpoint_name)
+        self.legacy_checkpoint_name = config.get(
+            "vlm_direct_legacy_checkpoint_name", self.checkpoint_name
+        )
         self.auto_repair_failed_pages = bool(
             config.get("vlm_auto_repair_failed_pages", self.vlm_auto_repair_failed_pages)
         )
@@ -430,6 +445,9 @@ class VlmDirectAsyncConverter(BaseConverter):
         self._last_page_results = None
         self._last_json_diagnostics = None
         self._last_response_metadata = []
+        self._image_encode_executor: ThreadPoolExecutor | None = None
+        self._image_encode_semaphore: asyncio.Semaphore | None = None
+        self._checkpoint_loaded_legacy = False
 
         logger.debug(
             "[VlmDirectAsyncConverter] Init: endpoint=%s model=%s concurrency=%s image=%s/%s",
@@ -1499,6 +1517,28 @@ class VlmDirectAsyncConverter(BaseConverter):
 
         return base64.b64encode(buf.getvalue()).decode("utf-8")
 
+    async def _img_to_base64_async(self, img: Image.Image) -> str:
+        executor = self._image_encode_executor
+        semaphore = self._image_encode_semaphore
+        if executor is None or semaphore is None:
+            future = asyncio.create_task(asyncio.to_thread(self._img_to_base64, img))
+            return await self._await_worker_future(future)
+        async with semaphore:
+            loop = asyncio.get_running_loop()
+            future = loop.run_in_executor(executor, self._img_to_base64, img)
+            return await self._await_worker_future(future)
+
+    @staticmethod
+    async def _await_worker_future(future):
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            try:
+                await future
+            except BaseException:
+                pass
+            raise
+
     async def _convert_page_async(
         self,
         session: aiohttp.ClientSession,
@@ -1545,7 +1585,7 @@ class VlmDirectAsyncConverter(BaseConverter):
     ) -> PageResult:
         """使用 OpenAI 兼容 API 转换页面"""
         # 构建请求
-        b64_img = self._img_to_base64(img)
+        b64_img = await self._img_to_base64_async(img)
         mime = self._resolve_image_mime().split("/", 1)[1]
 
         content = [
@@ -1760,7 +1800,7 @@ class VlmDirectAsyncConverter(BaseConverter):
         1. 官方 API: https://generativelanguage.googleapis.com
         2. 中继服务: https://example.com/gemini 或 https://example.com/v1beta
         """
-        b64_img = self._img_to_base64(img)
+        b64_img = await self._img_to_base64_async(img)
 
         # 智能构建 Gemini API 端点
         base_url = self.base_url.rstrip('/') if self.base_url else "https://generativelanguage.googleapis.com"
@@ -1984,7 +2024,7 @@ class VlmDirectAsyncConverter(BaseConverter):
         page_num: int
     ) -> PageResult:
         """使用 Anthropic Claude 原生 API 转换页面"""
-        b64_img = self._img_to_base64(img)
+        b64_img = await self._img_to_base64_async(img)
 
         # 构建 Anthropic API 端点
         base_url = self.base_url.rstrip('/') if self.base_url else "https://api.anthropic.com"
@@ -2181,104 +2221,443 @@ class VlmDirectAsyncConverter(BaseConverter):
         if not self.checkpoint_dir or not self.checkpoint_name:
             return None
         safe_name = re.sub(r'[<>:"/\\\\|?*]+', "_", str(self.checkpoint_name)).strip() or "vlm_checkpoint"
+        return Path(self.checkpoint_dir) / f"{safe_name}.vlm_checkpoint.jsonl"
+
+    def _legacy_checkpoint_path(self) -> Optional[Path]:
+        if not self.checkpoint_dir or not self.legacy_checkpoint_name:
+            return None
+        safe_name = re.sub(
+            r'[<>:"/\\|?*]+', "_", str(self.legacy_checkpoint_name)
+        ).strip() or "vlm_checkpoint"
         return Path(self.checkpoint_dir) / f"{safe_name}.vlm_checkpoint.json"
 
-    def _load_checkpoint_results(self, total_pages: int) -> dict[int, PageResult]:
-        path = self._checkpoint_path()
-        if not path or not self.resume_checkpoint or not path.exists():
-            return {}
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            logger.warning(f"[VLM] Failed to read checkpoint {path}: {exc}")
-            return {}
+    @staticmethod
+    def _sha256_file(filepath: str | os.PathLike[str]) -> str:
+        digest = hashlib.sha256()
+        with open(filepath, "rb") as source:
+            while chunk := source.read(1024 * 1024):
+                digest.update(chunk)
+        return digest.hexdigest()
 
-        if int(data.get("total_pages") or 0) != int(total_pages):
-            logger.warning(f"[VLM] Ignoring checkpoint with mismatched total_pages: {path}")
+    def _build_checkpoint_identity(
+        self,
+        filepath: str | os.PathLike[str],
+        total_pages: int,
+        page_indices: list[int],
+    ) -> dict[str, Any]:
+        volatile_keys = {
+            "vlm_direct_checkpoint_dir",
+            "vlm_direct_checkpoint_name",
+            "vlm_direct_legacy_checkpoint_name",
+            "vlm_direct_resume_checkpoint",
+            "vlm_direct_streaming_batches",
+            "vlm_direct_batch_rest",
+        }
+        secret_suffixes = (
+            "api_key",
+            "api_token",
+            "access_token",
+            "auth_token",
+            "bearer_token",
+            "refresh_token",
+            "client_secret",
+            "secret",
+            "secret_key",
+            "password",
+        )
+        config_identity = {
+            key: value
+            for key, value in self.config.items()
+            if key not in volatile_keys
+            and str(key).lower() not in {"token", "secret_token"}
+            and not str(key).lower().endswith(secret_suffixes)
+        }
+        config_identity["_resolved_vlm"] = {
+            "provider": self.api_provider,
+            "base_url": self.base_url,
+            "model": self.model,
+            "prompt": self.prompt,
+            "output_mode": self.output_mode,
+            "api_params": self.api_params,
+            "effective_max_tokens": self._effective_max_tokens(),
+            "image_format": self.image_format,
+            "max_image_dimension": self.max_image_dimension,
+            "jpeg_quality": self.jpeg_quality,
+            "dpi": self.dpi,
+            "disable_thinking": self.disable_thinking,
+            "document_language": self.document_language,
+            "text_direction": self.text_direction,
+            "historical_ligatures": self.enable_historical_ligatures,
+            "marginalia": self.enable_marginalia,
+        }
+        config_bytes = json.dumps(
+            config_identity,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        pages_bytes = json.dumps(page_indices, separators=(",", ":")).encode("ascii")
+        return {
+            "source_sha256": self._sha256_file(filepath),
+            "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+            "page_indices_sha256": hashlib.sha256(pages_bytes).hexdigest(),
+            "total_pages": int(total_pages),
+            "model": self.model,
+            "provider": self.api_provider,
+        }
+
+    @staticmethod
+    def _checkpoint_identity_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+        identity = payload.get("identity") or payload.get("checkpoint_identity")
+        if isinstance(identity, dict):
+            return identity
+        required = {
+            "source_sha256",
+            "config_sha256",
+            "page_indices_sha256",
+            "total_pages",
+            "model",
+            "provider",
+        }
+        if required.issubset(payload):
+            return {key: payload[key] for key in required}
+        return None
+
+    @staticmethod
+    def _checkpoint_identity_matches(
+        payload: dict[str, Any], expected: dict[str, Any]
+    ) -> bool:
+        identity = VlmDirectAsyncConverter._checkpoint_identity_from_payload(payload)
+        required = set(expected)
+        return identity is not None and required.issubset(identity) and all(
+            identity.get(key) == expected.get(key) for key in required
+        )
+
+    @staticmethod
+    def _page_result_from_checkpoint(
+        item: Any, *, total_pages: int, only_success: bool = True
+    ) -> PageResult | None:
+        if not isinstance(item, dict):
+            raise ValueError("VLM checkpoint page record must be an object")
+        try:
+            result = PageResult(**item)
+            page_num = int(result.page_num)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("VLM checkpoint page record is malformed") from exc
+        if not 1 <= page_num <= total_pages:
+            raise ValueError(f"VLM checkpoint page number {page_num} is outside 1..{total_pages}")
+        if only_success and not result.ok:
+            return None
+        return result
+
+    def _load_checkpoint_journal(
+        self, path: Path, identity: dict[str, Any]
+    ) -> dict[int, PageResult] | None:
+        if not path.exists():
+            return None
+
+        loaded: dict[int, PageResult] = {}
+        valid_bytes = 0
+        header_seen = False
+        incomplete_tail = False
+        with path.open("rb") as source:
+            for line_number, line in enumerate(source, start=1):
+                if not line.endswith(b"\n"):
+                    incomplete_tail = True
+                    break
+                try:
+                    record = json.loads(line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        f"VLM checkpoint journal is corrupt at line {line_number}"
+                    ) from exc
+                if not isinstance(record, dict):
+                    raise ValueError(f"VLM checkpoint journal line {line_number} is not an object")
+
+                if not header_seen:
+                    if record.get("record_type") != "header":
+                        raise ValueError("VLM checkpoint journal is missing its header")
+                    if not self._checkpoint_identity_matches(record, identity):
+                        logger.info(
+                            "[VLM] Ignoring checkpoint journal with mismatched source/config identity: %s",
+                            path.name,
+                        )
+                        return None
+                    header_seen = True
+                else:
+                    if record.get("record_type") != "page":
+                        raise ValueError(f"VLM checkpoint journal line {line_number} has an unknown record type")
+                    page_result = self._page_result_from_checkpoint(
+                        record.get("page"), total_pages=int(identity["total_pages"])
+                    )
+                    if page_result is None:
+                        raise ValueError(f"VLM checkpoint journal line {line_number} is not a successful page")
+                    loaded[int(page_result.page_num)] = page_result
+                valid_bytes += len(line)
+
+        if not header_seen:
+            if incomplete_tail:
+                with path.open("r+b") as target:
+                    target.truncate(0)
+                    target.flush()
+                    os.fsync(target.fileno())
+                return {}
+            raise ValueError("VLM checkpoint journal is empty")
+
+        if incomplete_tail:
+            with path.open("r+b") as target:
+                target.truncate(valid_bytes)
+                target.flush()
+                os.fsync(target.fileno())
+            logger.info("[VLM] Discarded incomplete trailing checkpoint record: %s", path.name)
+        return loaded
+
+    def _load_legacy_checkpoint(
+        self, path: Path, identity: dict[str, Any]
+    ) -> dict[int, PageResult]:
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Legacy VLM checkpoint must contain an object")
+        if self._checkpoint_identity_from_payload(data) is None:
+            logger.info(
+                "[VLM] Ignoring legacy checkpoint without source/config identity; pages will be reprocessed: %s",
+                path.name,
+            )
+            return {}
+        if not self._checkpoint_identity_matches(data, identity):
+            logger.info("[VLM] Ignoring legacy checkpoint with mismatched source/config identity: %s", path.name)
             return {}
 
         loaded: dict[int, PageResult] = {}
-        for item in data.get("pages", []):
-            if not isinstance(item, dict):
-                continue
-            try:
-                result = PageResult(**item)
-            except TypeError:
-                continue
-            if result.ok:
-                loaded[int(result.page_num)] = result
-        if loaded:
-            logger.info("[VLM] Restored %s successful pages from checkpoint %s", len(loaded), Path(path).name)
+        pages = data.get("pages")
+        if not isinstance(pages, list):
+            raise ValueError("Legacy VLM checkpoint pages must be a list")
+        for item in pages:
+            page_result = self._page_result_from_checkpoint(
+                item, total_pages=int(identity["total_pages"])
+            )
+            if page_result is not None:
+                loaded[int(page_result.page_num)] = page_result
+        self._checkpoint_loaded_legacy = bool(loaded)
         return loaded
 
-    def _save_checkpoint_results(self, total_pages: int, results_by_page: dict[int, PageResult]) -> None:
+    def _load_checkpoint_results(
+        self, total_pages: int, identity: dict[str, Any]
+    ) -> dict[int, PageResult]:
+        self._checkpoint_loaded_legacy = False
+        if not self.resume_checkpoint:
+            return {}
         path = self._checkpoint_path()
-        if not path:
-            return
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            payload = {
-                "format": "vlm_generalized_checkpoint",
-                "version": 1,
-                "total_pages": int(total_pages),
-                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                "model": self.model,
-                "provider": self.api_provider,
-                "pages": [
-                    asdict(results_by_page[page_num])
-                    for page_num in sorted(results_by_page)
-                ],
-            }
-            tmp_path = path.with_suffix(path.suffix + ".tmp")
-            tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            os.replace(tmp_path, path)
-            ok_count = sum(1 for result in results_by_page.values() if result.ok)
-            logger.debug(
-                "[VLM] Checkpoint saved: %s (%s/%s successful pages)",
-                Path(path).name,
-                ok_count,
-                total_pages,
+        if path is None:
+            return {}
+        journal_results = self._load_checkpoint_journal(path, identity)
+        if journal_results is not None:
+            if journal_results:
+                logger.info(
+                    "[VLM] Restored %s successful pages from checkpoint journal %s",
+                    len(journal_results),
+                    path.name,
+                )
+            return journal_results
+
+        legacy_path = self._legacy_checkpoint_path()
+        legacy_results = self._load_legacy_checkpoint(legacy_path, identity) if legacy_path else {}
+        if legacy_results:
+            logger.info(
+                "[VLM] Restored %s successful pages from identity-matched legacy checkpoint %s",
+                len(legacy_results),
+                legacy_path.name,
             )
-        except Exception as exc:
-            logger.warning(f"[VLM] Failed to save checkpoint: {exc}")
+        return legacy_results
+
+    @staticmethod
+    def _write_all(fd: int, data: bytes) -> None:
+        written = 0
+        while written < len(data):
+            count = os.write(fd, data[written:])
+            if count <= 0:
+                raise OSError("VLM checkpoint journal write made no progress")
+            written += count
+
+    def _ensure_checkpoint_journal(self, path: Path, identity: dict[str, Any]) -> None:
+        if path.exists():
+            with path.open("rb") as source:
+                first_line = source.readline()
+            if first_line.endswith(b"\n"):
+                try:
+                    header = json.loads(first_line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise ValueError("VLM checkpoint journal header is corrupt") from exc
+                if isinstance(header, dict) and self._checkpoint_identity_matches(header, identity):
+                    with path.open("r+b") as target:
+                        target.seek(0, os.SEEK_END)
+                        end = target.tell()
+                        if end:
+                            target.seek(end - 1)
+                            if target.read(1) != b"\n":
+                                scan_end = end
+                                valid_end = 0
+                                while scan_end > 0:
+                                    scan_start = max(0, scan_end - 64 * 1024)
+                                    target.seek(scan_start)
+                                    chunk = target.read(scan_end - scan_start)
+                                    newline_offset = chunk.rfind(b"\n")
+                                    if newline_offset >= 0:
+                                        valid_end = scan_start + newline_offset + 1
+                                        break
+                                    scan_end = scan_start
+                                target.truncate(valid_end)
+                                target.flush()
+                                os.fsync(target.fileno())
+                    return
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        header = {
+            "record_type": "header",
+            "format": "vlm_generalized_checkpoint_journal",
+            "version": 2,
+            "identity": identity,
+        }
+        with tmp_path.open("wb") as target:
+            target.write((json.dumps(header, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8"))
+            target.flush()
+            os.fsync(target.fileno())
+        os.replace(tmp_path, path)
+
+    def _save_checkpoint_results(
+        self,
+        total_pages: int,
+        identity: dict[str, Any],
+        page_results: Iterable[PageResult],
+    ) -> None:
+        path = self._checkpoint_path()
+        if path is None:
+            return
+        self._ensure_checkpoint_journal(path, identity)
+        fd = os.open(path, os.O_APPEND | os.O_WRONLY | os.O_CREAT | getattr(os, "O_BINARY", 0), 0o666)
+        saved_count = 0
+        try:
+            for page_result in page_results:
+                if not page_result.ok:
+                    continue
+                page_num = int(page_result.page_num)
+                if not 1 <= page_num <= total_pages:
+                    raise ValueError(f"Cannot checkpoint VLM page {page_num} outside 1..{total_pages}")
+                record = {
+                    "record_type": "page",
+                    "page": asdict(page_result),
+                }
+                line = (json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
+                self._write_all(fd, line)
+                os.fsync(fd)
+                saved_count += 1
+        finally:
+            os.close(fd)
+        logger.debug(
+            "[VLM] Appended %s successful pages to checkpoint journal %s",
+            saved_count,
+            path.name,
+        )
+
+    async def _render_images_async(
+        self,
+        provider,
+        page_indices: list[int],
+        *,
+        render_executor: ThreadPoolExecutor | None = None,
+        render_doc=None,
+    ) -> list[Image.Image]:
+        def render_batch() -> list[Image.Image]:
+            with _PDFIUM_RENDER_LOCK:
+                if render_doc is not None and isinstance(provider, PdfProvider):
+                    return provider.get_images_from_doc(render_doc, page_indices, self.dpi)
+                return provider.get_images(page_indices, self.dpi)
+
+        if render_executor is None:
+            future = asyncio.create_task(asyncio.to_thread(render_batch))
+        else:
+            loop = asyncio.get_running_loop()
+            future = loop.run_in_executor(render_executor, render_batch)
+        try:
+            return await asyncio.shield(future)
+        except asyncio.CancelledError:
+            try:
+                images = await future
+            except BaseException:
+                pass
+            else:
+                for image in images:
+                    try:
+                        image.close()
+                    except Exception:
+                        pass
+            raise
+
+    async def _wait_for_page_batch_rest(self, *, next_batch_exists: bool) -> None:
+        if self.batch_rest <= 0 or not next_batch_exists:
+            return
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.batch_rest
+        self._emit_progress(event="page_batch_rest", rest_seconds=self.batch_rest, stage="waiting")
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(0.25, remaining))
+            self._emit_progress(
+                event="page_batch_rest",
+                rest_seconds=max(0.0, deadline - loop.time()),
+                stage="waiting",
+            )
 
     async def _convert_all_pages_strict_batches_async(
         self,
         images: List[Image.Image],
         page_offset: int = 0,
+        *,
+        session: aiohttp.ClientSession | None = None,
     ) -> List[PageResult]:
+        if session is None:
+            async with aiohttp.ClientSession() as owned_session:
+                return await self._convert_all_pages_strict_batches_async(
+                    images, page_offset=page_offset, session=owned_session
+                )
+
         concurrency = max(1, self.max_concurrent)
         total_pages = len(images)
         all_results: List[PageResult] = []
 
-        async with aiohttp.ClientSession() as session:
-            for batch_start in range(0, total_pages, concurrency):
-                batch_end = min(batch_start + concurrency, total_pages)
-                batch_images = images[batch_start:batch_end]
+        for batch_start in range(0, total_pages, concurrency):
+            batch_end = min(batch_start + concurrency, total_pages)
+            batch_images = images[batch_start:batch_end]
 
-                logger.debug(
-                    f"[VLM][LM Studio] Processing batch {batch_start//concurrency + 1}: "
-                    f"pages {page_offset + batch_start + 1}-{page_offset + batch_end}"
+            logger.debug(
+                f"[VLM][LM Studio] Processing batch {batch_start//concurrency + 1}: "
+                f"pages {page_offset + batch_start + 1}-{page_offset + batch_end}"
+            )
+
+            tasks = [
+                self._convert_page_async_no_semaphore(session, img, page_offset + batch_start + idx + 1)
+                for idx, img in enumerate(batch_images)
+            ]
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for idx, result in enumerate(batch_results):
+                page_num = page_offset + batch_start + idx + 1
+                page_result = self._normalize_page_result(page_num, result)
+                all_results.append(page_result)
+                self._emit_progress(
+                    event="page_done",
+                    page_num=page_num,
+                    ok=bool(page_result.ok),
+                    stage="processing",
                 )
 
-                tasks = [
-                    self._convert_page_async_no_semaphore(session, img, page_offset + batch_start + idx + 1)
-                    for idx, img in enumerate(batch_images)
-                ]
-                batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                for idx, result in enumerate(batch_results):
-                    page_num = page_offset + batch_start + idx + 1
-                    page_result = self._normalize_page_result(page_num, result)
-                    all_results.append(page_result)
-                    self._emit_progress(
-                        event="page_done",
-                        page_num=page_num,
-                        ok=bool(page_result.ok),
-                        stage="processing",
-                    )
-
-                logger.debug("[VLM][LM Studio] Batch completed: %s pages", len(batch_results))
+            logger.debug("[VLM][LM Studio] Batch completed: %s pages", len(batch_results))
 
         all_results.sort(key=lambda x: x.page_num)
         valid_results = [result for result in all_results if result.ok]
@@ -2290,7 +2669,18 @@ class VlmDirectAsyncConverter(BaseConverter):
         images: List[Image.Image],
         global_semaphore: Optional[asyncio.Semaphore] = None,
         page_offset: int = 0,
+        *,
+        session: aiohttp.ClientSession | None = None,
     ) -> List[PageResult]:
+        if session is None:
+            async with aiohttp.ClientSession() as owned_session:
+                return await self._convert_all_pages_sliding_window_async(
+                    images,
+                    global_semaphore,
+                    page_offset=page_offset,
+                    session=owned_session,
+                )
+
         concurrency = max(1, self.max_concurrent)
         total_pages = len(images)
         results: List[Optional[PageResult]] = [None] * total_pages
@@ -2313,15 +2703,14 @@ class VlmDirectAsyncConverter(BaseConverter):
                 stage="processing",
             )
 
-        async with aiohttp.ClientSession() as session:
-            logger.info(f"[VLM] Processing {total_pages} pages with sliding-window concurrency={concurrency}")
-            tasks = [
-                asyncio.create_task(run_page(session, idx, img))
-                for idx, img in enumerate(images)
-            ]
+        logger.info(f"[VLM] Processing {total_pages} pages with sliding-window concurrency={concurrency}")
+        tasks = [
+            asyncio.create_task(run_page(session, idx, img))
+            for idx, img in enumerate(images)
+        ]
 
-            for task in asyncio.as_completed(tasks):
-                await task
+        for task in asyncio.as_completed(tasks):
+            await task
 
         ordered_results = [
             result if result is not None else self._error_page_result(
@@ -2340,21 +2729,88 @@ class VlmDirectAsyncConverter(BaseConverter):
         images: List[Image.Image],
         global_semaphore: Optional[asyncio.Semaphore] = None,
         page_offset: int = 0,
+        *,
+        session: aiohttp.ClientSession | None = None,
     ) -> List[PageResult]:
         """异步转换所有页面。"""
         if self._uses_strict_batch_page_scheduling():
-            return await self._convert_all_pages_strict_batches_async(images, page_offset=page_offset)
-        return await self._convert_all_pages_sliding_window_async(images, global_semaphore, page_offset=page_offset)
+            return await self._convert_all_pages_strict_batches_async(
+                images, page_offset=page_offset, session=session
+            )
+        return await self._convert_all_pages_sliding_window_async(
+            images, global_semaphore, page_offset=page_offset, session=session
+        )
 
     async def _convert_pages_streaming_async(
         self,
         provider,
         page_indices: List[int],
         global_semaphore: Optional[asyncio.Semaphore] = None,
+        *,
+        session: aiohttp.ClientSession | None = None,
+        render_executor: ThreadPoolExecutor | None = None,
+        render_doc=None,
+        checkpoint_identity: dict[str, Any] | None = None,
     ) -> List[PageResult]:
+        if session is None:
+            async with aiohttp.ClientSession() as owned_session:
+                return await self._convert_pages_streaming_async(
+                    provider,
+                    page_indices,
+                    global_semaphore,
+                    session=owned_session,
+                    render_executor=render_executor,
+                    render_doc=render_doc,
+                    checkpoint_identity=checkpoint_identity,
+                )
+
         total_pages = len(page_indices)
         concurrency = max(1, self.max_concurrent)
-        results_by_page = self._load_checkpoint_results(total_pages)
+        if checkpoint_identity is None and self._checkpoint_path() is not None:
+            source_path = getattr(provider, "filepath", None)
+            if source_path is None:
+                raise ValueError("VLM checkpointing requires a provider source path")
+            if render_executor is None:
+                checkpoint_identity = await asyncio.to_thread(
+                    self._build_checkpoint_identity, source_path, total_pages, page_indices
+                )
+            else:
+                loop = asyncio.get_running_loop()
+                checkpoint_identity = await loop.run_in_executor(
+                    render_executor,
+                    lambda: self._build_checkpoint_identity(source_path, total_pages, page_indices),
+                )
+
+        if checkpoint_identity is None:
+            results_by_page = {}
+        elif render_executor is None:
+            results_by_page = await asyncio.to_thread(
+                self._load_checkpoint_results, total_pages, checkpoint_identity
+            )
+        else:
+            loop = asyncio.get_running_loop()
+            results_by_page = await loop.run_in_executor(
+                render_executor,
+                lambda: self._load_checkpoint_results(total_pages, checkpoint_identity),
+            )
+
+        if self._checkpoint_loaded_legacy and checkpoint_identity is not None:
+            legacy_pages = list(results_by_page.values())
+            if render_executor is None:
+                await asyncio.to_thread(
+                    self._save_checkpoint_results,
+                    total_pages,
+                    checkpoint_identity,
+                    legacy_pages,
+                )
+            else:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(
+                    render_executor,
+                    lambda: self._save_checkpoint_results(total_pages, checkpoint_identity, legacy_pages),
+                )
+            self._checkpoint_loaded_legacy = False
+
         self._emit_progress(event="pages_discovered", total_pages=total_pages, stage="preprocessing")
         for restored_page_num in sorted(results_by_page):
             restored = results_by_page[restored_page_num]
@@ -2394,17 +2850,38 @@ class VlmDirectAsyncConverter(BaseConverter):
                     stage="preprocessing",
                 )
                 logger.debug("[VLM] Rendering batch pages %s-%s", start_page, end_page)
-                images = provider.get_images(render_indices, self.dpi)
+                images = await self._render_images_async(
+                    provider,
+                    render_indices,
+                    render_executor=render_executor,
+                    render_doc=render_doc,
+                )
 
                 try:
                     batch_results = await self._convert_all_pages_async(
                         images,
                         global_semaphore,
                         page_offset=run[0],
+                        session=session,
                     )
                     for page_result in batch_results:
                         results_by_page[page_result.page_num] = page_result
-                    self._save_checkpoint_results(total_pages, results_by_page)
+                    if checkpoint_identity is not None:
+                        if render_executor is None:
+                            await asyncio.to_thread(
+                                self._save_checkpoint_results,
+                                total_pages,
+                                checkpoint_identity,
+                                batch_results,
+                            )
+                        else:
+                            loop = asyncio.get_running_loop()
+                            await loop.run_in_executor(
+                                render_executor,
+                                lambda: self._save_checkpoint_results(
+                                    total_pages, checkpoint_identity, batch_results
+                                ),
+                            )
                 finally:
                     for img in images:
                         try:
@@ -2412,6 +2889,13 @@ class VlmDirectAsyncConverter(BaseConverter):
                         except Exception:
                             pass
                     del images
+
+            future_missing_pages = any(
+                page_num not in results_by_page or not results_by_page[page_num].ok
+                for page_num in range(batch_end + 1, total_pages + 1)
+            )
+            if future_missing_pages:
+                await self._wait_for_page_batch_rest(next_batch_exists=True)
 
         return [
             results_by_page.get(page_num)
@@ -2424,10 +2908,24 @@ class VlmDirectAsyncConverter(BaseConverter):
         provider,
         page_pairs: list[tuple[int, int]],
         global_semaphore: Optional[asyncio.Semaphore] = None,
+        *,
+        session: aiohttp.ClientSession | None = None,
+        render_executor: ThreadPoolExecutor | None = None,
+        render_doc=None,
     ) -> list[PageResult]:
         """Convert sparse PDF pages while preserving absolute logical page numbers."""
         if not page_pairs:
             return []
+        if session is None:
+            async with aiohttp.ClientSession() as owned_session:
+                return await self._convert_sparse_pages_async(
+                    provider,
+                    page_pairs,
+                    global_semaphore,
+                    session=owned_session,
+                    render_executor=render_executor,
+                    render_doc=render_doc,
+                )
 
         old_max_concurrent = self.max_concurrent
         self.max_concurrent = max(1, self.repair_max_concurrent)
@@ -2444,14 +2942,18 @@ class VlmDirectAsyncConverter(BaseConverter):
                     pages=logical_nums,
                     stage="repairing",
                 )
-                images = provider.get_images([pdf_index for pdf_index, _ in batch_pairs], self.dpi)
+                images = await self._render_images_async(
+                    provider,
+                    [pdf_index for pdf_index, _ in batch_pairs],
+                    render_executor=render_executor,
+                    render_doc=render_doc,
+                )
                 try:
-                    async with aiohttp.ClientSession() as session:
-                        tasks = [
-                            self._convert_page_async_no_semaphore(session, img, logical_num)
-                            for img, (_, logical_num) in zip(images, batch_pairs)
-                        ]
-                        batch_raw = await asyncio.gather(*tasks, return_exceptions=True)
+                    tasks = [
+                        self._convert_page_async_no_semaphore(session, img, logical_num)
+                        for img, (_, logical_num) in zip(images, batch_pairs)
+                    ]
+                    batch_raw = await asyncio.gather(*tasks, return_exceptions=True)
                     for (_, logical_num), raw_result in zip(batch_pairs, batch_raw):
                         result = self._normalize_page_result(logical_num, raw_result)
                         results.append(result)
@@ -2468,6 +2970,8 @@ class VlmDirectAsyncConverter(BaseConverter):
                         except Exception:
                             pass
                     del images
+                if batch_start + concurrency < len(page_pairs):
+                    await self._wait_for_page_batch_rest(next_batch_exists=True)
         finally:
             self.max_concurrent = old_max_concurrent
 
@@ -2479,6 +2983,11 @@ class VlmDirectAsyncConverter(BaseConverter):
         page_indices: list[int],
         raw_outputs: list[PageResult],
         global_semaphore: Optional[asyncio.Semaphore] = None,
+        *,
+        session: aiohttp.ClientSession | None = None,
+        render_executor: ThreadPoolExecutor | None = None,
+        render_doc=None,
+        checkpoint_identity: dict[str, Any] | None = None,
     ) -> list[PageResult]:
         if not self.auto_repair_failed_pages or self.repair_rounds <= 0:
             return raw_outputs
@@ -2514,10 +3023,39 @@ class VlmDirectAsyncConverter(BaseConverter):
             )
 
             page_pairs = [(page_indices[page_num - 1], page_num) for page_num in failed_pages]
-            repaired_results = await self._convert_sparse_pages_async(provider, page_pairs, global_semaphore)
+            repaired_results = await self._convert_sparse_pages_async(
+                provider,
+                page_pairs,
+                global_semaphore,
+                session=session,
+                render_executor=render_executor,
+                render_doc=render_doc,
+            )
             for repaired in repaired_results:
                 if repaired.ok and repaired.content_kind == "json":
                     results_by_page[int(repaired.page_num)] = repaired
+
+            repaired_successes = [
+                repaired
+                for repaired in repaired_results
+                if repaired.ok and repaired.content_kind == "json"
+            ]
+            if repaired_successes and checkpoint_identity is not None:
+                if render_executor is None:
+                    await asyncio.to_thread(
+                        self._save_checkpoint_results,
+                        total_pages,
+                        checkpoint_identity,
+                        repaired_successes,
+                    )
+                else:
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(
+                        render_executor,
+                        lambda: self._save_checkpoint_results(
+                            total_pages, checkpoint_identity, repaired_successes
+                        ),
+                    )
 
             remaining = [
                 page_num
@@ -2540,6 +3078,171 @@ class VlmDirectAsyncConverter(BaseConverter):
             for page_num in range(1, total_pages + 1)
         ]
 
+    @contextlib.asynccontextmanager
+    async def _open_provider_render_context(self, filepath: str):
+        render_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="contexture-vlm-pdf",
+        )
+        loop = asyncio.get_running_loop()
+        render_context = None
+        render_doc = None
+        render_context_state = {"entered": False, "document": None}
+        try:
+            provider_cls = provider_from_filepath(filepath)
+            provider_config = {**self.config, "force_ocr": True}
+            def create_provider():
+                with _PDFIUM_RENDER_LOCK:
+                    return provider_cls(filepath, provider_config)
+
+            provider = await loop.run_in_executor(
+                render_executor,
+                create_provider,
+            )
+            if (
+                isinstance(provider, PdfProvider)
+                and type(provider).get_images is PdfProvider.get_images
+            ):
+                render_context = provider.get_doc()
+                def open_render_document():
+                    with _PDFIUM_RENDER_LOCK:
+                        document = render_context.__enter__()
+                        render_context_state["document"] = document
+                        render_context_state["entered"] = True
+                        return document
+
+                open_future = loop.run_in_executor(render_executor, open_render_document)
+                render_doc = await self._await_worker_future(open_future)
+            yield provider, render_executor, render_doc
+        finally:
+            try:
+                if render_context is not None:
+                    def close_render_document():
+                        with _PDFIUM_RENDER_LOCK:
+                            if render_context_state["entered"]:
+                                render_context.__exit__(None, None, None)
+
+                    close_future = loop.run_in_executor(render_executor, close_render_document)
+                    await self._await_worker_future(close_future)
+            finally:
+                render_executor.shutdown(wait=True, cancel_futures=True)
+
+    async def _convert_file_markdown_async(
+        self,
+        filepath: str,
+        global_semaphore: Optional[asyncio.Semaphore] = None,
+    ) -> str:
+        if self.api_provider == "openai_compatible" and not str(self.base_url or "").strip():
+            raise ValueError(
+                "OpenAI-compatible VLM conversion requires vlm_direct_base_url. "
+                "Configure an explicit provider endpoint before starting the job."
+            )
+
+        logger.info("[VLM] Starting %s", Path(filepath).name)
+        encode_workers = max(1, min(max(1, self.max_concurrent), 4))
+        encode_executor = ThreadPoolExecutor(
+            max_workers=encode_workers,
+            thread_name_prefix="contexture-vlm-encode",
+        )
+        previous_encode_executor = self._image_encode_executor
+        previous_encode_semaphore = self._image_encode_semaphore
+        self._image_encode_executor = encode_executor
+        self._image_encode_semaphore = asyncio.Semaphore(encode_workers)
+
+        try:
+            async with self._open_provider_render_context(filepath) as (
+                provider,
+                render_executor,
+                render_doc,
+            ):
+                num_pages = len(provider)
+                if self.page_start is not None and self.page_end is not None:
+                    actual_end = min(self.page_end, num_pages - 1)
+                    page_indices = list(range(self.page_start, actual_end + 1))
+                    logger.debug("[VLM] Page range=%s-%s total=%s", self.page_start, actual_end, num_pages)
+                else:
+                    page_indices = list(range(num_pages))
+
+                logger.debug("[VLM] Concurrency=%s", self.max_concurrent)
+                checkpoint_identity = None
+                if self._checkpoint_path() is not None:
+                    loop = asyncio.get_running_loop()
+                    checkpoint_identity = await loop.run_in_executor(
+                        render_executor,
+                        lambda: self._build_checkpoint_identity(
+                            filepath,
+                            len(page_indices),
+                            page_indices,
+                        ),
+                    )
+
+                start_time = time.time()
+                async with aiohttp.ClientSession() as session:
+                    if self.streaming_batches:
+                        raw_outputs = await self._convert_pages_streaming_async(
+                            provider,
+                            page_indices,
+                            global_semaphore,
+                            session=session,
+                            render_executor=render_executor,
+                            render_doc=render_doc,
+                            checkpoint_identity=checkpoint_identity,
+                        )
+                    else:
+                        images = await self._render_images_async(
+                            provider,
+                            page_indices,
+                            render_executor=render_executor,
+                            render_doc=render_doc,
+                        )
+                        try:
+                            logger.debug("[VLM] Loaded pages=%s", len(images))
+                            self._emit_progress(
+                                event="pages_loaded",
+                                total_pages=len(images),
+                                stage="processing",
+                            )
+                            raw_outputs = await self._convert_all_pages_async(
+                                images,
+                                global_semaphore,
+                                session=session,
+                            )
+                        finally:
+                            for image in images:
+                                image.close()
+
+                    elapsed_time = time.time() - start_time
+                    if self.output_mode == "json":
+                        raw_outputs = await self._auto_repair_failed_results_async(
+                            provider,
+                            page_indices,
+                            raw_outputs,
+                            global_semaphore,
+                            session=session,
+                            render_executor=render_executor,
+                            render_doc=render_doc,
+                            checkpoint_identity=checkpoint_identity,
+                        )
+
+            markdown_pages, printed_pages = self._prepare_markdown_pages(raw_outputs)
+            full_markdown = self._finalize_markdown_pages(
+                markdown_pages,
+                printed_pages,
+                len(page_indices),
+            )
+            logger.info(
+                "[VLM] Completed pages=%s elapsed=%.1fs avg=%.2f pages/s",
+                len(page_indices),
+                elapsed_time,
+                len(page_indices) / elapsed_time if elapsed_time > 0 else 0.0,
+            )
+            self._emit_progress(event="file_done", stage="saving")
+            return full_markdown
+        finally:
+            self._image_encode_executor = previous_encode_executor
+            self._image_encode_semaphore = previous_encode_semaphore
+            encode_executor.shutdown(wait=True, cancel_futures=True)
+
     def __call__(self, filepath: str, global_semaphore: Optional[asyncio.Semaphore] = None):
         """
         转换文档为 Markdown 或其他格式
@@ -2552,50 +3255,7 @@ class VlmDirectAsyncConverter(BaseConverter):
             - 如果未指定渲染器: 返回 Markdown 字符串 (str)
             - 如果指定了渲染器: 返回渲染器输出对象
         """
-        logger.info("[VLM] Starting %s", Path(filepath).name)
-
-        # 1. 加载文档
-        provider_cls = provider_from_filepath(filepath)
-        provider_config = {**self.config, "force_ocr": True}
-        provider = provider_cls(filepath, provider_config)
-
-        # 2. 获取所有页面图像（支持页码范围过滤）
-        num_pages = len(provider)
-        if self.page_start is not None and self.page_end is not None:
-            actual_end = min(self.page_end, num_pages - 1)
-            page_indices = list(range(self.page_start, actual_end + 1))
-            logger.debug("[VLM] Page range=%s-%s total=%s", self.page_start, actual_end, num_pages)
-        else:
-            page_indices = list(range(num_pages))
-
-        logger.debug("[VLM] Concurrency=%s", self.max_concurrent)
-
-        # 3. 异步并发转换（传递全局信号量）
-        start_time = time.time()
-        if self.streaming_batches:
-            raw_outputs = asyncio.run(self._convert_pages_streaming_async(provider, page_indices, global_semaphore))
-            images = [None] * len(page_indices)
-        else:
-            images = provider.get_images(page_indices, self.dpi)
-            logger.debug("[VLM] Loaded pages=%s", len(images))
-            self._emit_progress(event="pages_loaded", total_pages=len(images), stage="processing")
-            raw_outputs = asyncio.run(self._convert_all_pages_async(images, global_semaphore))
-        elapsed_time = time.time() - start_time
-
-        if self.output_mode == "json":
-            raw_outputs = asyncio.run(
-                self._auto_repair_failed_results_async(provider, page_indices, raw_outputs, global_semaphore)
-            )
-        markdown_pages, printed_pages = self._prepare_markdown_pages(raw_outputs)
-        full_markdown = self._finalize_markdown_pages(markdown_pages, printed_pages, len(page_indices))
-
-        logger.info(
-            "[VLM] Completed pages=%s elapsed=%.1fs avg=%.2f pages/s",
-            len(page_indices),
-            elapsed_time,
-            len(page_indices) / elapsed_time,
-        )
-        self._emit_progress(event="file_done", stage="saving")
+        full_markdown = asyncio.run(self._convert_file_markdown_async(filepath, global_semaphore))
 
         # 8. 如果启用了渲染器,转换为Document并渲染
         if self.use_markdown_builder and self.markdown_builder:
@@ -2627,52 +3287,4 @@ class VlmDirectAsyncConverter(BaseConverter):
         Returns:
             Markdown 字符串
         """
-        if self.api_provider == "openai_compatible" and not str(self.base_url or "").strip():
-            raise ValueError(
-                "OpenAI-compatible VLM conversion requires vlm_direct_base_url. "
-                "Configure an explicit provider endpoint before starting the job."
-            )
-
-        logger.info("[VLM] Starting %s", Path(filepath).name)
-
-        # 1. 加载文档（同步操作，但在单线程中执行）
-        provider_cls = provider_from_filepath(filepath)
-        provider_config = {**self.config, "force_ocr": True}
-        provider = provider_cls(filepath, provider_config)
-
-        # 2. 获取所有页面图像（支持页码范围过滤）
-        num_pages = len(provider)
-        if self.page_start is not None and self.page_end is not None:
-            actual_end = min(self.page_end, num_pages - 1)
-            page_indices = list(range(self.page_start, actual_end + 1))
-            logger.debug("[VLM] Page range=%s-%s total=%s", self.page_start, actual_end, num_pages)
-        else:
-            page_indices = list(range(num_pages))
-
-        logger.debug("[VLM] Concurrency=%s", self.max_concurrent)
-
-        # 3. 异步并发转换
-        start_time = time.time()
-        if self.streaming_batches:
-            raw_outputs = await self._convert_pages_streaming_async(provider, page_indices, global_semaphore)
-        else:
-            images = provider.get_images(page_indices, self.dpi)
-            logger.debug("[VLM] Loaded pages=%s", len(images))
-            self._emit_progress(event="pages_loaded", total_pages=len(images), stage="processing")
-            raw_outputs = await self._convert_all_pages_async(images, global_semaphore)
-        elapsed_time = time.time() - start_time
-
-        if self.output_mode == "json":
-            raw_outputs = await self._auto_repair_failed_results_async(provider, page_indices, raw_outputs, global_semaphore)
-        markdown_pages, printed_pages = self._prepare_markdown_pages(raw_outputs)
-        full_markdown = self._finalize_markdown_pages(markdown_pages, printed_pages, len(page_indices))
-
-        logger.info(
-            "[VLM] Completed pages=%s elapsed=%.1fs avg=%.2f pages/s",
-            len(page_indices),
-            elapsed_time,
-            len(page_indices) / elapsed_time,
-        )
-        self._emit_progress(event="file_done", stage="saving")
-
-        return full_markdown
+        return await self._convert_file_markdown_async(filepath, global_semaphore)

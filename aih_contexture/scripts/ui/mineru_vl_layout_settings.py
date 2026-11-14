@@ -4,8 +4,8 @@ from aih_contexture.config.vlm_model_presets import default_quant, default_versi
 
 
 def render_mineru_vl_layout_settings(st, *, description: str) -> dict[str, object]:
-    st.info(description)
-    st.caption("仅调用 MinerU-VL 的版面检测；文字来源由下方 OCR 后端决定。")
+    if str(description or "").strip():
+        st.caption(description)
 
     api_style_options = ["lmstudio-native", "openai"]
     api_style = st.selectbox(

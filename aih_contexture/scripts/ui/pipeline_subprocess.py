@@ -25,6 +25,7 @@ def run_pipeline_file_subprocess(
     repo_root: str | os.PathLike[str],
     runner: Callable[..., subprocess.CompletedProcess] | None = None,
     event_callback: Callable[[dict[str, Any]], None] | None = None,
+    progress_callback: Callable[[dict[str, Any]], None] | None = None,
     progress_timeout: int | float | None = None,
 ) -> dict[str, Any]:
     job_spec = _prepare_pipeline_job_spec(job_spec)
@@ -51,7 +52,7 @@ def run_pipeline_file_subprocess(
             cwd=os.fspath(repo_root),
             env=_pipeline_worker_env(),
             prefix="[Contexture Pipeline Worker]",
-            event_callback=event_callback,
+            event_callback=progress_callback if progress_callback is not None else event_callback,
             progress_timeout=progress_timeout,
         )
     else:

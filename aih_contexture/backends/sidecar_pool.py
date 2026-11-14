@@ -146,6 +146,12 @@ class JsonlSidecarClient:
                     "sidecar process exited before returning a response. "
                     f"returncode={proc.poll()}; stderr_tail={self.stderr_tail()}"
                 )
+            from aih_contexture.runtime.progress_events import EVENT_PREFIX, emit_progress_event
+
+            if line.startswith(EVENT_PREFIX):
+                event = json.loads(line[len(EVENT_PREFIX):])
+                emit_progress_event(event.pop("kind"), event.pop("stage"), **event)
+                continue
             try:
                 response = json.loads(line)
             except json.JSONDecodeError:

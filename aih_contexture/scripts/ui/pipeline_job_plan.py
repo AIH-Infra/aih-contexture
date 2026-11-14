@@ -32,6 +32,7 @@ def build_pipeline_file_job_spec(
     processing_id: str | None = None,
     file_index: int | None = None,
     pipeline_workers: int = 1,
+    pipeline_performance_mode: str = "manual",
 ) -> dict[str, Any]:
     return {
         "file_path": file_path,
@@ -43,4 +44,5 @@ def build_pipeline_file_job_spec(
         "processing_id": processing_id,
         "file_index": file_index,
         "pipeline_workers": max(1, int(pipeline_workers or 1)),
+        "pipeline_performance_mode": pipeline_performance_mode,
     }

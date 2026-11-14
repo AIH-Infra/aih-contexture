@@ -42,6 +42,7 @@ class StructuredSourceConverter:
             package, package_manifest = write_source_package(
                 document, output_dir, source_data=data, source_name=source_name, raw_artifacts=artifacts,
                 emit_line_indexes=bool(self.config.get("emit_line_indexes", False)),
+                markdown=markdown,
             )
             package_path = os.fspath(package)
         return StructuredSourceConversion(document, markdown, package_path, package_manifest)

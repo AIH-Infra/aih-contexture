@@ -24,13 +24,13 @@ class MarkdownLMAdapter:
             self.config = config or MarkdownPostprocessConfig()
         self.service = service
 
-    def _build_safe_review_spans(self, markdown: str) -> list[PrintedPageReviewSpan]:
-        proposal_payload = build_segment_review_proposals(markdown)
+    def _build_safe_review_spans(self, markdown: str, *, pages=None) -> list[PrintedPageReviewSpan]:
+        pages = parse_markdown_pages(markdown) if pages is None else pages
+        proposal_payload = build_segment_review_proposals(markdown, pages=pages)
         proposals = proposal_payload.get("proposals", []) if isinstance(proposal_payload, dict) else []
         if not proposals:
             return []
 
-        pages = parse_markdown_pages(markdown)
         page_lookup = {page.pdf_page: page for page in pages}
         review_pages: list[PrintedPageReviewPage] = []
 
@@ -310,12 +310,14 @@ class MarkdownLMAdapter:
             return False, "span_continuity_large_jumps"
         return True, None
 
-    def _apply_sparse_decisions(self, result: MarkdownPostprocessResult, accepted_decisions: list[dict]):
+    def _apply_sparse_decisions(self, result: MarkdownPostprocessResult, accepted_decisions: list[dict], *, parsed_pages=None):
         if not accepted_decisions:
             return result, 0
 
-        rewritten = result.markdown
-        pages = {page.pdf_page: page for page in parse_markdown_pages(result.markdown)}
+        parsed_pages = parse_markdown_pages(result.markdown) if parsed_pages is None else parsed_pages
+        pages = {page.pdf_page: page for page in parsed_pages}
+        source_pages = dict(pages)
+        edits = {}
         applied = 0
 
         for decision in accepted_decisions:
@@ -327,7 +329,8 @@ class MarkdownLMAdapter:
             if final_value == original:
                 continue
             new_block = _replace_block_comment(page.raw_block, final_value)
-            rewritten = rewritten.replace(page.raw_block, new_block, 1)
+            source_page = source_pages[page.pdf_page]
+            edits[page.pdf_page] = (source_page.start_offset, source_page.start_offset + len(source_page.raw_block), new_block)
             pages[page.pdf_page] = SimpleNamespace(**{**page.__dict__, "raw_block": new_block, "normalized_candidate": final_value})
             result.actions.append(
                 PrintedPageAction(
@@ -343,7 +346,12 @@ class MarkdownLMAdapter:
             applied += 1
 
         if applied:
-            result.markdown = rewritten
+            parts, cursor = [], 0
+            for start, end, block in sorted(edits.values()):
+                parts.extend((result.markdown[cursor:start], block))
+                cursor = end
+            parts.append(result.markdown[cursor:])
+            result.markdown = ''.join(parts)
             result.changed = True
         return result, applied
 
@@ -362,7 +370,9 @@ class MarkdownLMAdapter:
             llm_meta["skipped_reason"] = "llm_not_configured"
             return result
 
-        spans = self._build_safe_review_spans(result.markdown)
+        parsed_pages = parse_markdown_pages(result.markdown)
+        all_pages = {page.pdf_page: page for page in parsed_pages}
+        spans = self._build_safe_review_spans(result.markdown, pages=parsed_pages)
         llm_meta["span_source"] = "segment_review_proposals"
         llm_meta["span_count"] = len(spans)
         llm_meta["configured_model"] = getattr(service, "openai_model", None) or getattr(service, "lmstudio_model", None)
@@ -443,7 +453,7 @@ class MarkdownLMAdapter:
                         span_rejections.append({"decision": decision, "reason": reject_reason})
 
                 continuity_ok, continuity_reason = self._validate_span_continuity(
-                    {page.pdf_page: page for page in parse_markdown_pages(result.markdown)},
+                    all_pages,
                     span,
                     valid_for_span,
                 )
@@ -490,7 +500,7 @@ class MarkdownLMAdapter:
             llm_meta["suggested_actions"] = accepted_decisions
             return result
 
-        result, applied_count = self._apply_sparse_decisions(result, accepted_decisions)
+        result, applied_count = self._apply_sparse_decisions(result, accepted_decisions, parsed_pages=parsed_pages)
         llm_meta["applied_action_count"] = applied_count
         llm_meta["status"] = "applied" if applied_count else "review_completed_no_effective_actions"
         if applied_count == 0:

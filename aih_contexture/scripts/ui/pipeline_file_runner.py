@@ -24,6 +24,7 @@ from aih_contexture.scripts.ui.task_outputs import (
 
 
 MessageCallback = Callable[[str], None]
+PipelineProgressCallback = Callable[[dict[str, Any]], None]
 
 
 def _noop_message(_: str) -> None:
@@ -95,6 +96,10 @@ def run_pipeline_file(
     info: MessageCallback = _noop_message,
     warning: MessageCallback = _noop_message,
     error: MessageCallback = _noop_message,
+    progress_callback: PipelineProgressCallback | None = None,
+    subprocess_runner: Callable[..., dict[str, Any]] | None = None,
+    total_pages: int | None = None,
+    execution_plan=None,
 ) -> dict[str, Any]:
     # 早期取消发生在输出目录创建之前，不会留下空目录，因此无需摘要。
     if cancel.is_set():
@@ -117,14 +122,15 @@ def run_pipeline_file(
         file_path, file_name = materialized_files[0]
         write(f"### 处理文件 {file_idx + 1}/{total_files}: {file_name}")
 
-        total_pages = pdf_page_count(file_path)
+        if total_pages is None:
+            total_pages = pdf_page_count(file_path)
         write(f"📊 检测到 {total_pages} 页")
 
         parallel_plan = None
         if _is_text_layer_fast_path(values):
             page_ranges = _text_layer_page_range(total_pages, values)
         else:
-            parallel_plan = plan_from_values(dict(values), total_pages=total_pages)
+            parallel_plan = execution_plan if execution_plan is not None else plan_from_values(dict(values), total_pages=total_pages)
             effective_pages_per_batch = _effective_pages_per_batch(
                 {**values, "pages_per_batch": parallel_plan.pages_per_batch}
             )
@@ -169,6 +175,15 @@ def run_pipeline_file(
             )
             return {"status": "cancelled", "file_name": file_name, "output_paths": []}
         write(_format_backend_plan(batch_jobs))
+        for batch in batch_jobs:
+            config = batch["config_dict"]
+            if config.get("layout_backend") == "indra_layout" or config.get("ocr_backend") == "indra_ocr":
+                from aih_contexture.backends.ocr.indra.settings import IndraSettings, check_ready
+                from aih_contexture.runtime.errors import ContextureConfigError
+
+                problems = check_ready(IndraSettings.from_config(config))
+                if problems:
+                    raise ContextureConfigError("Indra 模型/环境未就绪，请在 Indra 设置中配置模型目录或允许下载：" + "; ".join(problems))
 
         processing_start_time = time.time()
         job_spec = build_pipeline_file_job_spec(
@@ -181,6 +196,7 @@ def run_pipeline_file(
             processing_id=processing_id,
             file_index=file_idx + 1,
             pipeline_workers=parallel_plan.workers if parallel_plan and len(batch_jobs) > 1 else 1,
+            pipeline_performance_mode=parallel_plan.mode if parallel_plan else "auto",
         )
         if parallel_plan is not None:
             workers = parallel_plan.workers if len(batch_jobs) > 1 else 1
@@ -188,16 +204,18 @@ def run_pipeline_file(
             for note in parallel_plan.notes:
                 warning(note)
 
-        write(f"🚀 启动单文件子进程: {file_name}")
+        write(f"🚀 {'交给常驻文件进程' if subprocess_runner else '启动单文件子进程'}: {file_name}")
         stall_timeout_seconds = max(
             180,
             int(values.get("stall_timeout_minutes", 15) or 15) * 60,
         )
-        result = run_pipeline_file_subprocess(
-            job_spec,
-            repo_root=repo_root,
-            progress_timeout=stall_timeout_seconds,
-        )
+        subprocess_kwargs: dict[str, Any] = {
+            "repo_root": repo_root,
+            "progress_timeout": stall_timeout_seconds,
+        }
+        if progress_callback is not None:
+            subprocess_kwargs["progress_callback"] = progress_callback
+        result = (subprocess_runner or run_pipeline_file_subprocess)(job_spec, **subprocess_kwargs)
 
         if result.get("success"):
             fallback_result_key = f"{file_name}_{time.strftime('%Y%m%d_%H%M%S')}"
@@ -229,7 +247,10 @@ def run_pipeline_file(
             )
             time.sleep(5)
         if details:
-            error(details)
+            diagnostic = {"file_name": file_name, "error": err, "details": details}
+            ctx.setdefault("diagnostics", []).append(diagnostic)
+        else:
+            diagnostic = None
         partial_outputs = []
         if result.get("file_outputs"):
             fallback_result_key = f"{file_name}_{time.strftime('%Y%m%d_%H%M%S')}_partial"
@@ -249,13 +270,15 @@ def run_pipeline_file(
             "output_paths": output_paths_from_records(partial_outputs),
             "error": err,
             "details": details,
+            "diagnostics": [diagnostic] if diagnostic else [],
             "result": result,
         }
 
     except Exception as exc:
         error(f"处理《{file_name}》失败: {str(exc)}")
         details = traceback.format_exc()
-        error(details)
+        diagnostic = {"file_name": file_name, "error": str(exc), "details": details}
+        ctx.setdefault("diagnostics", []).append(diagnostic)
         if file_output_dir:
             _write_terminal_summary(
                 status="failed", file_output_dir=file_output_dir, file_name=file_name,
@@ -269,6 +292,7 @@ def run_pipeline_file(
             "output_paths": [],
             "error": str(exc),
             "details": details,
+            "diagnostics": [diagnostic],
         }
 
     finally:

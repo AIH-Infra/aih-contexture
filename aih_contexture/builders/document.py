@@ -15,6 +15,25 @@ from aih_contexture.schema.registry import get_block_class
 from aih_contexture.runtime.progress_events import emit_progress_event
 
 
+class _PdfPageImageLoader:
+    """Render one requested image plane without retaining the full provider."""
+
+    def __init__(self, filepath: str, flatten_pdf: bool):
+        self.filepath = str(filepath)
+        self.flatten_pdf = bool(flatten_pdf)
+
+    def __call__(self, page_index: int, dpi: int):
+        import pypdfium2 as pdfium
+
+        pdf = pdfium.PdfDocument(self.filepath)
+        try:
+            if self.flatten_pdf:
+                pdf.init_forms()
+            return PdfProvider._render_image(pdf, page_index, dpi, self.flatten_pdf)
+        finally:
+            pdf.close()
+
+
 class DocumentBuilder(BaseBuilder):
     """
     Constructs a Document given a PdfProvider, LayoutBuilder, and OcrBuilder.
@@ -139,11 +158,22 @@ class DocumentBuilder(BaseBuilder):
         PageGroupClass: PageGroup = get_block_class(BlockTypes.Page)
         self.actual_lowres_dpi = self._compute_layout_dpi()
         self.actual_highres_dpi = self._compute_ocr_dpi()
-        lowres_images = provider.get_images(provider.page_range, self.actual_lowres_dpi)
+        defer_lowres = self._defer_lowres_images()
+        defer_highres = self._defer_highres_images()
+        lowres_images = (
+            [None] * len(provider.page_range)
+            if defer_lowres
+            else provider.get_images(provider.page_range, self.actual_lowres_dpi)
+        )
         highres_images = (
             provider.get_images(provider.page_range, self.actual_highres_dpi)
-            if self.build_highres_images
+            if self.build_highres_images and not defer_highres
             else [None] * len(provider.page_range)
+        )
+        lazy_image_loader = (
+            _PdfPageImageLoader(provider.filepath, provider.flatten_pdf)
+            if defer_lowres or defer_highres
+            else None
         )
         initial_pages = [
             PageGroupClass(
@@ -154,5 +184,26 @@ class DocumentBuilder(BaseBuilder):
                 refs=provider.get_page_refs(p)
             ) for i, p in enumerate(provider.page_range)
         ]
+        if lazy_image_loader is not None:
+            for page in initial_pages:
+                page_index = int(page.page_id)
+                if defer_lowres:
+                    page.set_image_loader(
+                        lambda index=page_index: lazy_image_loader(index, self.actual_lowres_dpi),
+                        highres=False,
+                    )
+                if defer_highres:
+                    page.set_image_loader(
+                        lambda index=page_index: lazy_image_loader(index, self.actual_highres_dpi),
+                        highres=True,
+                    )
         DocumentClass: Document = get_block_class(BlockTypes.Document)
         return DocumentClass(filepath=provider.filepath, pages=initial_pages)
+
+    def _defer_lowres_images(self) -> bool:
+        layout_backend = str(self.layout_backend or "").strip().lower().replace("-", "_")
+        return layout_backend == "indra_layout" and bool(self.disable_ocr)
+
+    def _defer_highres_images(self) -> bool:
+        ocr_backend = str(self.ocr_backend or "").strip().lower().replace("-", "_")
+        return ocr_backend == "indra_ocr" and not bool(self.disable_ocr) and bool(self.build_highres_images)

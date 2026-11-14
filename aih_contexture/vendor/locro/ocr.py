@@ -14,6 +14,10 @@ from PIL import Image
 from ._dll import ScreenAIDll, find_screen_ai_dir
 from ._protobuf import LineResult, parse_visual_annotation
 from .models import BoundingBox, OcrBlock, OcrLine, OcrPage, OcrResult, OcrWord
+from aih_contexture.backends.ocr.screenai.text_layer import UnicodeTextWriter
+from aih_contexture.utils.pdf_text_layer import (
+    COMPACT_PDF_SAVE_OPTIONS, remove_page_annotations, searchable_background,
+)
 
 log = logging.getLogger(__name__)
 
@@ -120,6 +124,7 @@ class ScreenAI:
         file: str | Path,
         *,
         pages: Iterable[int] | None = None,
+        remove_annotations: bool = True,
     ) -> OcrResult:
         """OCR a PDF or image file.
 
@@ -133,7 +138,7 @@ class ScreenAI:
         """
         path = Path(file)
         if path.suffix.lower() == ".pdf":
-            return self._ocr_pdf(path, pages=pages)
+            return self._ocr_pdf(path, pages=pages, remove_annotations=remove_annotations)
         return self._ocr_image_file(path)
 
     def ocr_pil_image(self, img: Image.Image) -> OcrPage:
@@ -147,11 +152,11 @@ class ScreenAI:
         output_pdf: str | Path,
         *,
         pages: Iterable[int] | None = None,
+        remove_annotations: bool = True,
     ) -> OcrResult:
         """OCR a PDF and write a searchable copy with invisible text overlay.
 
-        The output PDF looks identical to the input but its text is
-        selectable and searchable.
+        Builds a page background with a fresh searchable text layer.
 
         Args:
             input_pdf: Source (image-only) PDF.
@@ -168,43 +173,47 @@ class ScreenAI:
                 "PyMuPDF is required for PDF operations: pip install PyMuPDF"
             ) from exc
 
-        doc = fitz.open(str(input_pdf))
-        page_set = set(pages) if pages is not None else None
-        ocr_pages: list[OcrPage] = []
+        with fitz.open(str(input_pdf)) as doc, fitz.open() as output_doc:
+            writer = UnicodeTextWriter()
+            page_set = set(pages) if pages is not None else None
+            ocr_pages: list[OcrPage] = []
 
-        for i in range(len(doc)):
-            page_num = i + 1
-            if page_set is not None and page_num not in page_set:
-                continue
+            for i in range(len(doc)):
+                page_num = i + 1
+                if page_set is not None and page_num not in page_set:
+                    output_doc.insert_pdf(doc, from_page=i, to_page=i)
+                    continue
 
-            pg = doc[i]
-            if pg.rotation:
-                pg.remove_rotation()
-            scale = min(1.0, self._max_dim / max(pg.rect.width, pg.rect.height))
-            dpi = int(72 * scale * 2)
-            pix = pg.get_pixmap(dpi=dpi)
-            img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-            lines, ocr_size = self._perform_ocr(img)
-            ocr_page = _lines_to_page(lines, page_number=page_num, img_size=ocr_size)
-            ocr_pages.append(ocr_page)
+                pg = doc[i]
+                if remove_annotations:
+                    remove_page_annotations(pg)
+                if pg.rotation:
+                    pg.remove_rotation()
+                scale = min(1.0, self._max_dim / max(pg.rect.width, pg.rect.height))
+                dpi = int(72 * scale * 2)
+                pix = pg.get_pixmap(dpi=dpi)
+                img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+                lines, ocr_size = self._perform_ocr(img)
+                ocr_page = _lines_to_page(lines, page_number=page_num, img_size=ocr_size)
+                ocr_pages.append(ocr_page)
 
-            # Scale factor: OCR pixel coords -> PDF point coords
-            sx = pg.rect.width / ocr_size[0]
-            sy = pg.rect.height / ocr_size[1]
+                # Scale factor: OCR pixel coords -> PDF point coords
+                sx = pg.rect.width / ocr_size[0]
+                sy = pg.rect.height / ocr_size[1]
 
-            _overlay_text(pg, lines, sx, sy)
+                target = output_doc.new_page(width=pg.rect.width, height=pg.rect.height)
+                searchable_background(target, doc, i, dpi=dpi, remove_annotations=remove_annotations)
+                _overlay_text(target, lines, sx, sy, writer=writer)
 
-            log.info(
-                "Page %d: %d blocks, %d lines (overlaid)",
-                page_num,
-                len(ocr_page.blocks),
-                sum(len(b.lines) for b in ocr_page.blocks),
-            )
+                log.info(
+                    "Page %d: %d blocks, %d lines (overlaid)",
+                    page_num,
+                    len(ocr_page.blocks),
+                    sum(len(b.lines) for b in ocr_page.blocks),
+                )
 
-        if hasattr(doc, "subset_fonts"):
-            doc.subset_fonts()
-        doc.save(str(output_pdf), deflate=True, garbage=4)
-        doc.close()
+            output_doc.subset_fonts()
+            output_doc.save(str(output_pdf), **COMPACT_PDF_SAVE_OPTIONS)
         log.info("Searchable PDF -> %s", output_pdf)
         return OcrResult(pages=ocr_pages)
 
@@ -236,7 +245,7 @@ class ScreenAI:
         return OcrResult(pages=[page])
 
     def _ocr_pdf(
-        self, path: Path, *, pages: Iterable[int] | None = None,
+        self, path: Path, *, pages: Iterable[int] | None = None, remove_annotations: bool = True,
     ) -> OcrResult:
         try:
             import fitz  # PyMuPDF
@@ -255,6 +264,8 @@ class ScreenAI:
                 continue
 
             pg = doc[i]
+            if remove_annotations:
+                remove_page_annotations(pg)
             scale = min(1.0, self._max_dim / max(pg.rect.width, pg.rect.height))
             pix = pg.get_pixmap(dpi=int(72 * scale * 2))
             img = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
@@ -313,11 +324,12 @@ def _overlay_text(
     lines: list[LineResult],
     sx: float,
     sy: float,
+    *, writer=None,
 ) -> None:
     """Insert invisible text onto a PyMuPDF page for each OCR'd word."""
     import fitz  # noqa: F811
 
-    cjk_font = _find_cjk_font()
+    writer = writer or UnicodeTextWriter()
     for ln in lines:
         for w in ln.words:
             if not w.text or not w.width:
@@ -327,84 +339,8 @@ def _overlay_text(
             y0 = w.y * sy
             x1 = (w.x + w.width) * sx
             y1 = (w.y + w.height) * sy
-            _insert_invisible_word(page, fitz.Rect(x0, y0, x1, y1), w.text, cjk_font)
+            writer.insert_word(page, fitz.Rect(x0, y0, x1, y1), w.text)
 
-# Thresholds for conditionally stretching proportional (mostly Latin) words.
-_LATIN_STRETCH_THRESHOLD = 1.25
-_LATIN_MAX_STRETCH = 2.5
-
-
-def _insert_invisible_word(
-    page, rect, text: str, cjk_font: Path | None
-) -> None:
-    """Insert invisible horizontal text constrained to the OCR word box."""
-    import fitz  # noqa: F811
-
-    if rect.is_empty or rect.width <= 0 or rect.height <= 0:
-        return
-
-    use_cjk = cjk_font is not None and _text_needs_cjk_font(text)
-    font_args: dict[str, object] = {}
-    if use_cjk:
-        font_args = {"fontfile": str(cjk_font), "fontname": "AIHFallbackCJK"}
-
-    if use_cjk:
-        font = fitz.Font(fontfile=str(cjk_font))
-        font_size = max(1.0, rect.height * 0.95)
-        text_width = font.text_length(text, font_size)
-        if text_width > 0:
-            scale_x = rect.width / text_width
-            baseline_y = rect.y1 - font_size * 0.1
-            point = fitz.Point(rect.x0, baseline_y)
-            page.insert_text(
-                point,
-                text,
-                fontsize=font_size,
-                render_mode=3,
-                rotate=0,
-                morph=(point, fitz.Matrix(scale_x, 1.0)),
-                **font_args,
-            )
-            return
-
-    font_size = max(1.0, rect.height * 0.8)
-    font = fitz.Font("helv")
-    text_width = font.text_length(text, font_size)
-    if text_width > 0:
-        scale_x = rect.width / text_width
-        if scale_x > _LATIN_STRETCH_THRESHOLD and scale_x <= _LATIN_MAX_STRETCH:
-            baseline_y = rect.y1 - font_size * 0.1
-            point = fitz.Point(rect.x0, baseline_y)
-            page.insert_text(
-                point,
-                text,
-                fontsize=font_size,
-                fontname="helv",
-                render_mode=3,
-                rotate=0,
-                morph=(point, fitz.Matrix(scale_x, 1.0)),
-            )
-            return
-
-    for _ in range(6):
-        spare = page.insert_textbox(
-            rect,
-            text,
-            fontsize=font_size,
-            render_mode=3,
-            rotate=0,
-            align=fitz.TEXT_ALIGN_LEFT,
-            **font_args,
-        )
-        if spare >= 0:
-            return
-        font_size *= 0.82
-
-    page.insert_text(
-        fitz.Point(rect.x0, rect.y1 - max(1.0, font_size) * 0.1),
-        text,
-        fontsize=max(1.0, font_size),
-        render_mode=3,
-        rotate=0,
-        **font_args,
-    )
+def _insert_invisible_word(page, rect, text: str, cjk_font: Path | None = None) -> None:
+    """Compatibility entry point; all scripts use the shared Unicode writer."""
+    UnicodeTextWriter().insert_word(page, rect, text)

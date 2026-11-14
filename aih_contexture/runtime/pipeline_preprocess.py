@@ -10,7 +10,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import fitz
 
@@ -36,6 +36,7 @@ class _ChromeChunkJob:
     chunk_index: int
     start_page: int
     end_page: int
+    source_page_indices: tuple[int, ...]
     input_pdf: Path
     output_pdf: Path
     progress_json: Path
@@ -46,7 +47,16 @@ class _ChromeChunkJob:
 
     @property
     def page_count(self) -> int:
-        return (self.end_page - self.start_page) + 1
+        return len(self.source_page_indices)
+
+    @property
+    def page_label(self) -> str:
+        if all(
+            right == left + 1
+            for left, right in zip(self.source_page_indices, self.source_page_indices[1:])
+        ):
+            return f"{self.start_page + 1}-{self.end_page + 1}"
+        return f"{self.page_count} selected pages from {self.start_page + 1} to {self.end_page + 1}"
 
 
 def normalize_ocr_preprocess_backend(value: Any) -> str:
@@ -64,6 +74,7 @@ def apply_pipeline_pdf_preprocess(
     output_dir: str,
     fname_base: str,
     config: dict[str, Any],
+    page_indices: Sequence[int] | None = None,
 ) -> PipelinePreprocessResult:
     backend = normalize_ocr_preprocess_backend(config.get("ocr_preprocess_backend"))
     selected_ocr_backend = str(config.get("ocr_backend") or "").strip().lower().replace("-", "_")
@@ -85,6 +96,7 @@ def apply_pipeline_pdf_preprocess(
             work_dir=work_dir,
             fname_base=fname_base,
             config=config,
+            page_indices=page_indices,
         )
 
         exported_artifact_path = None
@@ -125,6 +137,7 @@ def _run_chrome_screenai_searchable_pdf_pipeline(
     work_dir: Path,
     fname_base: str,
     config: dict[str, Any],
+    page_indices: Sequence[int] | None = None,
 ) -> Path:
     with fitz.open(staged_input) as doc:
         page_count = doc.page_count
@@ -134,17 +147,31 @@ def _run_chrome_screenai_searchable_pdf_pipeline(
         shutil.copy2(staged_input, empty_output)
         return empty_output
 
-    worker_count = max(1, min(int(config.get("chrome_workers", 4) or 4), page_count))
+    selected_pages = list(range(page_count)) if page_indices is None else sorted(set(int(index) for index in page_indices))
+    invalid_pages = [index for index in selected_pages if not 0 <= index < page_count]
+    if invalid_pages:
+        raise ValueError(f"ScreenAI page indices are outside the {page_count}-page document: {invalid_pages}")
+
+    merged_output = work_dir / f"{fname_base}.chrome_screenai.searchable.pdf"
+    if not selected_pages:
+        shutil.copy2(staged_input, merged_output)
+        return merged_output
+
+    worker_count = max(1, min(int(config.get("chrome_workers", 4) or 4), len(selected_pages)))
     chunk_jobs = _prepare_chrome_chunk_jobs(
         staged_input=staged_input,
         work_dir=work_dir,
-        page_count=page_count,
+        page_indices=selected_pages,
         worker_count=worker_count,
     )
     _run_chrome_chunk_jobs(chunk_jobs, config=config)
 
-    merged_output = work_dir / f"{fname_base}.chrome_screenai.searchable.pdf"
-    _merge_chunk_pdfs([job.output_pdf for job in chunk_jobs], merged_output)
+    _merge_selected_chunk_pdfs(
+        staged_input=staged_input,
+        chunk_jobs=chunk_jobs,
+        selected_pages=selected_pages,
+        output_pdf=merged_output,
+    )
     return merged_output
 
 
@@ -152,19 +179,29 @@ def _prepare_chrome_chunk_jobs(
     *,
     staged_input: Path,
     work_dir: Path,
-    page_count: int,
+    page_indices: Sequence[int],
     worker_count: int,
 ) -> list[_ChromeChunkJob]:
-    chunk_size = max(1, math.ceil(page_count / worker_count))
+    selected_pages = list(page_indices)
+    chunk_size = max(1, math.ceil(len(selected_pages) / worker_count))
     jobs: list[_ChromeChunkJob] = []
 
     with fitz.open(staged_input) as source_doc:
-        for chunk_index, start_page in enumerate(range(0, page_count, chunk_size)):
-            end_page = min(page_count - 1, start_page + chunk_size - 1)
+        for chunk_index, selected_start in enumerate(range(0, len(selected_pages), chunk_size)):
+            chunk_pages = tuple(selected_pages[selected_start:selected_start + chunk_size])
+            start_page = chunk_pages[0]
+            end_page = chunk_pages[-1]
             chunk_input = work_dir / f"chunk_{chunk_index:03d}_input.pdf"
             subdoc = fitz.open()
             try:
-                subdoc.insert_pdf(source_doc, from_page=start_page, to_page=end_page)
+                run_start = previous_page = chunk_pages[0]
+                for source_page in chunk_pages[1:]:
+                    if source_page == previous_page + 1:
+                        previous_page = source_page
+                        continue
+                    subdoc.insert_pdf(source_doc, from_page=run_start, to_page=previous_page)
+                    run_start = previous_page = source_page
+                subdoc.insert_pdf(source_doc, from_page=run_start, to_page=previous_page)
                 subdoc.save(chunk_input, deflate=True)
             finally:
                 subdoc.close()
@@ -174,6 +211,7 @@ def _prepare_chrome_chunk_jobs(
                     chunk_index=chunk_index,
                     start_page=start_page,
                     end_page=end_page,
+                    source_page_indices=chunk_pages,
                     input_pdf=chunk_input,
                     output_pdf=work_dir / f"chunk_{chunk_index:03d}_searchable.pdf",
                     progress_json=work_dir / f"chunk_{chunk_index:03d}_progress.json",
@@ -207,6 +245,7 @@ def _run_chrome_chunk_jobs(
             "model_dir": config.get("chrome_model_dir"),
             "light_mode": bool(config.get("chrome_screenai_light", False)),
             "preprocess_mode": str(config.get("chrome_preprocess_mode", "native")),
+            "remove_annotations": bool(config.get("chrome_remove_annotations", True)),
             "rasterize_dpi": max(72, int(config.get("chrome_rasterize_dpi", 144) or 144)),
             "page_count": job.page_count,
             "max_retries": 1,
@@ -219,11 +258,11 @@ def _run_chrome_chunk_jobs(
             token,
         ]
         logger.info(
-            "[Chrome ScreenAI] Processing chunk %s-%s/%s with %s worker(s)",
-            job.start_page + 1,
-            job.end_page + 1,
-            jobs[-1].end_page + 1,
+            "[Chrome ScreenAI] Processing chunk %s/%s (%s pages; source %s)",
+            job.chunk_index + 1,
             len(jobs),
+            job.page_count,
+            job.page_label,
         )
         job.process = subprocess.Popen(
             command,
@@ -302,7 +341,7 @@ def _terminate_chrome_chunk_jobs(jobs: list[_ChromeChunkJob]) -> None:
 
 def _format_chrome_chunk_failure(job: _ChromeChunkJob, reason: str) -> str:
     message = (
-        f"Chrome ScreenAI chunk {job.chunk_index} ({job.start_page + 1}-{job.end_page + 1}) failed: {reason}"
+        f"Chrome ScreenAI chunk {job.chunk_index} (source pages {job.page_label}) failed: {reason}"
     )
     stdout = str(job.stdout or "").strip()
     stderr = str(job.stderr or "").strip()
@@ -313,15 +352,67 @@ def _format_chrome_chunk_failure(job: _ChromeChunkJob, reason: str) -> str:
     return message
 
 
-def _merge_chunk_pdfs(chunk_pdfs: list[Path], output_pdf: Path) -> None:
-    output_doc = fitz.open()
+def _merge_selected_chunk_pdfs(
+    *,
+    staged_input: Path,
+    chunk_jobs: list[_ChromeChunkJob],
+    selected_pages: Sequence[int],
+    output_pdf: Path,
+) -> None:
+    source_locations: dict[int, tuple[int, int]] = {}
+    chunk_documents: dict[int, fitz.Document] = {}
     try:
-        for chunk_pdf in chunk_pdfs:
-            with fitz.open(chunk_pdf) as chunk_doc:
-                output_doc.insert_pdf(chunk_doc)
-        output_doc.save(output_pdf, deflate=True)
+        for job in chunk_jobs:
+            chunk_doc = fitz.open(job.output_pdf)
+            actual_page_count = chunk_doc.page_count
+            if actual_page_count != job.page_count:
+                chunk_doc.close()
+                raise ValueError(
+                    f"ScreenAI chunk {job.chunk_index} returned {actual_page_count} pages; "
+                    f"expected {job.page_count}"
+                )
+            chunk_documents[job.chunk_index] = chunk_doc
+            for local_page, source_page in enumerate(job.source_page_indices):
+                if source_page in source_locations:
+                    raise ValueError(f"ScreenAI page {source_page} was assigned to multiple chunks")
+                source_locations[source_page] = (job.chunk_index, local_page)
+
+        if set(source_locations) != set(selected_pages):
+            raise ValueError("ScreenAI chunks did not cover exactly the selected pages")
+
+        output_doc = fitz.open()
+        try:
+            with fitz.open(staged_input) as source_doc:
+                source_page = 0
+                while source_page < source_doc.page_count:
+                    location = source_locations.get(source_page)
+                    if location is None:
+                        run_end = source_page
+                        while run_end + 1 < source_doc.page_count and run_end + 1 not in source_locations:
+                            run_end += 1
+                        output_doc.insert_pdf(source_doc, from_page=source_page, to_page=run_end)
+                        source_page = run_end + 1
+                        continue
+
+                    chunk_index, local_page = location
+                    source_end, local_end = source_page, local_page
+                    while source_end + 1 < source_doc.page_count:
+                        next_location = source_locations.get(source_end + 1)
+                        if next_location != (chunk_index, local_end + 1):
+                            break
+                        source_end += 1
+                        local_end += 1
+                    output_doc.insert_pdf(
+                        chunk_documents[chunk_index], from_page=local_page, to_page=local_end
+                    )
+                    source_page = source_end + 1
+            from aih_contexture.utils.pdf_text_layer import COMPACT_PDF_SAVE_OPTIONS
+            output_doc.save(output_pdf, **COMPACT_PDF_SAVE_OPTIONS)
+        finally:
+            output_doc.close()
     finally:
-        output_doc.close()
+        for chunk_doc in chunk_documents.values():
+            chunk_doc.close()
 
 
 def _read_json_file(path: Path, *, default: Any) -> Any:

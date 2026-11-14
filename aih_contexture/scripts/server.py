@@ -292,6 +292,10 @@ class CommonParams(BaseModel):
         str,
         Field(description="Chrome ScreenAI PDF preprocessing mode: native, strip_existing_ocr, rasterize_pdf, or strip_then_rasterize."),
     ] = "native"
+    chrome_remove_annotations: Annotated[
+        bool,
+        Field(description="Remove PDF annotations and links before ScreenAI recognition."),
+    ] = True
     chrome_workers: Annotated[
         int,
         Field(description="Chrome ScreenAI OCR worker count for searchable-PDF preprocessing."),
@@ -695,6 +699,7 @@ async def convert_pdf_upload(
     ocr_preprocess_backend: Optional[str] = Form(default="none"),
     chrome_screenai_light: bool = Form(default=False),
     chrome_preprocess_mode: Optional[str] = Form(default="native"),
+    chrome_remove_annotations: bool = Form(default=True),
     chrome_workers: Optional[int] = Form(default=4),
     chrome_chunk_pages: Optional[int] = Form(default=4),
     chrome_emit_searchable_pdf: bool = Form(default=False),
@@ -813,6 +818,7 @@ async def convert_pdf_upload(
         "ocr_preprocess_backend": ocr_preprocess_backend or "none",
         "chrome_screenai_light": chrome_screenai_light,
         "chrome_preprocess_mode": chrome_preprocess_mode or "native",
+        "chrome_remove_annotations": chrome_remove_annotations,
         "chrome_workers": int(chrome_workers or 4),
         "chrome_chunk_pages": int(chrome_chunk_pages or 4),
         "chrome_emit_searchable_pdf": chrome_emit_searchable_pdf,

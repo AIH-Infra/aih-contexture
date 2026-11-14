@@ -6,8 +6,9 @@ in-process and calls its exported C API directly -- no Chrome process and
 no network access at runtime.  The DLL and model files are NOT distributed
 with this package: resolve them via
 ``aih_contexture.backends.external_config.default_screenai_model_dir``.
-Local modifications: upstream modules are copied verbatim, except cli.py
-(the standalone typer CLI), which was not vendored. This __init__ adds one
+Local modifications: cli.py (the standalone typer CLI) was not vendored.
+PDF overlays use Contexture's shared Unicode writer and hidden-text cleanup.
+This __init__ adds one
 seam on top: ``ScreenAI`` is subclassed so a bare ``ScreenAI()`` resolves
 its component directory through
 ``aih_contexture.backends.external_config.ensure_screenai_model_dir``

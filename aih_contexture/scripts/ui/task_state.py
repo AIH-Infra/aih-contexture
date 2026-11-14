@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, MutableMapping
 import os
+import json
 from pathlib import Path
 import shutil
 import tempfile
@@ -53,8 +54,16 @@ def stage_uploaded_files(uploaded_files: Iterable[Any], *, temp_dir: str | os.Pa
     return staged, upload_temp_dir
 
 
-def attach_preread_files(ctx: MutableMapping[str, Any], uploaded_files: Iterable[Any]) -> list[tuple[str, str]]:
+def attach_preread_files(ctx: MutableMapping[str, Any], uploaded_files: Iterable[Any], *, queue=None, suffixes=None) -> list[tuple[str, str]]:
     cleanup_staged_uploads(ctx)
+    uploaded_files = list(uploaded_files)
+    if queue is not None:
+        queue.begin(uploaded_files, suffixes)
+        staged = [(item.path, item.name) for item in uploaded_files]
+        ctx['_upload_queue'] = queue
+        ctx['_input_uploads'] = uploaded_files
+        ctx['_staged_upload_files'] = staged
+        return staged
     staged, upload_temp_dir = stage_uploaded_files(uploaded_files)
     ctx["_staged_upload_files"] = staged
     ctx["_upload_temp_dir"] = upload_temp_dir
@@ -63,11 +72,39 @@ def attach_preread_files(ctx: MutableMapping[str, Any], uploaded_files: Iterable
 
 
 def cleanup_staged_uploads(ctx: MutableMapping[str, Any]) -> None:
+    queue = ctx.get('_upload_queue')
+    if queue is not None:
+        # Only the worker's finalizer can release inputs while it owns them.
+        with queue.lock:
+            if queue.running:
+                return
+        ctx.pop('_upload_queue', None)
+        ctx.pop('_input_uploads', None)
     upload_temp_dir = ctx.pop("_upload_temp_dir", None)
     ctx.pop("_staged_upload_files", None)
     ctx.pop("_preread_files", None)
     if upload_temp_dir and os.path.isdir(os.fspath(upload_temp_dir)):
         shutil.rmtree(os.fspath(upload_temp_dir), ignore_errors=True)
+
+
+def finish_staged_uploads(ctx: MutableMapping[str, Any]) -> None:
+    queue = ctx.get('_upload_queue')
+    if queue is None:
+        return
+    completed = set()
+    try:
+        if not ctx.get('ocr_paused'):
+            inputs = ctx['_input_uploads']
+            for path in ctx.get('document_summary_paths', []):
+                with open(path, encoding='utf-8') as stream:
+                    summary = json.load(stream)
+                if summary['result']['status'] == 'succeeded':
+                    index = summary['file_index'] - 1
+                    if 0 <= index < len(inputs) and summary['source']['name'] == inputs[index].name:
+                        completed.add(inputs[index].path)
+    finally:
+        queue.finish(completed)
+        cleanup_staged_uploads(ctx)
 
 
 def sync_proc_context_to_session(ctx: MutableMapping[str, Any], session_state: MutableMapping[str, Any]) -> None:

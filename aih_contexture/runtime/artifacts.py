@@ -50,7 +50,7 @@ from aih_contexture.runtime.pipeline_preprocess import (
     normalize_ocr_preprocess_backend,
 )
 from aih_contexture.backends.sidecar_pool import SidecarRuntimePool
-from aih_contexture.runtime.job import ContextureResult
+from aih_contexture.runtime.job import ContextureResult, normalize_page_range
 from aih_contexture.runtime.file_lock import retry_windows_io
 from aih_contexture.runtime.run_summary import utc_now_iso, write_document_summary
 from aih_contexture.settings import settings
@@ -934,7 +934,7 @@ def _uniform_reading_batch_options(batch_jobs: list[dict[str, Any]]) -> dict[str
     return first or normalize_reading_render_options({})
 
 
-def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
+def process_pipeline_job(job: dict[str, Any], *, artifacts=None, sidecar_pool=None) -> dict[str, Any]:
     from aih_contexture.runtime.progress_events import emit_progress_event, set_progress_context
 
     start = time.time()
@@ -1048,7 +1048,9 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
 
     file_outputs = []
     preprocess_result = None
-    sidecar_pool = SidecarRuntimePool()
+    owns_sidecar_pool = sidecar_pool is None
+    if owns_sidecar_pool:
+        sidecar_pool = SidecarRuntimePool()
     parallel_outputs = None
 
     try:
@@ -1072,15 +1074,26 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
             ),
         )
         emit_progress_event("stage_changed", "model_loading", message="Loading models")
-        artifacts = create_model_dict()
+        if artifacts is None:
+            artifacts = create_model_dict()
         emit_progress_event("stage_completed", "model_loading", message="Models loaded")
         preprocess_config = dict(batch_jobs[0].get("config_dict", {}) or {}) if batch_jobs else {}
+        batch_ranges = [
+            normalize_page_range((batch.get("config_dict") or {}).get("page_range"))
+            for batch in batch_jobs
+        ]
+        preprocess_pages = (
+            sorted({page for pages in batch_ranges for page in pages})
+            if batch_ranges and all(pages is not None for pages in batch_ranges)
+            else None
+        )
         emit_progress_event("stage_changed", "preprocess", message="Preprocessing PDF")
         preprocess_result = apply_pipeline_pdf_preprocess(
             file_path=file_path,
             output_dir=out_dir_final,
             fname_base=fname_base,
             config=preprocess_config,
+            page_indices=preprocess_pages,
         )
         file_path = preprocess_result.effective_file_path
         emit_progress_event("stage_completed", "preprocess", message="PDF preprocessing completed")
@@ -1111,7 +1124,17 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
                 "batch",
                 message=f"Running {total_batches} batches in {parallel_workers} worker processes",
             )
-            parallel_outputs = iter_parallel_batch_outputs(batch_jobs, parallel_workers, **batch_kwargs)
+            parallel_outputs = iter_parallel_batch_outputs(
+                batch_jobs, parallel_workers,
+                progress_contexts=[
+                    dict(file_name=file_name, document_total_pages=document_total_pages,
+                         batch_index=index + 1, total_batches=total_batches,
+                         batch_label=batch["label"], batch_page_count=batch_page_counts[index],
+                         parallel_batch=True)
+                    for index, batch in enumerate(batch_jobs)
+                ],
+                **batch_kwargs,
+            )
         for bidx, batch_job in enumerate(batch_jobs):
             batch_label = batch_job["label"]
             batch_page_count = batch_page_counts[bidx]
@@ -1391,7 +1414,8 @@ def process_pipeline_job(job: dict[str, Any]) -> dict[str, Any]:
     finally:
         if parallel_outputs is not None:
             parallel_outputs.close()
-        sidecar_pool.close_all()
+        if owns_sidecar_pool:
+            sidecar_pool.close_all()
         cleanup_pipeline_preprocess(preprocess_result)
 
 
@@ -1575,7 +1599,7 @@ def build_pipeline_batch_output(
 
 
 def _pipeline_job_workers(job: dict[str, Any], batch_jobs: list[dict[str, Any]], total_pages: int) -> int:
-    """Re-check the requested worker count against memory free right now."""
+    """Recheck automatic budgets and retain the requested manual concurrency."""
     from aih_contexture.runtime.pipeline_parallelism import (
         MANUAL, describe_plan, layout_batch_size_for, resolve_pipeline_parallelism,
     )
@@ -1589,7 +1613,7 @@ def _pipeline_job_workers(job: dict[str, Any], batch_jobs: list[dict[str, Any]],
         ocr_backend="none" if config.get("disable_ocr") else config.get("ocr_backend"),
         layout_batch_size=layout_batch_size_for(config),
         layout_quality=config.get("surya_layout_quality"),
-        mode=MANUAL,
+        mode=job.get("pipeline_performance_mode") or MANUAL,
         workers=requested,
         pages_per_batch=_pipeline_batch_page_count(batch_jobs[0]),
         total_pages=total_pages,
@@ -1597,7 +1621,7 @@ def _pipeline_job_workers(job: dict[str, Any], batch_jobs: list[dict[str, Any]],
     for note in plan.notes:
         logger.warning("[pipeline-worker] %s", note)
     logger.info("[pipeline-worker] parallel plan: %s", describe_plan(plan))
-    return plan.workers
+    return min(requested, plan.workers, len(batch_jobs))
 
 
 def _pipeline_batch_page_count(batch_job: dict[str, Any]) -> int:

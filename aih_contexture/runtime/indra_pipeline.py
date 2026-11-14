@@ -17,6 +17,7 @@ from aih_contexture.backends.ocr.indra import IndraRuntime, IndraSettings, pages
 from aih_contexture.runtime.errors import ContextureConfigError
 from aih_contexture.runtime.execution import ContextureExecutionContext
 from aih_contexture.runtime.job import ContextureJob, ContextureResult
+from aih_contexture.runtime.pipeline_parallelism import ParallelPlan
 
 LAYOUT_NAME = "indra_layout"
 OCR_NAME = "indra_ocr"
@@ -34,6 +35,9 @@ def run_indra_pipeline(
     input_path: str,
     config: dict[str, Any],
     execution_context: ContextureExecutionContext,
+    *,
+    parallel_plan: ParallelPlan | None = None,
+    finalize_document: bool = True,
 ) -> ContextureResult:
     from aih_contexture.runtime.runner import _apply_middle_contract, _copy_middle_debug_artifact_flags
 
@@ -58,7 +62,7 @@ def run_indra_pipeline(
 
     from aih_contexture.runtime.pipeline_parallelism import plan_indra_workers
 
-    plan = plan_indra_workers(config, total_pages=len(pages))
+    plan = parallel_plan if parallel_plan is not None else plan_indra_workers(config, total_pages=len(pages))
     execution_context.emit({"event": "indra_started", "stage": "ocr", "mode": "pipeline", "pages": len(pages), "cores": plan.workers})
     runtime = IndraRuntime(settings)
     try:
@@ -93,7 +97,8 @@ def run_indra_pipeline(
         + ([f"Indra was unsure about page(s) {', '.join(map(str, flagged))}; consider another backend for them."] if flagged and reading_diagnostics_enabled(config) else []),
         metadata={"indra": {"version": runtime.version, "wall_seconds": runtime.last_wall_seconds, "parallel_plan": plan.to_dict(), "review": review, **evidence}},
     )
-    _apply_middle_contract(result, middle, {**config, "render_from_middle": True}, output_format="markdown")
+    if finalize_document:
+        _apply_middle_contract(result, middle, {**config, "render_from_middle": True}, output_format="markdown")
     if "json" in job.output_formats:  # the Middle document is this route's structured output
         result.json_text = json.dumps(result.middle_json, ensure_ascii=False)
     _copy_middle_debug_artifact_flags(config, result)

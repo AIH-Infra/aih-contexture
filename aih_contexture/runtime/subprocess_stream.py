@@ -69,7 +69,8 @@ class _ProgressMetrics:
             )
             enriched.setdefault("elapsed_seconds", max(0.0, now - state["started_at"]))
             document_total = int(enriched.get("document_total_pages") or 0)
-            if "current" not in enriched and document_total > 0:
+            parallel_batch = bool(enriched.get("parallel_batch"))
+            if "current" not in enriched and document_total > 0 and not parallel_batch:
                 enriched["current"] = int(state.get("overall_current") or 0)
                 enriched["total"] = document_total
                 enriched["unit"] = "pages"
@@ -88,13 +89,14 @@ class _ProgressMetrics:
                 unit == "pages"
                 and document_total > 0
                 and not bool(enriched.get("absolute_progress"))
+                and not parallel_batch
             ):
                 current = int(enriched.get("batch_page_offset") or 0) + current
                 total = document_total
                 current = max(current, int(state.get("overall_current") or 0))
                 enriched["current"] = current
                 enriched["total"] = total
-            if unit == "pages":
+            if unit == "pages" and not parallel_batch:
                 state["overall_current"] = max(
                     int(state.get("overall_current") or 0),
                     current,
@@ -112,6 +114,8 @@ class _ProgressMetrics:
             ):
                 enriched["average_rate_per_second"] = current / total_elapsed
             scope = str(enriched.get("rate_scope") or enriched.get("stage") or unit)
+            if parallel_batch:
+                scope = f"{enriched.get('batch_index')}/{scope}"
             last_current = state.get("last_current")
             if state.get("scope") != scope or (
                 last_current is not None and current < int(last_current)

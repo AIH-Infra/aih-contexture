@@ -4,6 +4,7 @@ import base64
 import json
 import shutil
 import sys
+import time
 import traceback
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,62 @@ class _FileProgressWriter:
         )
 
 
+def _write_chunk_result(path: Path, result: dict[str, Any]) -> None:
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _run_chunk_lane(job: dict[str, Any]) -> int:
+    """Reuse one isolated ScreenAI runtime across this lane's page chunks."""
+    runtime = ChromeScreenAIRuntime(
+        model_dir=job.get("model_dir"),
+        light_mode=bool(job.get("light_mode", False)),
+        preprocess_mode=str(job.get("preprocess_mode", "native")),
+        remove_annotations=bool(job.get("remove_annotations", True)),
+        workers=1,
+        chunk_pages=1,
+        batch_rest=0.0,
+        rasterize_dpi=max(72, int(job.get("rasterize_dpi", 144) or 144)),
+        emit_searchable_pdf=False,
+        max_retries=max(1, int(job.get("max_retries", 1) or 1)),
+        progress_callback=None,
+    )
+    input_pdf = Path(job["input_pdf"])
+    result_dir = Path(job["result_dir"])
+    chunks = job.get("chunks")
+    if not isinstance(chunks, list):
+        raise ValueError("ScreenAI chunk lane requires a chunks list")
+    batch_rest = max(0.0, float(job.get("batch_rest", 0) or 0))
+
+    try:
+        for chunk_offset, chunk in enumerate(chunks):
+            chunk_index = int(chunk["chunk_index"])
+            page_indices = [int(index) for index in chunk["page_indices"]]
+            chunk_result: dict[str, Any]
+            try:
+                pages = []
+                for page_index in page_indices:
+                    result = runtime._ocr_pdf_page_with_retry(input_pdf, page_index, page_index)
+                    pages.append({
+                        "page_index": result.page_index,
+                        "markdown": result.markdown,
+                        "clean_html": result.clean_html,
+                        "printed_page": result.printed_page,
+                        "chunk_page": result.chunk_page,
+                    })
+                chunk_result = {"chunk_index": chunk_index, "ok": True, "pages": pages}
+            except Exception as exc:
+                chunk_result = {"chunk_index": chunk_index, "ok": False, "error": str(exc)}
+
+            _write_chunk_result(result_dir / f"chunk_{chunk_index}.json", chunk_result)
+            if chunk_offset + 1 < len(chunks) and batch_rest > 0:
+                time.sleep(batch_rest)
+    finally:
+        runtime._close_thread_pdf_docs()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if len(argv) != 1:
@@ -49,29 +106,43 @@ def main(argv: list[str] | None = None) -> int:
 
     job: dict[str, Any] | None = None
     try:
-        job = json.loads(base64.b64decode(argv[0]).decode("utf-8"))
-        progress = _FileProgressWriter(Path(job["progress_json"]), page_total=int(job.get("page_count", 0) or 0))
+        job_argument = argv[0]
+        if job_argument.startswith("@"):
+            job = json.loads(Path(job_argument[1:]).read_text(encoding="utf-8"))
+        else:
+            job = json.loads(base64.b64decode(job_argument).decode("utf-8"))
+        if job.get("collect_chunks"):
+            return _run_chunk_lane(job)
+
+        collect_pages = bool(job.get("collect_pages"))
+        progress = None
+        if not collect_pages and job.get("progress_json"):
+            progress = _FileProgressWriter(
+                Path(job["progress_json"]),
+                page_total=int(job.get("page_count", 0) or 0),
+            )
         runtime = ChromeScreenAIRuntime(
             model_dir=job.get("model_dir"),
             light_mode=bool(job.get("light_mode", False)),
             preprocess_mode=str(job.get("preprocess_mode", "native")),
+            remove_annotations=bool(job.get("remove_annotations", True)),
             workers=1,
             chunk_pages=max(1, int(job.get("page_count", 1) or 1)),
             batch_rest=0.0,
             rasterize_dpi=max(72, int(job.get("rasterize_dpi", 144) or 144)),
             emit_searchable_pdf=True,
             max_retries=max(1, int(job.get("max_retries", 1) or 1)),
-            progress_callback=progress.on_event,
+            progress_callback=progress.on_event if progress is not None else None,
         )
         input_pdf = Path(job["input_pdf"])
         page_indices = job.get("page_indices")
         if not isinstance(page_indices, list):
             page_indices = list(range(int(job.get("page_count", 0) or 0)))
         page_indices = [int(index) for index in page_indices]
-        if job.get("collect_pages"):
+        if collect_pages:
             runtime.emit_searchable_pdf = False
         payload = runtime.process_document(input_pdf, page_indices)
-        if job.get("collect_pages"):
+        if collect_pages:
             Path(job["result_json"]).write_text(
                 json.dumps({"ok": True, "pages": [
                     {

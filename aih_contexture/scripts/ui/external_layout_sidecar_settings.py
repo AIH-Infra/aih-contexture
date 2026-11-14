@@ -2,12 +2,8 @@ from __future__ import annotations
 
 
 def render_external_layout_sidecar_settings(st, *, description: str) -> dict:
-    st.info(
-        description
-        + "\n\n"
-        "读取已经生成好的版面 JSON，不在 Contexture 内启动版面模型。"
-        "适用于先用外部工具离线跑版面识别，再进入 Contexture Pipeline 的流程。"
-    )
+    if str(description or "").strip():
+        st.caption(description)
 
     external_layout_json = st.text_input(
         "外部版面 JSON 路径",

@@ -32,12 +32,6 @@ def render_middle_debug_settings(st, *, key_prefix: str = "pipeline", force_enab
     key = _key(key_prefix, "emit_middle_json")
     if getattr(st, "session_state", None) is not None:
         st.session_state[key] = True
-    st.checkbox(
-        "Middle JSON 核心文件（必需）",
-        disabled=True,
-        help="成功转换始终保存 *_middle.json，供复查与重新渲染。下方报告、调试文件和附加的阅读 Markdown 可按需开启。",
-        key=key,
-    )
     return True
 
 

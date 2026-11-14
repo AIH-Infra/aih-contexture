@@ -300,6 +300,7 @@ class OcrDirectAsyncConverter(BaseConverter):
                 model_dir=self.chrome_model_dir,
                 light_mode=self.chrome_screenai_light,
                 preprocess_mode=self.chrome_preprocess_mode,
+                remove_annotations=bool(config.get("chrome_remove_annotations", True)),
                 workers=self.chrome_workers,
                 chunk_pages=self.chrome_chunk_pages,
                 batch_rest=self.batch_rest,
@@ -1635,13 +1636,18 @@ class OcrDirectAsyncConverter(BaseConverter):
         Args:
             batch: 页面图像列表
             batch_start_idx: 批次起始索引
-            global_semaphore: 全局信号量（已弃用，保留兼容性）
+            global_semaphore: 当前任务内所有文件共享的 API 请求预算
 
         Returns:
             处理结果列表
         """
         all_results = []
         concurrency = self.concurrency
+        if global_semaphore is not None and self.ocr_service is not None:
+            # Each file owns its service, while the semaphore is shared by the
+            # file runners. Specialized VLM services acquire it before image
+            # crops/encoding and hold it through retries and the HTTP response.
+            self.ocr_service.config["shared_request_semaphore"] = global_semaphore
 
         async with aiohttp.ClientSession() as session:
             # 将 batch 分成小批次，每批 = 并发数

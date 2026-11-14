@@ -19,7 +19,8 @@ def render_surya2_vlm_settings(
     def state_value(name: str, default: Any) -> Any:
         return st.session_state.get(widget_key(name), st.session_state.get(name, default))
 
-    st.markdown(description)
+    if str(description or "").strip():
+        st.caption(description)
     api_style_options = ["openai", "lmstudio-native"]
     api_style = st.selectbox(
         "协议风格",

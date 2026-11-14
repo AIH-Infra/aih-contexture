@@ -42,7 +42,9 @@ class IndraLayoutBuilder(ExternalLayoutSidecarBuilder):
             sizes = {index: (float(pdf[index].rect.width), float(pdf[index].rect.height)) for index in indices}
 
         plan = plan_indra_workers(self._config, total_pages=len(indices))
-        runtime = self.runtime or IndraRuntime(self.settings)
+        pool = self._config.get("_sidecar_runtime_pool")
+        runtime = self.runtime or (IndraRuntime(self.settings, pool=pool) if pool is not None else IndraRuntime(self.settings))
+        runtime.progress_stage = "layout"
         try:
             pages = runtime.run(pdf_path, indices, cores=plan.workers)
         except RuntimeError as exc:

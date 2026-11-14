@@ -49,6 +49,8 @@ def indra_review_from_document(document: dict[str, Any]) -> dict[str, Any]:
             reasons = []
             if observation.get("source") == "error":
                 reasons.append("unreadable")
+            if observation.get("missing_text_layer") and observation.get("detected_lines", 0) > 0:
+                reasons.append("missing_text_layer")
             if mean is not None and mean < mean_limit:
                 reasons.append("low_mean_line_confidence")
             if lowest is not None and lowest < min_limit:

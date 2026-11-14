@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -448,7 +449,8 @@ def save_vlm_specialized_outputs(
     searchable_pdf_path = (converter.last_searchable_pdf_path if converter is not None else (result.searchable_pdf_path if result is not None else None))
     if isinstance(searchable_pdf_path, str) and searchable_pdf_path and os.path.isfile(searchable_pdf_path):
         target_pdf = Path(output_dir) / f"{fname_base}.searchable.pdf"
-        target_pdf.write_bytes(Path(searchable_pdf_path).read_bytes())
+        if not target_pdf.exists() or not os.path.samefile(searchable_pdf_path, target_pdf):
+            shutil.copyfile(searchable_pdf_path, target_pdf)
         output_files.append(str(target_pdf))
 
     _require_middle_json(output_dir, fname_base, mode="vlm_specialized")

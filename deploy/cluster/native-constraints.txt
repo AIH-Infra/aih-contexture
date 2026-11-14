@@ -1,0 +1,8 @@
+# Tested CPU profile. Install CPU PyTorch separately on Linux and constrain
+# its resolved version when installing the main requirements.
+indra-ocr==1.1.2
+pymupdf==1.27.2.3
+pypdf==6.19.0
+pypdfium2==4.30.0
+surya-ocr==0.17.1
+onnxruntime>=1.23,<2

@@ -29,10 +29,10 @@ from aih_contexture.runtime.console_text import safe_endpoint_for_log
 
 
 def read_markdown_input(file_obj: Any, upload_mode: str) -> tuple[str, str]:
-    if upload_mode == "上传文件":
+    if upload_mode == "上传文件" and not isinstance(file_obj, os.PathLike):
         return file_obj.name, file_obj.getvalue().decode("utf-8")
 
-    file_name = os.path.basename(os.fspath(file_obj))
+    file_name = getattr(file_obj, 'name', None) or os.path.basename(os.fspath(file_obj))
     with open(file_obj, "r", encoding="utf-8", newline="") as f:
         return file_name, f.read()
 
@@ -108,11 +108,11 @@ def read_json_input(file_obj: Any, upload_mode: str) -> tuple[str, dict[str, Any
 
 
 def read_json_payload_input(file_obj: Any, upload_mode: str) -> tuple[str, Any]:
-    if upload_mode == "上传文件":
+    if upload_mode == "上传文件" and not isinstance(file_obj, os.PathLike):
         file_name = file_obj.name
         raw_text = file_obj.getvalue().decode("utf-8")
     else:
-        file_name = os.path.basename(os.fspath(file_obj))
+        file_name = getattr(file_obj, 'name', None) or os.path.basename(os.fspath(file_obj))
         with open(file_obj, "r", encoding="utf-8") as f:
             raw_text = f.read()
 
@@ -492,7 +492,9 @@ def run_markdown_postprocess_batch(
     total_files = len(uploaded_files)
 
     def _source_info(file_obj: Any) -> dict[str, Any]:
-        """本地文件取路径；上传文件读取 bytes 计算 size/SHA-256。"""
+        """Use disk paths or the supplied legacy upload bytes for provenance."""
+        if isinstance(file_obj, os.PathLike):
+            return {"source_path": os.fspath(file_obj)}
         if upload_mode != "上传文件":
             try:
                 return {"source_path": os.fspath(file_obj)}

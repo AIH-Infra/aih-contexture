@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from contextlib import asynccontextmanager
 from io import BytesIO
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlparse
 
 import aiohttp
@@ -229,25 +230,30 @@ class OpenAICompatibleVlmMixin:
         include_system: bool = True,
         max_tokens_field: str = "max_tokens",
         extra: dict[str, Any] | None = None,
+        _request_slot_held: bool = False,
     ) -> tuple[str, dict[str, Any]]:
-        image_b64 = self._image_to_base64(img, image_format=image_format, quality=image_quality)
-        payload = self._build_payload(
-            image_b64=image_b64,
-            prompt=prompt,
-            image_format=image_format,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            include_system=include_system,
-            max_tokens_field=max_tokens_field,
-            extra=extra,
-        )
-        request_semaphore = self._vlm_request_semaphore()
-        if request_semaphore is None:
-            body = await self._send_payload_with_probe(session, payload=payload, api_key=api_key, prompt=prompt)
+        async def send() -> dict[str, Any]:
+            image_b64 = self._image_to_base64(img, image_format=image_format, quality=image_quality)
+            payload = self._build_payload(
+                image_b64=image_b64,
+                prompt=prompt,
+                image_format=image_format,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                include_system=include_system,
+                max_tokens_field=max_tokens_field,
+                extra=extra,
+            )
+            return await self._send_payload_with_probe(
+                session, payload=payload, api_key=api_key, prompt=prompt
+            )
+
+        if _request_slot_held:
+            body = await send()
         else:
-            async with request_semaphore:
-                body = await self._send_payload_with_probe(session, payload=payload, api_key=api_key, prompt=prompt)
+            async with self._request_slot():
+                body = await send()
         return self._extract_response_text(body).strip(), body
 
     async def _send_payload_with_probe(
@@ -304,6 +310,74 @@ class OpenAICompatibleVlmMixin:
             self._vlm_request_semaphore_loop = loop
         return semaphore
 
+    @asynccontextmanager
+    async def _request_slot(self):
+        """Reserve task-wide and backend-local request capacity before image work."""
+        shared = self.config.get("shared_request_semaphore")
+        local = self._vlm_request_semaphore()
+        local_acquired = False
+        shared_acquired = False
+        try:
+            if local is not None:
+                await local.acquire()
+                local_acquired = True
+            if shared is not None:
+                await shared.acquire()
+                shared_acquired = True
+            yield
+        finally:
+            if shared_acquired:
+                shared.release()
+            if local_acquired and local is not None:
+                local.release()
+
+    @staticmethod
+    def _retryable_http_status(status: int) -> bool:
+        return status in {408, 425, 429} or status >= 500
+
+    async def _post_json_with_retries(
+        self,
+        session: aiohttp.ClientSession,
+        *,
+        url: str,
+        payload: dict[str, Any],
+        headers: dict[str, str],
+        format_error: Callable[[int, str], str],
+        invalid_json_message: str,
+    ) -> dict[str, Any]:
+        """Retry temporary transport/upstream errors using the already-built payload."""
+        attempts = max(1, int(getattr(self, "max_retries", 3) or 1))
+        for attempt in range(attempts):
+            retry_delay = 0.0
+            try:
+                timeout = aiohttp.ClientTimeout(total=self.ocr_timeout)
+                async with session.post(url, json=payload, headers=headers, timeout=timeout) as response:
+                    text = await response.text()
+                    if response.status != 200:
+                        error = RuntimeError(format_error(response.status, text))
+                        if not self._retryable_http_status(response.status) or attempt + 1 >= attempts:
+                            raise error
+                        retry_delay = min(0.5 * (attempt + 1), 2.0)
+                    else:
+                        try:
+                            return json.loads(text)
+                        except json.JSONDecodeError as exc:
+                            raise RuntimeError(f"{invalid_json_message}: {text[:1000]}") from exc
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                if attempt + 1 >= attempts:
+                    raise
+                retry_delay = min(0.5 * (attempt + 1), 2.0)
+
+            logger.warning(
+                "[VLM request retry] backend=%s attempt=%s/%s delay=%.1fs",
+                self._probe_backend_name(),
+                attempt + 1,
+                attempts,
+                retry_delay,
+            )
+            await asyncio.sleep(retry_delay)
+        raise RuntimeError("VLM request exhausted configured retries")
+
     async def _send_payload(
         self,
         session: aiohttp.ClientSession,
@@ -311,20 +385,14 @@ class OpenAICompatibleVlmMixin:
         payload: dict[str, Any],
         api_key: str | None = None,
     ) -> dict[str, Any]:
-        timeout = aiohttp.ClientTimeout(total=self.ocr_timeout)
-        async with session.post(
-            self.ocr_endpoint,
-            json=payload,
+        return await self._post_json_with_retries(
+            session,
+            url=self.ocr_endpoint,
+            payload=payload,
             headers=self._headers(api_key),
-            timeout=timeout,
-        ) as response:
-            text = await response.text()
-            if response.status != 200:
-                raise RuntimeError(self._format_vlm_api_error(response.status, text))
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(f"VLM API returned invalid JSON: {text[:1000]}") from exc
+            format_error=self._format_vlm_api_error,
+            invalid_json_message="VLM API returned invalid JSON",
+        )
 
     def _format_vlm_api_error(self, status: int, text: str) -> str:
         snippet = text[:1000]
@@ -469,19 +537,16 @@ class OcrPaddleOCRVLService(OpenAICompatibleVlmMixin, BaseOcrService):
         url = self._layout_parsing_url()
         if not url:
             raise RuntimeError("PaddleOCR-VL layout parsing URL is not configured.")
-        image_b64 = self._image_to_base64(img, image_format=self.image_format, quality=self.image_quality)
-        payload = {
-            "file": image_b64,
-            "fileType": 1,
-            "visualize": False,
-        }
-        options = self.config.get("paddleocr_vl_layout_parsing_options")
-        if isinstance(options, dict):
-            payload.update(options)
-        request_semaphore = self._vlm_request_semaphore()
-        if request_semaphore is None:
-            return await self._send_layout_parsing_payload(session, url=url, payload=payload, api_key=api_key)
-        async with request_semaphore:
+        async with self._request_slot():
+            image_b64 = self._image_to_base64(img, image_format=self.image_format, quality=self.image_quality)
+            payload = {
+                "file": image_b64,
+                "fileType": 1,
+                "visualize": False,
+            }
+            options = self.config.get("paddleocr_vl_layout_parsing_options")
+            if isinstance(options, dict):
+                payload.update(options)
             return await self._send_layout_parsing_payload(session, url=url, payload=payload, api_key=api_key)
 
     async def _send_layout_parsing_payload(
@@ -492,20 +557,14 @@ class OcrPaddleOCRVLService(OpenAICompatibleVlmMixin, BaseOcrService):
         payload: dict[str, Any],
         api_key: str | None = None,
     ) -> dict[str, Any]:
-        timeout = aiohttp.ClientTimeout(total=self.ocr_timeout)
-        async with session.post(
-            url,
-            json=payload,
+        body = await self._post_json_with_retries(
+            session,
+            url=url,
+            payload=payload,
             headers=self._layout_parsing_headers(api_key),
-            timeout=timeout,
-        ) as response:
-            text = await response.text()
-            if response.status != 200:
-                raise RuntimeError(self._format_layout_parsing_error(response.status, text))
-            try:
-                body = json.loads(text)
-            except json.JSONDecodeError as exc:
-                raise RuntimeError(f"PaddleOCR-VL layout parsing API returned invalid JSON: {text[:1000]}") from exc
+            format_error=self._format_layout_parsing_error,
+            invalid_json_message="PaddleOCR-VL layout parsing API returned invalid JSON",
+        )
         if isinstance(body, dict) and body.get("errorCode", 0) not in {0, "0", None}:
             raise RuntimeError(f"PaddleOCR-VL layout parsing API error: {body.get('errorMsg', 'Unknown error')}")
         if not isinstance(body, dict):
@@ -707,18 +766,20 @@ class OcrMinerUVLService(OpenAICompatibleVlmMixin, BaseOcrService):
         img: Image.Image,
         api_key: str | None = None,
     ) -> dict[str, Any]:
-        layout_img = img.convert("RGB").resize(self.layout_image_size, Image.Resampling.BICUBIC)
-        layout_text, layout_raw = await self._post_vlm(
-            session,
-            img=layout_img,
-            prompt=MINERU_PROMPTS["layout"],
-            api_key=api_key,
-            image_format="PNG",
-            image_quality=self.image_quality,
-            temperature=0.0,
-            top_p=0.01,
-            extra={"skip_special_tokens": False} if self.ocr_api_style != "lmstudio-native" else None,
-        )
+        async with self._request_slot():
+            layout_img = img.convert("RGB").resize(self.layout_image_size, Image.Resampling.BICUBIC)
+            layout_text, layout_raw = await self._post_vlm(
+                session,
+                img=layout_img,
+                prompt=MINERU_PROMPTS["layout"],
+                api_key=api_key,
+                image_format="PNG",
+                image_quality=self.image_quality,
+                temperature=0.0,
+                top_p=0.01,
+                extra={"skip_special_tokens": False} if self.ocr_api_style != "lmstudio-native" else None,
+                _request_slot_held=True,
+            )
         blocks = self._parse_layout(layout_text, img.size)
         if not blocks:
             return {
@@ -733,19 +794,21 @@ class OcrMinerUVLService(OpenAICompatibleVlmMixin, BaseOcrService):
 
         async def extract(block: dict[str, Any]) -> dict[str, Any]:
             async with sem:
-                crop = self._crop_block(img, block["bbox"])
-                prompt = self._prompt_for_type(str(block["label"]))
-                text, raw = await self._post_vlm(
-                    session,
-                    img=crop,
-                    prompt=prompt,
-                    api_key=api_key,
-                    image_format="PNG",
-                    image_quality=self.image_quality,
-                    temperature=0.0,
-                    top_p=0.01,
-                    extra={"skip_special_tokens": False} if self.ocr_api_style != "lmstudio-native" else None,
-                )
+                async with self._request_slot():
+                    crop = self._crop_block(img, block["bbox"])
+                    prompt = self._prompt_for_type(str(block["label"]))
+                    text, raw = await self._post_vlm(
+                        session,
+                        img=crop,
+                        prompt=prompt,
+                        api_key=api_key,
+                        image_format="PNG",
+                        image_quality=self.image_quality,
+                        temperature=0.0,
+                        top_p=0.01,
+                        extra={"skip_special_tokens": False} if self.ocr_api_style != "lmstudio-native" else None,
+                        _request_slot_held=True,
+                    )
                 block["text"] = text
                 block["raw_prompt"] = prompt
                 block["raw_response"] = raw
@@ -874,18 +937,20 @@ class OcrSurya2Service(OpenAICompatibleVlmMixin, BaseOcrService):
         img: Image.Image,
         api_key: str | None = None,
     ) -> dict[str, Any]:
-        layout_text, layout_raw = await self._post_vlm(
-            session,
-            img=img.convert("RGB"),
-            prompt=SURYA2_PROMPTS["layout"],
-            api_key=api_key,
-            image_format=self.image_format,
-            image_quality=self.image_quality,
-            temperature=0.0,
-            top_p=0.01,
-            include_system=False,
-            max_tokens=min(self.ocr_max_tokens, 4096),
-        )
+        async with self._request_slot():
+            layout_text, layout_raw = await self._post_vlm(
+                session,
+                img=img,
+                prompt=SURYA2_PROMPTS["layout"],
+                api_key=api_key,
+                image_format=self.image_format,
+                image_quality=self.image_quality,
+                temperature=0.0,
+                top_p=0.01,
+                include_system=False,
+                max_tokens=min(self.ocr_max_tokens, 4096),
+                _request_slot_held=True,
+            )
         blocks = parse_surya2_layout_json(layout_text, page_size=img.size)
         if not blocks:
             html_text, raw = await self._ocr_block_async(session, img, api_key=api_key)
@@ -913,19 +978,21 @@ class OcrSurya2Service(OpenAICompatibleVlmMixin, BaseOcrService):
 
         async def extract(block: dict[str, Any]) -> dict[str, Any]:
             async with sem:
-                crop = self._crop_block(img, block["bbox"])
-                prompt = self._prompt_for_block(block)
-                html_text, raw = await self._post_vlm(
-                    session,
-                    img=crop,
-                    prompt=prompt,
-                    api_key=api_key,
-                    image_format=self.image_format,
-                    image_quality=self.image_quality,
-                    temperature=0.0,
-                    top_p=0.01,
-                    include_system=False,
-                )
+                async with self._request_slot():
+                    crop = self._crop_block(img, block["bbox"])
+                    prompt = self._prompt_for_block(block)
+                    html_text, raw = await self._post_vlm(
+                        session,
+                        img=crop,
+                        prompt=prompt,
+                        api_key=api_key,
+                        image_format=self.image_format,
+                        image_quality=self.image_quality,
+                        temperature=0.0,
+                        top_p=0.01,
+                        include_system=False,
+                        _request_slot_held=True,
+                    )
                 return normalize_surya2_ocr_block(block, html_text=html_text, raw_response=raw, raw_prompt=prompt)
 
         extracted = await asyncio.gather(*(extract(block) for block in blocks))
@@ -977,7 +1044,7 @@ class OcrSurya2Service(OpenAICompatibleVlmMixin, BaseOcrService):
     ) -> tuple[str, dict[str, Any]]:
         return await self._post_vlm(
             session,
-            img=img.convert("RGB"),
+            img=img,
             prompt=SURYA2_PROMPTS["ocr"],
             api_key=api_key,
             image_format=self.image_format,
@@ -1125,7 +1192,7 @@ class OcrGlmOcrService(OpenAICompatibleVlmMixin, BaseOcrService):
         prompt = glm_ocr_prompt(label)
         text, raw = await self._post_vlm(
             session,
-            img=img.convert("RGB"),
+            img=img,
             prompt=prompt,
             api_key=api_key,
             image_format=self.image_format,

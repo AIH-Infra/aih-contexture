@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -19,8 +20,11 @@ import pymupdf
 from aih_contexture.backends.ocr.indra.settings import WORKER_PATH, IndraSettings, check_ready
 from aih_contexture.backends.sidecar_pool import SidecarProcessSpec, SidecarRuntimePool
 
-CACHE_VERSION = 3
+CACHE_VERSION = 5
 _MODEL_CONTENT_SUFFIXES = {".onnx", ".npz", ".json", ".safetensors"}
+_LAYOUT_MODEL_NAMES = {"det.onnx", "meta.json", "order.onnx"}
+_MATH_MODEL_PREFIXES = ("math",)
+_IDENTITY_CACHE_ATTR = "_contexture_indra_identity_cache"
 
 
 def _file_digest(path: Path) -> str:
@@ -31,15 +35,63 @@ def _file_digest(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _file_fingerprint(path: Path) -> tuple[int, int, int, int, int]:
+    stat = path.stat()
+    return (
+        int(stat.st_dev),
+        int(stat.st_ino),
+        int(stat.st_size),
+        int(stat.st_mtime_ns),
+        int(stat.st_ctime_ns),
+    )
+
+
+class IndraIdentityCache:
+    """Task-scoped content digests, invalidated when a file changes on disk."""
+
+    def __init__(self) -> None:
+        self._digests: dict[Path, tuple[tuple[int, int, int, int, int], str]] = {}
+        self._lock = threading.RLock()
+
+    def digest(self, path: str | Path) -> str:
+        resolved = Path(path).expanduser().resolve()
+        with self._lock:
+            for _ in range(2):
+                before = _file_fingerprint(resolved)
+                cached = self._digests.get(resolved)
+                if cached is not None and cached[0] == before:
+                    return cached[1]
+
+                digest = _file_digest(resolved)
+                after = _file_fingerprint(resolved)
+                if before == after:
+                    self._digests[resolved] = (after, digest)
+                    return digest
+
+            raise RuntimeError(f"File changed while computing Indra identity: {resolved}")
+
+
+def _identity_cache_for_pool(pool: SidecarRuntimePool | None) -> IndraIdentityCache:
+    if pool is None:
+        return IndraIdentityCache()
+    cache = getattr(pool, _IDENTITY_CACHE_ATTR, None)
+    if cache is None:
+        cache = IndraIdentityCache()
+        setattr(pool, _IDENTITY_CACHE_ATTR, cache)
+    return cache
+
+
 class IndraRuntime:
     def __init__(self, settings: IndraSettings, *, pool: SidecarRuntimePool | None = None):
         self.settings = settings
         self._owns_pool = pool is None
         self._pool = pool if pool is not None else SidecarRuntimePool()
+        self._identity_cache = _identity_cache_for_pool(pool)
         self._memory: dict[str, dict[str, Any]] = {}
         self._model_identity: str | None = None
         self.version: str | None = None
         self.last_wall_seconds: float | None = None
+        self.progress_stage = "ocr"
 
     def close(self) -> None:
         if self._owns_pool:
@@ -65,11 +117,15 @@ class IndraRuntime:
         # Refresh once per run, not once per page. This also detects model files
         # replaced in-place between calls on a long-lived runtime.
         self._model_identity = self._current_model_identity()
-        digest = _file_digest(pdf)
+        # Without an explicit model directory the sidecar may resolve weights
+        # from a managed/download cache that this process cannot fingerprint.
+        # Keep the result cache off in that case instead of risking stale pages.
+        cacheable = bool(self.settings.model_dir)
+        digest = self._identity_cache.digest(pdf) if cacheable else None
         found: dict[int, dict] = {}
         missing = []
         for index in wanted:
-            cached = self._cache_get(digest, index)
+            cached = self._cache_get(digest, index) if digest is not None else None
             if cached is not None:
                 found[index] = cached
             else:
@@ -77,7 +133,8 @@ class IndraRuntime:
         if missing:
             for index, page in self._convert(pdf, missing, cores).items():
                 found[index] = page
-                self._cache_put(digest, index, page)
+                if digest is not None:
+                    self._cache_put(digest, index, page)
         return {index: found[index] for index in wanted}
 
     def info(self) -> dict[str, Any]:
@@ -105,6 +162,18 @@ class IndraRuntime:
         problems = check_ready(self.settings)
         if problems:
             raise RuntimeError("Indra OCR is not ready: " + "; ".join(problems))
+        if self.settings.layout_only:
+            result = self._pool.request(self._spec(), "convert", {
+                "pdf": str(pdf), "page_indices": indices, "layout_only": True,
+                "dpi": self.settings.dpi, "cores": cores or self.settings.cores,
+                "model_dir": self.settings.model_dir, "model_identity": self._model_identity,
+                "progress_stage": self.progress_stage,
+            })
+            self.version = result.get("version") or self.version
+            self.last_wall_seconds = result.get("wall_seconds")
+            if len(result["pages"]) != len(indices):
+                raise RuntimeError("Indra returned an incomplete layout batch")
+            return {indices[page["page_num"]]: page for page in result["pages"]}
         with pymupdf.open(str(pdf)) as document:
             whole = len(indices) == len(document)
         with tempfile.TemporaryDirectory(prefix="contexture-indra-") as temp_dir:
@@ -122,6 +191,8 @@ class IndraRuntime:
                 "math": self.settings.math,
                 "cores": cores or self.settings.cores,
                 "model_dir": self.settings.model_dir,
+                "model_identity": self._model_identity,
+                "progress_stage": self.progress_stage,
             })
         self.version = result.get("version") or self.version
         self.last_wall_seconds = result.get("wall_seconds")
@@ -136,7 +207,7 @@ class IndraRuntime:
         s = self.settings
         if self._model_identity is None:
             raise RuntimeError("Indra cache identity has not been initialized; call run() first")
-        return f"v{CACHE_VERSION}-{digest[:32]}-p{index}-{s.mode}-{s.dpi}-{int(s.math)}-{self._model_identity[:24]}"
+        return f"v{CACHE_VERSION}-{digest[:32]}-p{index}-{s.mode}-{s.dpi}-{int(s.math)}-{int(s.layout_only)}-{self._model_identity[:24]}"
 
     def _current_model_identity(self) -> str:
         """Hash local inference assets and the worker protocol without starting Indra.
@@ -148,7 +219,7 @@ class IndraRuntime:
         cover OCR, layout ordering, and math assets.
         """
         identity = hashlib.sha256()
-        identity.update(f"worker:{_file_digest(WORKER_PATH)}\n".encode("utf-8"))
+        identity.update(f"worker:{self._identity_cache.digest(WORKER_PATH)}\n".encode("utf-8"))
         package_version = self._local_indra_version()
         identity.update(f"indra_ocr:{package_version or '<external-or-unavailable>'}\n".encode("utf-8"))
         interpreter = Path(self.settings.python or sys.executable).expanduser()
@@ -162,21 +233,31 @@ class IndraRuntime:
         model_dir = Path(self.settings.model_dir).expanduser() if self.settings.model_dir else None
         model_dir_stamp = str(model_dir.resolve()) if model_dir else "<indra-managed-models>"
         identity.update(f"model_dir:{model_dir_stamp}\n".encode("utf-8"))
-        if model_dir is not None and model_dir.is_dir():
-            model_files = sorted(
-                (
-                    path for path in model_dir.iterdir()
-                    if path.is_file() and path.suffix.lower() in _MODEL_CONTENT_SUFFIXES
-                ),
-                key=lambda path: path.name.lower(),
-            )
-        else:
-            model_files = []
+        model_files = self._used_model_files(model_dir)
         for path in model_files:
             identity.update(f"{path.name}:".encode("utf-8"))
-            identity.update(bytes.fromhex(_file_digest(path)))
+            identity.update(bytes.fromhex(self._identity_cache.digest(path)))
             identity.update(b"\n")
         return identity.hexdigest()
+
+    def _used_model_files(self, model_dir: Path | None) -> list[Path]:
+        if model_dir is None or not model_dir.is_dir():
+            return []
+        model_files = sorted(
+            (
+                path for path in model_dir.iterdir()
+                if path.is_file() and path.suffix.lower() in _MODEL_CONTENT_SUFFIXES
+            ),
+            key=lambda path: path.name.lower(),
+        )
+        if self.settings.layout_only:
+            return [path for path in model_files if path.name.lower() in _LAYOUT_MODEL_NAMES]
+        if not self.settings.math:
+            return [
+                path for path in model_files
+                if not path.name.lower().startswith(_MATH_MODEL_PREFIXES)
+            ]
+        return model_files
 
     def _local_indra_version(self) -> str | None:
         """Return package metadata only when it belongs to the selected interpreter."""

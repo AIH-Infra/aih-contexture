@@ -19,8 +19,11 @@ def reading_review_status(document, tables=None):
     indra_by_page = {}
     for stage, observations in indra_review_from_document(document).get('stages', {}).items():
         for observation in observations:
+            reason = 'indra_ocr_low_confidence' if stage == 'ocr' else 'indra_layout_auxiliary_low_confidence'
+            if 'missing_text_layer' in observation.get('reasons', []):
+                reason = 'indra_missing_text_layer'
             indra_by_page.setdefault(observation['page_index'], []).append({
-                'reason': 'indra_ocr_low_confidence' if stage == 'ocr' else 'indra_layout_auxiliary_low_confidence',
+                'reason': reason,
                 'stage': stage, 'mean': observation['mean'], 'min': observation['min'],
             })
     pages = []
@@ -52,6 +55,8 @@ def reading_page_warning(review):
     if not review or review.get('status') != 'needs_review':
         return None
     reasons = {r.get('reason') for r in review.get('regions', []) if isinstance(r, dict)}
+    if 'indra_missing_text_layer' in reasons:
+        return '该页检测到文字区域，但没有可用的 PDF 文字层。内部 OCR 已关闭，请复核版面与文字输出。'
     geometry = {'numeric_complex_region_without_word_geometry', 'body_without_word_geometry'}
     if reasons and reasons <= geometry:
         return '本页边码与边注有待核区域：部分原始文字缺少词级坐标，无法确认的数字和文字仍保留在阅读文件中。'
