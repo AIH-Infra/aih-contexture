@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from numbers import Real
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,7 @@ import numpy as np
 from PIL import Image
 
 
-@click.command(help="Run MinerU PytorchPaddleOCR without the MinerU full pipeline.")
+@click.command(help="Run Contexture's optional native Paddle OCR Torch core.")
 @click.option("--job-json", type=click.Path(exists=True, dir_okay=False), required=True)
 @click.option("--result-json", type=click.Path(dir_okay=False), required=True)
 def mineru_ocr_sidecar_cli(job_json: str, result_json: str) -> None:
@@ -31,14 +32,22 @@ def run_ocr(
     page_sizes: list[tuple[int, int]] | None,
     config: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    from mineru.model.ocr.pytorch_paddle import PytorchPaddleOCR
+    from aih_contexture.backends.ocr.paddle_torch import create_ocr
+    from aih_contexture.backends.ocr.paddle_torch_resources import model_spec, resolve_model_dir
+    import torch
 
     lang = str(config.get("mineru_ocr_lang") or config.get("paddle_ocr_lang") or "ch")
-    det_db_box_thresh = float(config.get("mineru_ocr_det_db_box_thresh") or 0.3)
-    det_db_unclip_ratio = float(config.get("mineru_ocr_det_db_unclip_ratio") or 1.8)
+    version = str(config.get("mineru_ocr_version") or "PP-OCRv5")
+    selected_models = model_spec(lang, version)
+    device = str(config.get("mineru_ocr_device") or ("cuda" if torch.cuda.is_available() else "cpu"))
+    det_db_box_thresh = float(config.get("mineru_ocr_det_db_box_thresh", 0.3))
+    det_db_unclip_ratio = float(config.get("mineru_ocr_det_db_unclip_ratio", 1.8))
     enable_merge_det_boxes = bool(config.get("mineru_ocr_enable_merge_det_boxes", True))
 
-    model = PytorchPaddleOCR(
+    model = create_ocr(
+        model_dir=str(resolve_model_dir(config, download=True)),
+        model_spec=selected_models,
+        device=device,
         det_db_box_thresh=det_db_box_thresh,
         lang=lang,
         det_db_unclip_ratio=det_db_unclip_ratio,
@@ -57,7 +66,9 @@ def run_ocr(
                 "res": {
                     "page_index": index,
                     "page_size": [float(page_size[0]), float(page_size[1])],
-                    "model_name": "MinerU PytorchPaddleOCR",
+                    "model_name": f"Paddle OCR Torch {version}",
+                    "device": device,
+                    "models": selected_models,
                     "items": _normalize_ocr_result(result),
                 }
             }
@@ -97,7 +108,7 @@ def _normalize_ocr_result(result: Any) -> list[dict[str, Any]]:
             {
                 "text": text,
                 "geometry": geometry,
-                "confidence": float(confidence) if isinstance(confidence, (int, float)) else None,
+                "confidence": float(confidence) if isinstance(confidence, Real) else None,
             }
         )
     return items

@@ -12,15 +12,24 @@ from aih_contexture.evaluation.scholarly_markdown import evaluate_scholarly_mark
 @click.argument("markdown_paths", nargs=-1, type=click.Path(exists=True, dir_okay=False))
 @click.option("--output", type=click.Path(dir_okay=False), help="Write the evaluation report JSON to this path.")
 @click.option("--strict", is_flag=True, help="Fail the command when any Markdown file does not pass.")
+@click.option(
+    "--validate-classical-locators",
+    is_flag=True,
+    help="Validate unlabeled classical page locator comments.",
+)
 def evaluate_markdown_cli(
     markdown_paths: tuple[str, ...],
     output: str | None,
     strict: bool,
+    validate_classical_locators: bool,
 ):
     if not markdown_paths:
         raise click.UsageError("At least one Markdown file is required.")
 
-    payload = evaluate_scholarly_markdown_files(list(markdown_paths))
+    payload = evaluate_scholarly_markdown_files(
+        list(markdown_paths),
+        validate_classical_locators=validate_classical_locators,
+    )
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     click.echo(text)
 

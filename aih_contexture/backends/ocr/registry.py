@@ -189,6 +189,60 @@ def _build_default_registry() -> OcrBackendRegistry:
     )
     registry.register(
         OcrBackendSpec(
+            name="glm_ocr",
+            display_name="GLM-OCR",
+            capabilities=BackendCapabilities(
+                name="glm_ocr",
+                kind="ocr",
+                display_name="GLM-OCR",
+                requires_service=True,
+                supports_bbox=False,
+                supports_confidence=False,
+                supports_footnote=True,
+                supports_tables=True,
+                supports_formulas=False,
+                languages=("multi",),
+                notes=(
+                    "Pipeline OCR adapter that runs GLM-OCR region recognition (Text/Table "
+                    "Recognition prompts) on existing layout block crops through an "
+                    "OpenAI-compatible vision service such as LM Studio. It returns no "
+                    "coordinates, so results keep the layout block polygon "
+                    "(ocr_bbox_precision=block); failed or truncated blocks are marked "
+                    "ocr_failure instead of being skipped silently. Formula recognition "
+                    "is off unless glm_ocr_recognize_formulas is set."
+                ),
+            ),
+        )
+    )
+    registry.register(
+        OcrBackendSpec(
+            name="indra_ocr",
+            display_name="Indra OCR",
+            capabilities=BackendCapabilities(
+                name="indra_ocr",
+                kind="ocr",
+                display_name="Indra OCR",
+                optional_dependency="indra-ocr",
+                supports_cpu=True,
+                supports_gpu=False,
+                supports_bbox=True,
+                supports_confidence=True,
+                supports_vertical_text=True,
+                supports_footnote=True,
+                supports_tables=True,
+                supports_formulas=True,
+                languages=("multi", "cjk", "rtl"),
+                notes=(
+                    "Small ONNX CPU line recognizer with per-line confidence, orientation/skew handling and "
+                    "text-layer trust checks. Works with any layout backend (lines are written back into the "
+                    "pipeline like PaddleOCR); with layout_backend=indra_layout too it takes the direct Middle route. "
+                    "Formulas need indra_math and the math model files."
+                ),
+            ),
+        )
+    )
+    registry.register(
+        OcrBackendSpec(
             name="tesseract",
             display_name="Tesseract OCR",
             capabilities=BackendCapabilities(
@@ -211,19 +265,19 @@ def _build_default_registry() -> OcrBackendRegistry:
     registry.register(
         OcrBackendSpec(
             name="mineru_pytorch_paddle_ocr",
-            display_name="MinerU PyTorch/Paddle OCR",
+            display_name="Paddle OCR Torch",
             capabilities=BackendCapabilities(
                 name="mineru_pytorch_paddle_ocr",
                 kind="ocr",
-                display_name="MinerU PyTorch/Paddle OCR",
-                optional_dependency="mineru",
+                display_name="Paddle OCR Torch",
+                optional_dependency="aih-contexture[paddle-torch]",
                 supports_bbox=True,
                 supports_confidence=True,
                 supports_vertical_text=True,
                 languages=("multi", "cjk"),
                 notes=(
-                    "Optional OCR adapter using MinerU's internal PytorchPaddleOCR "
-                    "(models/OCR/paddleocr_torch). It can be paired with any layout backend."
+                    "Optional native Paddle OCR Torch core, sharing Contexture's PyTorch environment. "
+                    "No external MinerU or PaddlePaddle installation required; weights are optional resources."
                 ),
             ),
         )

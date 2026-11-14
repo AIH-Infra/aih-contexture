@@ -218,7 +218,7 @@ def _build_default_registry() -> LayoutBackendRegistry:
                 name="paddle_pp_doclayout_v3",
                 kind="layout",
                 display_name="Paddle PP-DocLayoutV3",
-                optional_dependency="paddleocr",
+                optional_dependency="aih-contexture[paddle-layout]",
                 supports_bbox=True,
                 supports_confidence=True,
                 supports_vertical_text=True,
@@ -227,8 +227,34 @@ def _build_default_registry() -> LayoutBackendRegistry:
                 supports_tables=True,
                 supports_formulas=True,
                 notes=(
-                    "Optional PaddleOCR LayoutDetection adapter using PP-DocLayoutV3. "
-                    "This is the single layout detector path, not the full PP-StructureV3 document pipeline."
+                    "Native PP-DocLayoutV3 CPU ONNX inference with reading order and polygon metadata. "
+                    "Optional dependencies share Contexture's environment; explicit Paddle engines retain SDK compatibility."
+                ),
+            ),
+        )
+    )
+    registry.register(
+        LayoutBackendSpec(
+            name="indra_layout",
+            display_name="Indra OCR (layout + reading order)",
+            capabilities=BackendCapabilities(
+                name="indra_layout",
+                kind="layout",
+                display_name="Indra OCR (layout + reading order)",
+                optional_dependency="indra-ocr",
+                supports_cpu=True,
+                supports_gpu=False,
+                supports_bbox=True,
+                supports_confidence=False,
+                supports_vertical_text=True,
+                supports_footnote=True,
+                supports_tables=True,
+                notes=(
+                    "Fast CPU (ONNX) layout labels and reading order from Indra OCR, run in its own Python through a "
+                    "sidecar. As a pipeline layout builder it supplies block boxes, types and order while the text comes "
+                    "from the PDF text layer (disable_ocr), Chrome ScreenAI or another OCR backend. Paired with "
+                    "ocr_backend=indra_ocr it converts directly to Middle and skips the Surya pipeline. Weights are "
+                    "the user's own download (modified OpenRAIL-M)."
                 ),
             ),
         )

@@ -44,8 +44,3 @@ echo "按 Ctrl+C 停止服务"
 echo ""
 
 "$VENV_PYTHON" contexture_app.py
-APP_EXIT=$?
-if [ "$APP_EXIT" -ne 0 ]; then
-    echo "[错误] Contexture 以状态码 $APP_EXIT 退出。请检查上方启动日志。" >&2
-fi
-exit "$APP_EXIT"

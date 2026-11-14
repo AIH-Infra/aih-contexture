@@ -16,24 +16,37 @@ from aih_contexture.converters.vlm_direct_async import VlmDirectAsyncConverter
 from aih_contexture.models import create_model_dict
 from aih_contexture.middle.adapters import document_to_middle, markdown_to_middle_document
 from aih_contexture.middle.adapters.mineru_official import mineru_official_json_to_middle_document
-from aih_contexture.middle.semantics import resolve_middle_for_rendering
+from aih_contexture.middle.semantics import (
+    normalize_legacy_markdown_footnote_definitions,
+    resolve_middle_for_rendering,
+)
 from aih_contexture.middle.scholarly_markdown import render_middle_scholarly_markdown
-from aih_contexture.middle.validation import validate_middle_json
+from aih_contexture.middle.validation import validate_middle_json, validate_middle_for_publication
+from aih_contexture.middle.classical_capabilities import classical_marginalia_capabilities
+from aih_contexture.middle.semantics.classical_marginalia import (
+    normalize_classical_marginalia_mode, resolve_classical_marginalia,
+)
 from aih_contexture.postprocess import MarkdownPostprocessEngine
 from aih_contexture.output import text_from_rendered
 from aih_contexture.runtime.errors import ContextureConfigError
 from aih_contexture.runtime.execution import ContextureExecutionContext
 from aih_contexture.runtime.job import ContextureJob, ContextureResult, SUPPORTED_RUNTIME_MODES
 from aih_contexture.runtime.model_lifecycle import finish_run, prepare_for_run
+from aih_contexture.runtime.middle_rerender import prepare_middle_rerender
 from aih_contexture.runtime.vlm_middle import (
     middle_json_from_vlm_generalized_converter,
     middle_json_from_vlm_specialized_converter,
 )
 from aih_contexture.structured_source import StructuredSourceConverter
 from aih_contexture.structured_source.renderer import render_scholarly_html
+from aih_contexture.renderers.chunk import ChunkRenderer
+from aih_contexture.renderers.html import HTMLRenderer
+from aih_contexture.renderers.json import JSONRenderer
+from aih_contexture.renderers.markdown import MarkdownRenderer
 
 
 MIDDLE_ARTIFACT_KEYS = (
+    "emit_reading_diagnostics",
     "emit_middle_report",
     "emit_middle_debug",
     "emit_middle_scholarly",
@@ -44,16 +57,23 @@ MIDDLE_ARTIFACT_KEYS = (
 )
 
 MIDDLE_ARTIFACT_RENDER_KEYS = (
+    "include_provenance_comments",
     "include_page_header_comments",
     "include_page_footer_comments",
     "include_margin_comments",
     "marginal_output_mode",
+    "classical_marginalia_mode",
+    "classical_text_marginalia_mode",
+    "generic_line_output_mode",
+    "classical_pdf_words_by_page",
+    "classical_evidence",
     "equation_output_mode",
     "footnote_enabled",
     "superscript_policy",
     "include_blockquote_markers",
     "include_printed_page_comments",
     "include_page_separators",
+    "middle_geometry_profile",
 )
 
 def _should_emit_middle_json(config: dict[str, Any]) -> bool:
@@ -67,14 +87,32 @@ def _copy_middle_debug_artifact_flags(config: dict[str, Any], result: Contexture
     for key in MIDDLE_ARTIFACT_KEYS:
         if config.get(key, False):
             result.debug_artifacts[key] = True
+    effective = dict(config)
+    if "effective_render_options" in result.metadata and isinstance(result.metadata["effective_render_options"], dict):
+        effective = {**result.metadata["effective_render_options"], **config}
+    snapshot = (result.middle_json or {}).get('metadata', {}).get('reading_render_options')
+    if isinstance(snapshot, dict):
+        effective = {**effective, **snapshot, **config}
     for key in MIDDLE_ARTIFACT_RENDER_KEYS:
-        if key in config:
+        val = None
+        if key in effective and effective[key] is not None:
+            val = effective[key]
+        elif f"middle_rerender_{key}" in effective and effective[f"middle_rerender_{key}"] is not None:
+            val = effective[f"middle_rerender_{key}"]
+        elif key in config and config[key] is not None:
+            val = config[key]
+        if val is not None:
             result.debug_artifacts[key] = (
-                config[key]
-                if key in {"marginal_output_mode", "equation_output_mode", "superscript_policy"}
-                else bool(config[key])
+                val
+                if key in {
+                    "marginal_output_mode", "equation_output_mode", "superscript_policy",
+                    "classical_marginalia_mode", "classical_text_marginalia_mode",
+                    "generic_line_output_mode",
+                    "classical_pdf_words_by_page", "classical_evidence",
+                    "middle_geometry_profile",
+                }
+                else bool(val)
             )
-
 
 
 def _apply_middle_contract(
@@ -84,35 +122,55 @@ def _apply_middle_contract(
     *,
     output_format: str,
 ) -> None:
-    resolved = resolve_middle_for_rendering(middle_json, config)
-    validation = validate_middle_json(resolved)
-    result.middle_json = resolved
-    result.metadata["middle_validation"] = {
-        "ok": validation.ok,
-        "summary": validation.summary,
-        "errors": [{"path": issue.path, "message": issue.message} for issue in validation.errors],
-        "warnings": [{"path": issue.path, "message": issue.message} for issue in validation.warnings],
-    }
-    if not validation.ok:
-        details = "; ".join(f"{issue.path}: {issue.message}" for issue in validation.errors[:5])
-        raise ContextureConfigError(f"Generated Middle JSON failed validation: {details}")
-    if config.get("render_from_middle", False):
-        if output_format != "markdown":
-            raise ContextureConfigError("render_from_middle currently supports Markdown output only")
-        result.markdown = render_middle_scholarly_markdown(
-            resolved,
-            include_provenance_comments=bool(config.get("middle_rerender_include_provenance", False)),
-            include_printed_page_comments=bool(config.get("include_printed_page_comments", True)),
-            include_page_header_comments=bool(config.get("include_page_header_comments", True)),
-            include_page_footer_comments=bool(config.get("include_page_footer_comments", True)),
-            include_margin_comments=bool(config.get("include_margin_comments", True)),
-            include_page_separators=bool(config.get("include_page_separators", True)),
-            marginal_output_mode=config.get("marginal_output_mode"),
-            equation_output_mode=config.get("equation_output_mode", "humanities_safe"),
-            footnote_enabled=bool(config.get("footnote_enabled", True)),
-            superscript_policy=config.get("superscript_policy", "footnote_safe"),
-        )
+    if config.get("render_from_middle", False) and output_format != "markdown":
+        raise ContextureConfigError("render_from_middle currently supports Markdown output only")
+
+    if result.images:
+        from aih_contexture.middle.reading_structure import bind_available_image_resources
+        middle_json = bind_available_image_resources(middle_json, result.images)
+    try:
+        plan = prepare_middle_rerender(middle_json, config)
+    except ValueError as exc:
+        raise ContextureConfigError(f"Generated Middle JSON failed validation: {exc}") from exc
+
+    result.middle_json = plan.document
+    result.metadata["middle_validation"] = plan.validation
+    result.metadata["effective_render_options"] = plan.options
+    result.metadata["reading_render_options"] = plan.document.get("metadata", {}).get("reading_render_options")
+
+    for warning in plan.warnings:
+        if warning not in result.warnings:
+            result.warnings.append(warning)
+
+    for issue in plan.validation.get("warnings", []) if config.get('emit_reading_diagnostics', False) else []:
+        if "logical_pages" in issue.get("path", ""):
+            message = "同一输入页含多个逻辑页，已保留物理页与原顺序；请对照原页核查。"
+            if message not in result.warnings:
+                result.warnings.append(message)
+
+    requested_classical = normalize_classical_marginalia_mode(
+        config.get("classical_marginalia_mode")
+        or config.get("middle_rerender_classical_marginalia_mode")
+    )
+    capability = None
+    if requested_classical != "off":
+        capability = classical_marginalia_capabilities(plan.document)
+        result.metadata["classical_marginalia"] = capability
+
+    table_records = plan.tables
+    from aih_contexture.middle.table_rendering import has_table_structure_tokens
+    project_tables = bool(table_records) and output_format == "markdown" and has_table_structure_tokens(result.markdown or "")
+
+    render_from_middle = bool(config.get("render_from_middle", False))
+
+    if render_from_middle or (requested_classical != "off" and capability and capability.get("status") != "unavailable") or project_tables:
+        result.markdown = plan.markdown
         result.metadata["rendered_from_middle"] = True
+    else:
+        if output_format == "markdown" and result.markdown and not render_from_middle:
+            result.markdown = normalize_legacy_markdown_footnote_definitions(
+                result.markdown, plan.document
+            )
 
 def _rendered_to_result(rendered: Any, output_format: str) -> ContextureResult:
     if isinstance(rendered, str):
@@ -206,16 +264,27 @@ def run_job(
 ) -> ContextureResult:
     context = execution_context or ContextureExecutionContext()
     context.raise_if_cancelled()
-    config = dict(job.config)
+    raw_config = dict(job.config)
+    option_parser = ConfigParser(raw_config, explicit_options=raw_config.keys())
+    config = option_parser.get_effective_options()
     if job.page_range is not None:
         config["page_range"] = job.page_range
-
-    output_format = job.output_formats[0] if job.output_formats else "markdown"
-    config.setdefault("output_format", output_format)
+    output_format = str(
+        job.output_formats[0]
+        if job.output_formats
+        else config.get("output_format") or "markdown"
+    )
+    config["output_format"] = output_format
     if job.mode == "vlm_generalized" and context.checkpoint_dir:
         config.setdefault("vlm_direct_checkpoint_dir", context.checkpoint_dir)
         checkpoint_name = context.checkpoint_name or Path(job.input_name or job.input_path or "vlm_job").stem
         config.setdefault("vlm_direct_checkpoint_name", checkpoint_name)
+
+    # Re-enter with the already merged options as explicit values. This makes
+    # normalization independent of any active Click context and ensures the
+    # fast-path decision below sees JSON and API configuration alike.
+    normalized_parser = ConfigParser(config, explicit_options=config.keys())
+    config = normalized_parser.generate_config_dict()
     cache_policy = str(config.get("model_cache_policy") or "release_before_non_pipeline")
     if artifact_dict is not None:
         prepare_for_run(job, artifact_dict, cache_policy=cache_policy)
@@ -300,9 +369,13 @@ def _run_materialized_job(
     if job.mode == "pipeline":
         if str(config.get("layout_backend") or "").strip().lower().replace("-", "_") == "none":
             return _run_text_layer_pipeline(job, input_path, config, execution_context)
+        from aih_contexture.runtime.indra_pipeline import is_indra_direct, run_indra_pipeline
+
+        if is_indra_direct(config):
+            return run_indra_pipeline(job, input_path, config, execution_context)
         options = dict(config)
         options["output_format"] = output_format
-        parser = ConfigParser(options)
+        parser = ConfigParser(options, explicit_options=options.keys())
         config_dict = parser.generate_config_dict()
         models = artifact_dict if artifact_dict is not None else create_model_dict()
         converter_cls = parser.get_converter_cls()
@@ -313,8 +386,35 @@ def _run_materialized_job(
             renderer=parser.get_renderer(),
             llm_service=parser.get_llm_service(),
         )
-        rendered = converter(input_path)
-        result = _rendered_to_result(rendered, output_format)
+        requested_formats = list(dict.fromkeys(job.output_formats or [output_format]))
+        if len(requested_formats) == 1:
+            rendered = converter(input_path)
+            result = _rendered_to_result(rendered, output_format)
+        else:
+            document = converter.build_document(input_path)
+            converter.last_document = document
+            converter.page_count = len(document.pages)
+            renderer_types = {
+                "markdown": MarkdownRenderer,
+                "json": JSONRenderer,
+                "html": HTMLRenderer,
+                "chunks": ChunkRenderer,
+            }
+            result = ContextureResult()
+            for format_name in requested_formats:
+                renderer_type = renderer_types.get(format_name)
+                if renderer_type is None:
+                    raise ContextureConfigError(f"Unsupported pipeline output format: {format_name}")
+                rendered = renderer_type(config_dict)(document)
+                format_result = _rendered_to_result(rendered, format_name)
+                result.markdown = format_result.markdown or result.markdown
+                result.html = format_result.html or result.html
+                result.json_text = format_result.json_text or result.json_text
+                result.chunks = format_result.chunks or result.chunks
+                if not result.images:
+                    result.images = format_result.images
+                if not result.metadata:
+                    result.metadata = format_result.metadata
         result.page_count = getattr(converter, "page_count", None) or 0
         if _should_emit_middle_json(config_dict):
             document = getattr(converter, "last_document", None)
@@ -396,9 +496,10 @@ def _run_materialized_job(
         return result
 
     if job.mode == "markdown_postprocess":
-        engine = MarkdownPostprocessEngine(config)
         input_kind = _markdown_postprocess_input_kind(job, input_path, config)
         result = ContextureResult(metadata={"markdown_postprocess": {"input_kind": input_kind}})
+        processed = None
+        rerender_options = {}
 
         if input_kind in {"middle_json", "mineru_json"}:
             if input_kind == "mineru_json":
@@ -410,37 +511,32 @@ def _run_materialized_job(
                 )
             else:
                 middle_json = _read_json_file(input_path)
-            middle_json = resolve_middle_for_rendering(middle_json, config)
-            validation = validate_middle_json(middle_json)
-            base_markdown = render_middle_scholarly_markdown(
-                middle_json,
-                include_provenance_comments=bool(config.get("middle_rerender_include_provenance", False)),
-                include_printed_page_comments=bool(config.get("middle_rerender_include_printed_page_comments", True)),
-                include_page_header_comments=bool(config.get("middle_rerender_include_page_header_comments", True)),
-                include_page_footer_comments=bool(config.get("middle_rerender_include_page_footer_comments", True)),
-                include_margin_comments=bool(config.get("middle_rerender_include_margin_comments", True)),
-                include_page_separators=bool(config.get("middle_rerender_include_page_separators", True)),
-                equation_output_mode=config.get("middle_rerender_equation_output_mode", config.get("equation_output_mode", "humanities_safe")),
-            )
-            processed = engine.process(base_markdown)
-            result.markdown = processed.markdown
-            result.middle_json = middle_json
-            result.page_count = len(middle_json.get("pages") or [])
-            result.metadata["middle_validation"] = {
-                "ok": validation.ok,
-                "summary": validation.summary,
-                "errors": [
-                    {"path": issue.path, "message": issue.message}
-                    for issue in validation.errors
-                ],
-                "warnings": [
-                    {"path": issue.path, "message": issue.message}
-                    for issue in validation.warnings
-                ],
-            }
+                from aih_contexture.middle.adapters.pipeline_json import is_pipeline_render_json, pipeline_json_to_middle_document
+                if is_pipeline_render_json(middle_json):
+                    middle_json = pipeline_json_to_middle_document(
+                        middle_json, source_name=job.input_name or Path(input_path).name,
+                        source_dir=Path(input_path).parent,
+                    )
+            try:
+                plan = prepare_middle_rerender(middle_json, config)
+            except ValueError as exc:
+                raise ContextureConfigError(f"Middle re-render validation failed: {exc}") from exc
+            result.markdown = plan.markdown
+            if config.get("middle_rerender_apply_postprocess", False):
+                processed = MarkdownPostprocessEngine(config).process(plan.markdown)
+                if not config.get("markdown_postprocess_review_only", True):
+                    result.markdown = processed.markdown
+            result.middle_json = plan.document
+            result.page_count = len(plan.document.get("pages") or [])
+            result.metadata["middle_validation"] = plan.validation
+            result.metadata["effective_render_options"] = plan.options
+            result.warnings.extend(plan.warnings)
+            rerender_options = plan.options
         else:
-            processed = engine.process(_read_text_file(input_path))
-            result.markdown = processed.markdown
+            engine = MarkdownPostprocessEngine(config)
+            source_markdown = _read_text_file(input_path)
+            processed = engine.process(source_markdown)
+            result.markdown = source_markdown if config.get("markdown_postprocess_review_only", True) else processed.markdown
             result.middle_json = markdown_to_middle_document(
                 result.markdown,
                 source_name=job.input_name or Path(input_path).name,
@@ -457,8 +553,12 @@ def _run_materialized_job(
             if not validation.ok:
                 raise ContextureConfigError("Markdown postprocess did not produce valid Middle JSON")
 
-        result.metadata["markdown_postprocess"].update(processed.summary())
+        if processed is not None:
+            result.metadata["markdown_postprocess"].update(processed.summary())
+        else:
+            result.metadata["markdown_postprocess"].update({"enabled": False, "rerender_only": True})
         result.page_count = result.page_count or 1
+        _copy_middle_debug_artifact_flags({**config, **rerender_options}, result)
         return result
 
     supported = ", ".join(SUPPORTED_RUNTIME_MODES)
@@ -471,8 +571,13 @@ def _run_text_layer_pipeline(
     config: dict[str, Any],
     execution_context: ContextureExecutionContext,
 ) -> ContextureResult:
-    if any(format_name != "markdown" for format_name in job.output_formats):
-        raise ContextureConfigError("layout_backend='none' supports Markdown output only")
+    requested_formats = list(dict.fromkeys(job.output_formats or ["markdown"]))
+    supported_formats = {"markdown", "json", "html"}
+    unsupported_formats = [name for name in requested_formats if name not in supported_formats]
+    if unsupported_formats:
+        raise ContextureConfigError(
+            "layout_backend='none' supports Markdown, JSON, and HTML output only"
+        )
 
     from aih_contexture.converters.text_layer import TextLayerMarkdownConverter
     from aih_contexture.runtime.pipeline_preprocess import (
@@ -538,7 +643,7 @@ def _run_text_layer_pipeline(
             backend="text_layer",
             page_count=converter.page_count,
         )
-        return ContextureResult(
+        result = ContextureResult(
             markdown=markdown,
             middle_json=middle_json,
             page_count=converter.page_count,
@@ -556,6 +661,16 @@ def _run_text_layer_pipeline(
                 }
             },
         )
+        if "json" in requested_formats:
+            result.json_text = json.dumps(middle_json, ensure_ascii=False, indent=2)
+        if "html" in requested_formats:
+            import markdown2
+
+            result.html = str(markdown2.markdown(markdown, extras=["tables", "fenced-code-blocks", "footnotes"]))
+        if normalize_classical_marginalia_mode(config.get("classical_marginalia_mode")) != "off":
+            _apply_middle_contract(result, middle_json, config, output_format="markdown")
+        _copy_middle_debug_artifact_flags(config, result)
+        return result
     finally:
         cleanup_pipeline_preprocess(preprocess_result)
         if preprocess_output_dir:
@@ -578,20 +693,36 @@ def _failed_pages_from_diagnostics(diagnostics: list[dict[str, Any]]) -> list[in
 
 
 def _specialized_diagnostics(chunks: list[Any]) -> list[dict[str, Any]]:
+    from aih_contexture.builders.glm_ocr import FATAL_ISSUES
+
     diagnostics: list[dict[str, Any]] = []
     for index, chunk in enumerate(chunks, start=1):
-        if not isinstance(chunk, dict) or not chunk.get("error"):
+        if not isinstance(chunk, dict):
             continue
-        error = chunk["error"]
-        page_number = error.get("page", index) if isinstance(error, dict) else index
-        diagnostics.append(
-            {
-                "page_number": page_number,
-                "ok": False,
-                "error_kind": "specialized_vlm_error",
-                "error": error,
-            }
-        )
+        issues = [str(issue) for issue in (chunk.get("issues") or []) if issue]
+        fatal = [issue for issue in issues if issue in FATAL_ISSUES]
+        error = chunk.get("error")
+        if not error and not issues:
+            continue
+        if isinstance(error, dict):
+            page_number = error.get(
+                "page_number",
+                error.get("page", chunk.get("page_number", chunk.get("page_index", index - 1) + 1)),
+            )
+        else:
+            page_number = chunk.get("page_number", chunk.get("page_index", index - 1) + 1)
+        diagnostic = {
+            "page_number": page_number,
+            "ok": error is None and not fatal,
+            "error_kind": "specialized_vlm_error" if error is not None or fatal else None,
+            "issues": issues,
+            "severity": "error" if error is not None or fatal else "warning",
+        }
+        if error is not None:
+            diagnostic["error"] = error
+        if chunk.get("quality") is not None:
+            diagnostic["quality"] = chunk["quality"]
+        diagnostics.append(diagnostic)
     return diagnostics
 
 

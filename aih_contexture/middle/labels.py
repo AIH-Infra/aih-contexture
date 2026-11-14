@@ -113,6 +113,9 @@ def normalize_block_type(raw_label: str | None) -> str:
     if not raw_label:
         return "ComplexRegion"
 
+    if raw_label.strip() in CANONICAL_BLOCK_TYPES:
+        return raw_label.strip()
+
     compact = raw_label.strip().replace("-", "_").replace(" ", "_")
     key = compact.lower()
     if key in _LABEL_ALIASES:

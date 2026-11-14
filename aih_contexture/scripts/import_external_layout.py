@@ -9,7 +9,7 @@ import click
 from aih_contexture.middle.adapters.external_layout import external_layout_document_to_middle_document
 from aih_contexture.middle.debug_markdown import render_middle_debug_markdown
 from aih_contexture.middle.semantics import resolve_middle_for_rendering
-from aih_contexture.middle.validation import validate_middle_json
+from aih_contexture.middle.validation import validate_middle_for_publication
 
 
 @click.command(help="Import an external layout JSON file into Contexture Middle JSON.")
@@ -66,10 +66,9 @@ def import_external_layout_cli(
         block_source=block_source,
     )
     data = resolve_middle_for_rendering(middle_doc.to_dict())
-    validation = validate_middle_json(data)
+    validation = validate_middle_for_publication(data)
 
     output_path = Path(output) if output else input_path.with_name(f"{input_path.stem}_contexture_middle.json")
-    output_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     report_data = {
         "ok": validation.ok,
@@ -80,6 +79,14 @@ def import_external_layout_cli(
     if report:
         Path(report).write_text(json.dumps(report_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    failed = bool(validation.errors) or (strict and bool(validation.warnings))
+    if failed:
+        raise click.ClickException(
+            f"External layout import validation failed: {len(validation.errors)} errors, {len(validation.warnings)} warnings"
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
     if debug_markdown:
         Path(debug_markdown).write_text(render_middle_debug_markdown(data), encoding="utf-8")
 
@@ -87,13 +94,6 @@ def import_external_layout_cli(
     click.echo(f"Wrote {output_path}")
     if debug_markdown:
         click.echo(f"Wrote debug Markdown: {debug_markdown}")
-
-    failed = bool(validation.errors) or (strict and bool(validation.warnings))
-    if failed:
-        raise click.ClickException(
-            f"External layout import validation failed: {len(validation.errors)} errors, {len(validation.warnings)} warnings"
-        )
-
 
 if __name__ == "__main__":
     import_external_layout_cli()

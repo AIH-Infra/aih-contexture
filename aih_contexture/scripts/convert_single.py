@@ -22,6 +22,7 @@ from aih_contexture.runtime.artifacts import (
     save_contexture_result,
 )
 from aih_contexture.runtime.job import ContextureJob
+from aih_contexture.runtime.indra_pipeline import is_indra_direct
 from aih_contexture.runtime.runner import run_job
 
 configure_logging()
@@ -124,27 +125,29 @@ def convert_single_cli(fpath: str = None, pipeline_job_json: str = None, pipelin
         raise click.UsageError("Missing argument 'FPATH' or --pipeline_job_json.")
 
     start = time.time()
-    output_format = kwargs.get("output_format", "markdown")
-    config_parser = ConfigParser(kwargs)
+    config_parser = ConfigParser.from_click(kwargs)
+    effective_options = config_parser.get_effective_options()
+    normalized_config = config_parser.generate_config_dict()
+    output_format = effective_options.get("output_format") or "markdown"
     job = ContextureJob.from_dict(
         {
             "input_path": fpath,
             "mode": "pipeline",
             "output_formats": [output_format],
-            "page_range": kwargs.get("page_range"),
-            "config": kwargs,
+            "page_range": normalized_config.get("page_range"),
+            "config": normalized_config,
         }
     )
     is_text_layer_fast_path = (
-        str(kwargs.get("layout_backend") or "").strip().lower().replace("-", "_") == "none"
-        and str(kwargs.get("ocr_backend") or "none").strip().lower().replace("-", "_") == "none"
+        str(normalized_config.get("layout_backend") or "").strip().lower().replace("-", "_") == "none"
+        and bool(normalized_config.get("disable_ocr", False))
     )
-    models = None if is_text_layer_fast_path else create_model_dict()
+    models = None if is_text_layer_fast_path or is_indra_direct(normalized_config) else create_model_dict()
     result = run_job(job, artifact_dict=models)
     out_folder = config_parser.get_output_folder(fpath)
     save_contexture_result(result, out_folder, config_parser.get_base_filename(fpath), output_format)
 
-    logger.info(f"Saved markdown to {out_folder}")
+    logger.info(f"Saved {output_format} output to {out_folder}")
     logger.info(f"Total time: {time.time() - start}")
 
 

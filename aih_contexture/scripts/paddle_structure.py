@@ -10,8 +10,11 @@ from aih_contexture.backends.document.paddle_structure_runtime import PaddleStru
 from aih_contexture.middle.adapters.external_document import external_document_to_middle_document
 from aih_contexture.middle.debug_markdown import render_middle_debug_markdown
 from aih_contexture.middle.semantics import resolve_middle_for_rendering
-from aih_contexture.middle.scholarly_markdown import render_middle_scholarly_markdown
-from aih_contexture.middle.validation import validate_middle_json
+from aih_contexture.middle.validation import validate_middle_json, validate_middle_for_publication
+from aih_contexture.scripts.reading_import_contract import (
+    prepare_import_middle_for_publication,
+    reading_render_options_click_options,
+)
 
 
 @click.command(help="Run optional PaddleOCR PP-StructureV3 and import its raw JSON into Contexture Middle.")
@@ -21,7 +24,8 @@ from aih_contexture.middle.validation import validate_middle_json
 @click.option("--report", type=click.Path(dir_okay=False), help="Optional validation/import report path.")
 @click.option("--debug-markdown", type=click.Path(dir_okay=False), help="Optional debug Markdown preview path.")
 @click.option("--scholarly-markdown", type=click.Path(dir_okay=False), help="Optional normalized scholarly Markdown output path.")
-@click.option("--include-provenance-comments", is_flag=True, help="Include block provenance comments in scholarly Markdown.")
+@click.option("--strict", is_flag=True, help="Fail when validation emits warnings.")
+@reading_render_options_click_options
 @click.option("--lang", default="ch", show_default=True, help="PP-StructureV3 OCR language.")
 @click.option("--ocr-version", default="PP-OCRv5", show_default=True, help="PP-StructureV3 OCR version.")
 @click.option("--device", default=None, help="Paddle device, e.g. cpu, gpu:0.")
@@ -47,33 +51,39 @@ from aih_contexture.middle.validation import validate_middle_json
 def paddle_structure_cli(
     input_path: str,
     output_json: str,
-    middle_output: str | None,
-    report: str | None,
-    debug_markdown: str | None,
-    scholarly_markdown: str | None,
-    include_provenance_comments: bool,
-    lang: str,
-    ocr_version: str,
-    device: str | None,
-    engine: str | None,
-    paddlex_config: str | None,
-    layout_model: str | None,
-    layout_model_dir: str | None,
-    text_detection_model: str | None,
-    text_detection_model_dir: str | None,
-    text_recognition_model: str | None,
-    text_recognition_model_dir: str | None,
-    use_doc_orientation_classify: bool,
-    use_doc_unwarping: bool,
-    use_textline_orientation: bool,
-    use_table_recognition: bool,
-    use_formula_recognition: bool,
-    use_chart_recognition: bool,
-    use_region_detection: bool,
-    use_seal_recognition: bool,
-    format_block_content: bool,
-    unmatched_policy: str,
-    min_containment: float,
+    middle_output: str | None = None,
+    report: str | None = None,
+    debug_markdown: str | None = None,
+    scholarly_markdown: str | None = None,
+    lang: str = "ch",
+    ocr_version: str = "PP-OCRv5",
+    device: str | None = None,
+    engine: str | None = None,
+    paddlex_config: str | None = None,
+    layout_model: str | None = None,
+    layout_model_dir: str | None = None,
+    text_detection_model: str | None = None,
+    text_detection_model_dir: str | None = None,
+    text_recognition_model: str | None = None,
+    text_recognition_model_dir: str | None = None,
+    use_doc_orientation_classify: bool = False,
+    use_doc_unwarping: bool = False,
+    use_textline_orientation: bool = False,
+    use_table_recognition: bool = True,
+    use_formula_recognition: bool = True,
+    use_chart_recognition: bool = True,
+    use_region_detection: bool = True,
+    use_seal_recognition: bool = False,
+    format_block_content: bool = False,
+    unmatched_policy: str = "append_text_blocks",
+    min_containment: float = 0.20,
+    strict: bool = False,
+    include_provenance_comments: bool | None = None,
+    classical_marginalia_mode: str | None = None,
+    classical_text_marginalia_mode: str | None = None,
+    generic_line_output_mode: str | None = None,
+    no_provenance_comments: bool | None = None,
+    emit_reading_diagnostics: bool = False,
 ):
     input_file = Path(input_path)
     config = {
@@ -124,9 +134,7 @@ def paddle_structure_cli(
             min_containment=min_containment,
         )
         middle = resolve_middle_for_rendering(middle)
-        validation = validate_middle_json(middle)
-        middle_path.parent.mkdir(parents=True, exist_ok=True)
-        middle_path.write_text(json.dumps(middle, ensure_ascii=False, indent=2), encoding="utf-8")
+        validation = validate_middle_for_publication(middle) if scholarly_markdown else validate_middle_json(middle)
 
         report_data = {
             "ok": validation.ok,
@@ -136,23 +144,42 @@ def paddle_structure_cli(
             "document_import": middle.get("metadata", {}).get("document_import"),
             "ocr_import": middle.get("metadata", {}).get("ocr_import"),
         }
-        result["middle_output"] = str(middle_path)
-        result["validation"] = report_data
         if report:
             report_path = Path(report)
             report_path.parent.mkdir(parents=True, exist_ok=True)
             report_path.write_text(json.dumps(report_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        failed = bool(validation.errors) or (strict and bool(validation.warnings))
+        if failed:
+            raise click.ClickException(
+                f"Paddle PP-StructureV3 import validation failed: {len(validation.errors)} errors, {len(validation.warnings)} warnings"
+            )
+
+        plan = prepare_import_middle_for_publication(
+            middle,
+            include_provenance_comments=include_provenance_comments,
+            classical_marginalia_mode=classical_marginalia_mode,
+            classical_text_marginalia_mode=classical_text_marginalia_mode,
+            generic_line_output_mode=generic_line_output_mode,
+            no_provenance_comments=no_provenance_comments,
+            emit_reading_diagnostics=emit_reading_diagnostics,
+            diagnostic_output_path=middle_path, diagnostic_markdown_path=scholarly_markdown,
+        )
+
+        middle_path.parent.mkdir(parents=True, exist_ok=True)
+        middle_path.write_text(json.dumps(plan.document, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        result["middle_output"] = str(middle_path)
+        result["validation"] = report_data
         if debug_markdown:
             debug_path = Path(debug_markdown)
             debug_path.parent.mkdir(parents=True, exist_ok=True)
-            debug_path.write_text(render_middle_debug_markdown(middle), encoding="utf-8")
+            debug_path.write_text(render_middle_debug_markdown(plan.document), encoding="utf-8")
+            result["debug_markdown"] = str(debug_path)
         if scholarly_markdown:
             scholarly_path = Path(scholarly_markdown)
             scholarly_path.parent.mkdir(parents=True, exist_ok=True)
-            scholarly_path.write_text(
-                render_middle_scholarly_markdown(middle, include_provenance_comments=include_provenance_comments),
-                encoding="utf-8",
-            )
+            scholarly_path.write_text(plan.markdown, encoding="utf-8")
             result["scholarly_markdown"] = str(scholarly_path)
 
     click.echo(json.dumps(result, ensure_ascii=False, indent=2))

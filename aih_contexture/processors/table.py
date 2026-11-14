@@ -84,6 +84,11 @@ class TableProcessor(BaseProcessor):
         table_data = []
         for page in document.pages:
             for block in page.contained_blocks(document, self.block_types):
+                if getattr(block, "html", None):
+                    # A VLM OCR backend (e.g. glm_ocr) already supplied this table's
+                    # structure and text; rebuilding cells would run a second OCR
+                    # over it and leave two disagreeing representations.
+                    continue
                 if block.block_type == BlockTypes.Table:
                     block.polygon = block.polygon.expand(0.01, 0.01)
                 image = block.get_image(document, highres=True)

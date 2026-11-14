@@ -36,10 +36,19 @@ from aih_contexture.config.parser import ConfigParser
 from aih_contexture.config.printer import CustomClickPrinter
 from aih_contexture.logger import configure_logging, get_logger
 from aih_contexture.models import create_model_dict
-from aih_contexture.output import output_exists
 from aih_contexture.runtime.artifacts import save_contexture_result
+from aih_contexture.runtime.indra_pipeline import is_indra_direct
 from aih_contexture.runtime.job import ContextureJob
 from aih_contexture.runtime.runner import run_job
+from aih_contexture.runtime.reuse import (
+    build_reuse_identity,
+    expected_image_paths,
+    find_reusable_result,
+    primary_artifact_name,
+    result_is_reusable,
+    write_reuse_manifest,
+)
+from aih_contexture.settings import settings
 from aih_contexture.utils.gpu import GPUManager
 
 configure_logging()
@@ -79,36 +88,74 @@ def process_single_pdf(args):
     if torch is not None:
         torch.set_num_threads(total_torch_threads)
 
-    config_parser = ConfigParser(cli_options)
-
-    out_folder = config_parser.get_output_folder(fpath)
+    config_parser = ConfigParser(cli_options, explicit_options=cli_options.keys())
+    effective_options = config_parser.get_effective_options()
+    effective_options.setdefault("output_format", "markdown")
+    output_root = str(
+        os.path.abspath(
+            os.path.expanduser(effective_options.get("output_dir") or settings.OUTPUT_DIR)
+        )
+    )
+    effective_options["output_dir"] = output_root
+    config_parser = ConfigParser(effective_options, explicit_options=effective_options.keys())
     base_name = config_parser.get_base_filename(fpath)
-    if cli_options.get("skip_existing") and output_exists(out_folder, base_name):
-        return page_count
+    output_format = str(effective_options.get("output_format") or "markdown")
+    config_dict = config_parser.generate_config_dict()
+    identity = build_reuse_identity(
+        fpath,
+        source_name=fpath,
+        config=config_dict,
+        output_formats=[output_format],
+    )
+    if effective_options.get("skip_existing"):
+        reusable = find_reusable_result(
+            output_root,
+            identity=identity,
+            expected_primary_names=[primary_artifact_name(base_name, output_format)],
+        )
+        if reusable is not None:
+            return page_count
+
+    # Allocate exactly one timestamped directory after reuse lookup. The old
+    # output_exists check created a fresh timestamp directory first, which
+    # made previously completed results impossible to find.
+    out_folder = config_parser.get_output_folder(fpath)
 
     try:
         if cli_options.get("debug_print"):
             logger.debug(f"Converting {fpath}")
-        cli_options["disable_tqdm"] = True
-        output_format = cli_options.get("output_format", "markdown")
+        effective_options["disable_tqdm"] = True
         job = ContextureJob.from_dict(
             {
                 "input_path": fpath,
                 "mode": "pipeline",
                 "output_formats": [output_format],
-                "page_range": cli_options.get("page_range"),
-                "config": cli_options,
+                "page_range": effective_options.get("page_range"),
+                "config": effective_options,
             }
         )
         is_text_layer_fast_path = (
-            str(cli_options.get("layout_backend") or "").strip().lower().replace("-", "_") == "none"
-            and str(cli_options.get("ocr_backend") or "none").strip().lower().replace("-", "_") == "none"
+            str(effective_options.get("layout_backend") or "").strip().lower().replace("-", "_") == "none"
+            and bool(config_dict.get("disable_ocr", False))
         )
-        if not is_text_layer_fast_path and model_refs is None:
+        skip_models = is_text_layer_fast_path or is_indra_direct(effective_options)
+        if not skip_models and model_refs is None:
             model_refs = create_model_dict()
-        result = run_job(job, artifact_dict=None if is_text_layer_fast_path else model_refs)
+        result = run_job(job, artifact_dict=None if skip_models else model_refs)
         save_contexture_result(result, out_folder, base_name, output_format)
         page_count = result.page_count
+        image_paths = expected_image_paths(result, out_folder)
+        if result_is_reusable(result) and image_paths is not None:
+            try:
+                write_reuse_manifest(
+                    out_folder,
+                    identity=identity,
+                    primary_names=[primary_artifact_name(base_name, output_format)],
+                    required_paths=image_paths,
+                    source_path=fpath,
+                )
+            except (OSError, ValueError):
+                logger.warning("Could not record reusable result manifest for %s", fpath)
 
         if cli_options.get("debug_print"):
             logger.debug(f"Converted {fpath}")
@@ -158,23 +205,30 @@ def process_single_pdf(args):
 @ConfigParser.common_options
 def convert_cli(in_folder: str, **kwargs):
     total_pages = 0
+    config_parser = ConfigParser.from_click(kwargs)
+    effective_options = config_parser.get_effective_options()
+    effective_options.setdefault("output_format", "markdown")
+    effective_options.setdefault("output_dir", settings.OUTPUT_DIR)
+    effective_options["output_dir"] = str(
+        os.path.abspath(os.path.expanduser(effective_options["output_dir"]))
+    )
     in_folder = os.path.abspath(in_folder)
     files = [os.path.join(in_folder, f) for f in os.listdir(in_folder)]
     files = [f for f in files if os.path.isfile(f)]
 
     # Handle chunks if we're processing in parallel
     # Ensure we get all files into a chunk
-    chunk_size = math.ceil(len(files) / kwargs["num_chunks"])
-    start_idx = kwargs["chunk_idx"] * chunk_size
+    chunk_size = math.ceil(len(files) / effective_options["num_chunks"])
+    start_idx = effective_options["chunk_idx"] * chunk_size
     end_idx = start_idx + chunk_size
     files_to_convert = files[start_idx:end_idx]
 
     # Limit files converted if needed
-    if kwargs["max_files"]:
-        files_to_convert = files_to_convert[: kwargs["max_files"]]
+    if effective_options.get("max_files"):
+        files_to_convert = files_to_convert[: effective_options["max_files"]]
 
     # Disable nested multiprocessing
-    kwargs["disable_multiprocessing"] = True
+    effective_options["disable_multiprocessing"] = True
 
     try:
         mp.set_start_method("spawn")  # Required for CUDA, forkserver doesn't work
@@ -183,33 +237,33 @@ def convert_cli(in_folder: str, **kwargs):
             "Set start method to spawn twice. This may be a temporary issue with the script. Please try running it again."
         )
 
-    chunk_idx = kwargs["chunk_idx"]
+    chunk_idx = effective_options["chunk_idx"]
 
     # Use GPU context manager for automatic setup/cleanup
     with GPUManager(chunk_idx) as gpu_manager:
         batch_sizes, workers = get_batch_sizes_worker_counts(gpu_manager, 7)
 
         # Override workers if specified
-        if kwargs["workers"] is not None:
-            workers = kwargs["workers"]
+        if effective_options.get("workers") is not None:
+            workers = effective_options["workers"]
 
         # Set proper batch sizes and thread counts
         total_processes = max(1, min(len(files_to_convert), workers))
-        kwargs["total_torch_threads"] = max(
+        effective_options["total_torch_threads"] = max(
             2, psutil.cpu_count(logical=False) // total_processes
         )
-        kwargs.update(batch_sizes)
+        effective_options.update(batch_sizes)
 
         logger.info(
-            f"Converting {len(files_to_convert)} pdfs in chunk {kwargs['chunk_idx'] + 1}/{kwargs['num_chunks']} with {total_processes} processes and saving to {kwargs['output_dir']}"
+            f"Converting {len(files_to_convert)} pdfs in chunk {effective_options['chunk_idx'] + 1}/{effective_options['num_chunks']} with {total_processes} processes and saving to {effective_options['output_dir']}"
         )
-        task_args = [(f, kwargs) for f in files_to_convert]
+        task_args = [(f, effective_options) for f in files_to_convert]
 
         start_time = time.time()
         with mp.Pool(
             processes=total_processes,
             initializer=worker_init,
-            maxtasksperchild=kwargs["max_tasks_per_worker"],
+            maxtasksperchild=effective_options["max_tasks_per_worker"],
         ) as pool:
             pbar = tqdm(total=len(task_args), desc="Processing PDFs", unit="pdf")
             for page_count in pool.imap_unordered(process_single_pdf, task_args):
@@ -219,5 +273,8 @@ def convert_cli(in_folder: str, **kwargs):
 
         total_time = time.time() - start_time
         print(
-            f"Inferenced {total_pages} pages in {total_time:.2f} seconds, for a throughput of {total_pages / total_time:.2f} pages/sec for chunk {chunk_idx + 1}/{kwargs['num_chunks']}"
+            f"Inferenced {total_pages} pages in {total_time:.2f} seconds, for a throughput of {total_pages / total_time:.2f} pages/sec for chunk {chunk_idx + 1}/{effective_options['num_chunks']}"
         )
+
+if __name__ == "__main__":
+    convert_cli()

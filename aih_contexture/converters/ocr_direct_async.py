@@ -88,7 +88,35 @@ def _page_result_ok(result: Any) -> bool:
     raw_output = result[2]
     if isinstance(raw_output, dict) and raw_output.get("error"):
         return False
+    if isinstance(raw_output, dict):
+        from aih_contexture.builders.glm_ocr import FATAL_ISSUES
+
+        if any(str(issue) in FATAL_ISSUES for issue in (raw_output.get("issues") or [])):
+            return False
     return True
+
+
+def _glm_page_quality(raw_output: dict[str, Any], page_num: int) -> dict[str, Any]:
+    """Preserve GLM issues while marking only known generation failures as fatal."""
+    from aih_contexture.builders.glm_ocr import FATAL_ISSUES
+
+    issues = [str(issue) for issue in (raw_output.get("issues") or []) if issue]
+    fatal_issues = [issue for issue in issues if issue in FATAL_ISSUES]
+    error = raw_output.get("error")
+    if error is None and fatal_issues:
+        error = {
+            "page_index": int(page_num),
+            "page_number": int(page_num) + 1,
+            "stage": "recognize_image",
+            "message": ", ".join(fatal_issues),
+            "issues": fatal_issues,
+        }
+    result = {"issues": issues}
+    if error is not None:
+        result["error"] = error
+    if raw_output.get("quality") is not None:
+        result["quality"] = raw_output["quality"]
+    return result
 
 
 class OcrDirectAsyncConverter(BaseConverter):
@@ -254,6 +282,8 @@ class OcrDirectAsyncConverter(BaseConverter):
         self.filter_page_footer = config.get("ocr_filter_page_footer", False)
         self.filter_margin_notes = config.get("ocr_filter_margin_notes", False)
         self.filter_blockquote_markers = config.get("ocr_filter_blockquote_markers", False)
+        self.classical_marginalia_mode = config.get("classical_marginalia_mode", "off")
+        self.classical_text_marginalia_mode = config.get("classical_text_marginalia_mode", "separate")
         self.chrome_screenai_light = bool(config.get("chrome_screenai_light", False))
         self.chrome_preprocess_mode = str(config.get("chrome_preprocess_mode", "native"))
         self.chrome_workers = int(config.get("chrome_workers", self.ocr_concurrency))
@@ -529,6 +559,8 @@ class OcrDirectAsyncConverter(BaseConverter):
                 include_page_footer_comments=not bool(getattr(self, "filter_page_footer", False)),
                 include_margin_comments=not bool(getattr(self, "filter_margin_notes", False)),
                 include_blockquote_markers=not bool(getattr(self, "filter_blockquote_markers", False)),
+                classical_marginalia_mode=getattr(self, "classical_marginalia_mode", "off"),
+                classical_text_marginalia_mode=getattr(self, "classical_text_marginalia_mode", "separate"),
             )
             self._last_contexture_middle_markdown = markdown
             return markdown
@@ -1592,7 +1624,8 @@ class OcrDirectAsyncConverter(BaseConverter):
         self,
         batch: List[Image.Image],
         batch_start_idx: int,
-        global_semaphore: Optional[asyncio.Semaphore] = None
+        global_semaphore: Optional[asyncio.Semaphore] = None,
+        page_indices: Optional[List[int]] = None,
     ):
         """
         异步处理一批页面（严格批次模式）
@@ -1625,7 +1658,8 @@ class OcrDirectAsyncConverter(BaseConverter):
                 # 创建当前小批次的所有任务
                 tasks = []
                 for idx, img in enumerate(sub_batch):
-                    page_num = sub_batch_idx + idx
+                    local_index = sub_batch_start + idx
+                    page_num = page_indices[local_index] if page_indices is not None else sub_batch_idx + idx
                     # 不使用 semaphore，直接并行
                     task = self._convert_page_async_no_semaphore(session, img, page_num)
                     tasks.append(task)
@@ -1633,7 +1667,8 @@ class OcrDirectAsyncConverter(BaseConverter):
                 # 等待当前小批次全部完成
                 sub_results = await asyncio.gather(*tasks, return_exceptions=True)
                 for idx, result in enumerate(sub_results):
-                    page_num = sub_batch_idx + idx + 1
+                    local_index = sub_batch_start + idx
+                    page_num = (page_indices[local_index] if page_indices is not None else sub_batch_idx + idx) + 1
                     self._emit_progress(
                         event="page_done",
                         page_num=page_num,
@@ -1726,7 +1761,9 @@ class OcrDirectAsyncConverter(BaseConverter):
             )
 
             # 3. 并发处理批次（传递全局信号量）
-            batch_results = await self._process_batch_async(batch, batch_idx, global_semaphore)
+            batch_results = await self._process_batch_async(
+                batch, batch_idx, global_semaphore, page_indices=batch_page_indices
+            )
             if self.backend == "chandra":
                 for result in batch_results:
                     if not isinstance(result, tuple) or len(result) < 5:
@@ -1855,46 +1892,125 @@ class OcrDirectAsyncConverter(BaseConverter):
             self._last_chunks = [xml_to_json(xml) for xml in raw_output_pages]
 
         else:
-            # Chandra: HTML 输出
-            logger.debug("[OCR] Converting HTML with Chandra tools")
+            # Chandra returns HTML. Generic OCR services such as GLM-OCR return a
+            # structured mapping with markdown and blocks; do not feed those dicts
+            # to BeautifulSoup's Chandra HTML parser.
+            has_structured_page_output = any(isinstance(page, dict) for page in raw_output_pages)
             _include_hf = not (
                 getattr(self, "filter_page_header", False) or
                 getattr(self, "filter_page_footer", False)
             )
             _extract_page = self.extract_printed_pages if hasattr(self, 'extract_printed_pages') else False
-
-            if _extract_page:
-                results = [
-                    parse_markdown(html, include_headers_footers=_include_hf, extract_printed_page=True)
-                    for html in raw_output_pages
-                ]
-                markdown_pages = [r[0] for r in results]
-                html_extracted_pages = [r[1] for r in results]
-                found_count = sum(1 for p in html_extracted_pages if p is not None)
-                logger.info(f"Extracted {found_count}/{len(html_extracted_pages)} printed page numbers")
+            if has_structured_page_output:
+                markdown_pages = []
+                html_extracted_pages = []
+                self._last_clean_html_pages = []
+                self._last_chunks = []
+                for result in all_results:
+                    page_num, _, raw_output, image_size, _ = result
+                    if isinstance(raw_output, dict):
+                        page_markdown = str(raw_output.get("markdown") or "")
+                        source_blocks = raw_output.get("blocks")
+                        chunks = []
+                        if isinstance(source_blocks, list):
+                            for block in source_blocks:
+                                if not isinstance(block, dict):
+                                    continue
+                                label = block.get("label") or block.get("type") or "Text"
+                                label_text = str(label).strip().lower()
+                                source_text = block.get("text")
+                                source_markdown = block.get("markdown")
+                                source_html = block.get("html")
+                                # GLM table blocks carry readable plain text and a
+                                # sanitized HTML table. Keep HTML as canonical
+                                # content so Middle can preserve the cell structure.
+                                content_value = (
+                                    source_html if label_text in {"table", "tabular"} and source_html
+                                    else source_text or source_markdown or source_html
+                                )
+                                content = str(content_value or "")
+                                if not content.strip():
+                                    continue
+                                chunk = {
+                                    "label": label,
+                                    "content": content,
+                                    "raw": dict(block),
+                                }
+                                if source_text is not None:
+                                    chunk["source_text"] = str(source_text)
+                                for key in ("raw_prompt", "raw_response", "issues"):
+                                    if key in block:
+                                        chunk[key] = block[key]
+                                if isinstance(block.get("bbox"), list):
+                                    chunk["bbox"] = block["bbox"]
+                                chunks.append(chunk)
+                        if not chunks and page_markdown.strip():
+                            chunks = [{"label": "Text", "content": page_markdown}]
+                        if not page_markdown:
+                            page_markdown = "\n\n".join(chunk["content"] for chunk in chunks)
+                        quality = _glm_page_quality(raw_output, page_num)
+                        markdown_pages.append(page_markdown)
+                        html_extracted_pages.append(None)
+                        self._last_clean_html_pages.append(None)
+                        page_chunks = {
+                            "page_num": int(page_num),
+                            "page_index": int(page_num),
+                            "page_number": int(page_num) + 1,
+                            "img_size": list(image_size) if image_size else [],
+                            "chunks": chunks,
+                            "backend": raw_output.get("backend"),
+                            "official_protocol": raw_output.get("official_protocol"),
+                            **quality,
+                        }
+                        if raw_output.get("raw") is not None:
+                            page_chunks["raw"] = raw_output["raw"]
+                        self._last_chunks.append(page_chunks)
+                    else:
+                        html = str(raw_output or "")
+                        if _extract_page:
+                            page_markdown, printed_page = parse_markdown(
+                                html, include_headers_footers=_include_hf, extract_printed_page=True,
+                            )
+                            html_extracted_pages.append(printed_page)
+                        else:
+                            page_markdown = parse_markdown(html, include_headers_footers=_include_hf)
+                            html_extracted_pages.append(None)
+                        markdown_pages.append(page_markdown)
+                        self._last_clean_html_pages.append(parse_html(html, include_headers_footers=_include_hf))
+                        self._last_chunks.append(chandra_chunks_by_page.get(
+                            int(page_num),
+                            {"page_num": int(page_num), "img_size": list(image_size) if image_size else [], "chunks": []},
+                        ))
             else:
-                markdown_pages = [
-                    parse_markdown(html, include_headers_footers=_include_hf)
+                if _extract_page:
+                    results = [
+                        parse_markdown(html, include_headers_footers=_include_hf, extract_printed_page=True)
+                        for html in raw_output_pages
+                    ]
+                    markdown_pages = [r[0] for r in results]
+                    html_extracted_pages = [r[1] for r in results]
+                    found_count = sum(1 for p in html_extracted_pages if p is not None)
+                    logger.info(f"Extracted {found_count}/{len(html_extracted_pages)} printed page numbers")
+                else:
+                    markdown_pages = [
+                        parse_markdown(html, include_headers_footers=_include_hf)
+                        for html in raw_output_pages
+                    ]
+                    html_extracted_pages = [None] * len(raw_output_pages)
+
+                logger.debug("[OCR] Generating clean HTML")
+                self._last_clean_html_pages = [
+                    parse_html(html, include_headers_footers=_include_hf)
                     for html in raw_output_pages
                 ]
-                html_extracted_pages = [None] * len(raw_output_pages)
-
-            # 生成 clean_html
-            logger.debug("[OCR] Generating clean HTML")
-            self._last_clean_html_pages = [
-                parse_html(html, include_headers_footers=_include_hf)
-                for html in raw_output_pages
-            ]
-
-            # chunks 已在每个批次内生成，避免所有页面图像滞留到后处理阶段。
-            logger.debug("[OCR] Using batch-generated chunks")
-            self._last_chunks = [
-                chandra_chunks_by_page.get(
-                    int(result[0]),
-                    {"page_num": int(result[0]), "img_size": list(result[3]) if result[3] else [], "chunks": []},
-                )
-                for result in all_results
-            ]
+                logger.debug("[OCR] Using batch-generated chunks")
+                self._last_chunks = [
+                    chandra_chunks_by_page.get(
+                        int(result[0]),
+                        {"page_num": int(result[0]), "img_size": list(result[3]) if result[3] else [], "chunks": []},
+                    )
+                    for result in all_results
+                ]
 
         # 7. 提取印刷页码（优先使用 HTML 提取，regex 作为 fallback）
         printed_pages = html_extracted_pages  # 使用 HTML 提取的结果

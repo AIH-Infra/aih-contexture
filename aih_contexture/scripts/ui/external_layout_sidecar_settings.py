@@ -5,14 +5,14 @@ def render_external_layout_sidecar_settings(st, *, description: str) -> dict:
     st.info(
         description
         + "\n\n"
-        "读取已经生成好的 layout JSON，不在 Contexture 内启动 MinerU/Paddle 模型。"
+        "读取已经生成好的版面 JSON，不在 Contexture 内启动版面模型。"
         "适用于先用外部工具离线跑版面识别，再进入 Contexture Pipeline 的流程。"
     )
 
     external_layout_json = st.text_input(
-        "外部 layout JSON 路径",
+        "外部版面 JSON 路径",
         value=st.session_state.get("external_layout_json", ""),
-        help="支持 MinerU/Paddle/通用 layout JSON，也支持已归一化的 Contexture Middle JSON。",
+        help="支持 MinerU、PaddleOCR 或通用版面 JSON，也支持 Contexture Middle JSON。",
         key="external_layout_json",
     )
     external_layout_block_source = st.selectbox(
@@ -37,7 +37,7 @@ def render_external_layout_sidecar_settings(st, *, description: str) -> dict:
     external_layout_backend_name = st.text_input(
         "来源后端名称",
         value=st.session_state.get("external_layout_backend_name", "external_layout_sidecar"),
-        help="写入 provenance，用于区分 legacy MinerU pipeline、paddle_pp_doclayout_v3 等来源。",
+        help="记录版面结果的来源，例如 MinerU 或 PaddleOCR；不会改变本次使用的版面模型。",
         key="external_layout_backend_name",
     )
     external_layout_model = st.text_input(
@@ -47,9 +47,9 @@ def render_external_layout_sidecar_settings(st, *, description: str) -> dict:
         key="external_layout_model",
     )
     external_layout_allow_missing_pages = st.checkbox(
-        "允许 sidecar 缺页",
+        "允许外部版面 JSON 缺页",
         value=st.session_state.get("external_layout_allow_missing_pages", False),
-        help="开启后，sidecar 中缺失的页面会退回为整页 Text 块；默认关闭以避免页码错配不被发现。",
+        help="开启后，外部 JSON 中缺失的页面按整页文字区域处理；默认关闭，避免缺页或页码错配未被发现。",
         key="external_layout_allow_missing_pages",
     )
 

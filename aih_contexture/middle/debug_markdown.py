@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from aih_contexture.middle.storage import decode_middle_storage
+
 import json
 from typing import Any
 
@@ -10,6 +12,7 @@ def render_middle_debug_markdown(
     max_text_chars: int = 240,
     include_geometry: bool = True,
 ) -> str:
+    data = decode_middle_storage(data)
     pages = data.get("pages", []) if isinstance(data, dict) else []
     lines = [
         "# Contexture Middle Debug Preview",

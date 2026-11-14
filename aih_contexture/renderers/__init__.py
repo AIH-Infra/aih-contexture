@@ -146,6 +146,11 @@ class BaseRenderer:
         if document.debug_data_path is not None:
             metadata["debug_data_path"] = document.debug_data_path
 
+        from aih_contexture.middle.indra_evidence import collect_indra_evidence
+        indra = collect_indra_evidence(document.pages)
+        if indra:
+            metadata["indra"] = indra
+
         return metadata
 
     def extract_block_html(self, document: Document, block_output: BlockOutput):

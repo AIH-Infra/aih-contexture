@@ -3,11 +3,14 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+
+from aih_contexture.runtime.file_lock import exclusive_file_lock, retry_windows_io
 
 
 def utc_now_iso() -> str:
@@ -19,15 +22,37 @@ def allocate_processing_id(output_root: str | os.PathLike[str]) -> str:
     root = Path(output_root)
     root.mkdir(parents=True, exist_ok=True)
     counter = root / ".contexture_processing_counter"
-    try:
-        current = int(counter.read_text(encoding="ascii").strip() or "0")
-    except (FileNotFoundError, ValueError, OSError):
-        current = 0
-    value = current + 1
-    temp = root / f".{counter.name}.{os.getpid()}.tmp"
-    temp.write_text(str(value), encoding="ascii")
-    os.replace(temp, counter)
-    return f"{value:04d}"
+    with exclusive_file_lock(root / ".contexture_processing_counter.lock"):
+        try:
+            raw = retry_windows_io(lambda: counter.read_text(encoding="ascii"), stage=f"counter read {counter}").strip()
+        except FileNotFoundError:
+            current = 0
+        else:
+            try:
+                current = int(raw)
+            except ValueError as exc:
+                raise ValueError(f"Invalid processing counter: {counter}") from exc
+            if current < 0:
+                raise ValueError(f"Invalid processing counter: {counter}")
+        value = current + 1
+        fd, temp_name = tempfile.mkstemp(prefix=".contexture_counter.", suffix=".tmp", dir=root)
+        try:
+            with os.fdopen(fd, "w", encoding="ascii") as stream:
+                stream.write(str(value))
+                stream.flush()
+                os.fsync(stream.fileno())
+            retry_windows_io(lambda: os.replace(temp_name, counter), stage=f"counter replace {counter}")
+        finally:
+            active_error = sys.exception()
+            try:
+                retry_windows_io(lambda: os.unlink(temp_name), stage=f"counter temporary unlink {temp_name}")
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_error:
+                if active_error is None:
+                    raise
+                active_error.add_note(f"Counter temporary cleanup also failed: {cleanup_error}")
+        return f"{value:04d}"
 
 
 def ensure_processing_id(ctx: dict[str, Any], output_root: str | os.PathLike[str]) -> str:

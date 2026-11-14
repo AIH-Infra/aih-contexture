@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Callable
 
 from aih_contexture.scripts.ui.output_restore import scan_output_records_for_restore
+from aih_contexture.scripts.ui.markdown_preview import render_markdown_preview
 
 
 def _session_get(session_state, key: str, default=None):
@@ -62,3 +64,17 @@ def render_result_history(st) -> None:
                 st.write(f"**{group}**")
                 for item in items:
                     st.caption(f"  └─ [{item.get('format', 'file')}] {item.get('name')}")
+        diagnostics = {item['path'] for items in processed_files.values() for item in items
+                       if item.get('format') == 'reading_diagnostics' and item.get('path')
+                       and Path(item['path']).is_file()}
+        if diagnostics and st.checkbox('查看或下载诊断文件', value=False, key='reading_diagnostic_files'):
+            with st.expander('独立诊断文件', expanded=True):
+                for value in sorted(diagnostics):
+                    path = Path(value)
+                    try:
+                        st.download_button('下载诊断 · ' + path.name, data=path.read_bytes(),
+                                           file_name=path.name, mime='application/json',
+                                           key='reading_diagnostic_download:' + str(path))
+                    except OSError:
+                        st.info('该诊断文件已移动或无法读取，请恢复历史记录后重试。')
+        render_markdown_preview(st, processed_files)

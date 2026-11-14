@@ -347,7 +347,7 @@ class OcrBuilder(BaseBuilder):
                 if format == "math":
                     current_span = SpanClass(
                         text="",
-                        formats=list(formats),
+                        formats=sorted(formats),
                         page_id=page.page_id,
                         polygon=char_box,
                         minimum_position=0,
@@ -375,7 +375,7 @@ class OcrBuilder(BaseBuilder):
             if not current_span:
                 current_span = SpanClass(
                     text=fix_text(char.text),
-                    formats=list(formats),
+                    formats=sorted(formats),
                     page_id=page.page_id,
                     polygon=char_box,
                     minimum_position=0,

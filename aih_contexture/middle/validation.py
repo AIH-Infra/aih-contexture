@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from aih_contexture.middle.schema import CANONICAL_BLOCK_TYPES, SCHEMA_VERSION
+from aih_contexture.middle.storage import decode_middle_storage
 
 Severity = Literal["error", "warning"]
 
@@ -35,6 +36,12 @@ class MiddleValidationReport:
 
 
 def validate_middle_json(data: dict[str, Any]) -> MiddleValidationReport:
+    try:
+        data = decode_middle_storage(data)
+    except ValueError as exc:
+        report = MiddleValidationReport()
+        _add(report, 'error', '$.storage_encoding', str(exc))
+        return report
     report = MiddleValidationReport(summary=summarize_middle_json(data))
 
     if data.get("schema_version") != SCHEMA_VERSION:
@@ -61,7 +68,48 @@ def validate_middle_json(data: dict[str, Any]) -> MiddleValidationReport:
     return report
 
 
+def validate_middle_for_publication(data: dict[str, Any]) -> MiddleValidationReport:
+    """Public documents must be structurally valid and contain input pages.
+
+    Empty Middle objects remain valid internal values. An export/import job
+    must not publish one as a successfully processed document.
+    """
+    try:
+        data = decode_middle_storage(data)
+    except ValueError:
+        return validate_middle_json(data)
+    report = validate_middle_json(data)
+    if isinstance(data.get("pages"), list) and not data["pages"]:
+        _add(report, "error", "$.pages", "cannot publish a document with no pages; check the input protocol")
+    for index, page in enumerate(data.get("pages") or []):
+        attrs = page.get("attrs") if isinstance(page, dict) and isinstance(page.get("attrs"), dict) else {}
+        if attrs.get("logical_page_mapping") == "needs_review":
+            _add(report, "warning", f"$.pages[{index}].attrs.logical_pages",
+                 "multiple logical pages share this input frame; verify their order against the original page")
+        if attrs.get("error"):
+            _add(report, "warning", f"$.pages[{index}].attrs.error", "upstream processing failed on this input page")
+        if attrs.get('diagnostic'):
+            _add(report, 'warning', f'$.pages[{index}].attrs.diagnostic',
+                 'source import diagnostics are present; verify unresolved source references')
+    pages = data.get("pages") or []
+    if isinstance(pages, list) and pages and not any(isinstance(p, dict) and p.get("blocks") for p in pages):
+        if any(isinstance(p, dict) and isinstance(p.get("attrs"), dict) and p["attrs"].get("error") for p in pages):
+            _add(report, "error", "$.pages", "no content produced and upstream page errors are present")
+        else:
+            _add(report, "warning", "$.pages", "document contains no blocks; verify whether the input is blank")
+    return report
+
+
+def require_middle_for_publication(data: dict[str, Any]) -> MiddleValidationReport:
+    report = validate_middle_for_publication(data)
+    if not report.ok:
+        details = "; ".join(f"{item.path}: {item.message}" for item in report.errors[:5])
+        raise ValueError(f"Middle publication validation failed: {details}")
+    return report
+
+
 def summarize_middle_json(data: dict[str, Any]) -> dict[str, Any]:
+    data = decode_middle_storage(data)
     pages = data.get("pages") if isinstance(data, dict) else None
     if not isinstance(pages, list):
         return {

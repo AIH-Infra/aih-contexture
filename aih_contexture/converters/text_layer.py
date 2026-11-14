@@ -11,13 +11,37 @@ from aih_contexture.providers.pdf import PdfProvider
 
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _SPACE_RE = re.compile(r"[ \t\u00a0\u2000-\u200b\u3000]+")
-_PRINTED_PAGE_RE = re.compile(r"^(?:\d{1,4}|[ivxlcdm]{1,10})$", re.IGNORECASE)
+_PAGE_LABEL = r"(?:\d{1,4}|[ivxlcdm]{1,10})"
+_EDGE_DECOR = r"[—–\-·•*.|\s]"
+_BRACKET_OPEN = r"[\[\(\{]"
+_BRACKET_CLOSE = r"[\]\)\}]"
+_BRACKET_PAIRS = {"[": "]", "(": ")", "{": "}"}
+_PRINTED_PAGE_RE = re.compile(
+    rf"^(?:{_EDGE_DECOR}{{0,3}}(?P<page>{_PAGE_LABEL}){_EDGE_DECOR}{{0,3}}"
+    rf"|(?P<open>{_BRACKET_OPEN})\s*(?P<page_bracket>{_PAGE_LABEL})"
+    rf"\s*(?P<close>{_BRACKET_CLOSE}))$",
+    re.IGNORECASE,
+)
 _ROMAN_PAGE_RE = re.compile(
     r"^M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$",
     re.IGNORECASE,
 )
-_EDGE_PAGE_PREFIX_RE = re.compile(r"^(?P<page>\d{1,4}|[ivxlcdm]{1,10})(?=\s|[.·•—–-])", re.IGNORECASE)
-_EDGE_PAGE_SUFFIX_RE = re.compile(r"(?<=[\s.·•—–-])(?P<page>\d{1,4}|[ivxlcdm]{1,10})$", re.IGNORECASE)
+_EDGE_PAGE_PREFIX_RE = re.compile(
+    rf"^(?P<page>{_PAGE_LABEL})(?=\s|[.·•—–-])", re.IGNORECASE
+)
+_EDGE_PAGE_SUFFIX_RE = re.compile(
+    rf"(?<=[\s.·•—–-])(?P<page>{_PAGE_LABEL})$", re.IGNORECASE
+)
+_EDGE_PAGE_PREFIX_BRACKET_RE = re.compile(
+    rf"^(?P<open>{_BRACKET_OPEN})\s*(?P<page>{_PAGE_LABEL})"
+    rf"\s*(?P<close>{_BRACKET_CLOSE})",
+    re.IGNORECASE,
+)
+_EDGE_PAGE_SUFFIX_BRACKET_RE = re.compile(
+    rf"(?P<open>{_BRACKET_OPEN})\s*(?P<page>{_PAGE_LABEL})"
+    rf"\s*(?P<close>{_BRACKET_CLOSE})$",
+    re.IGNORECASE,
+)
 _LATIN_HYPHEN_RE = re.compile(r"([A-Za-z]{2,})-\n([a-z][A-Za-z]{1,})")
 
 
@@ -49,6 +73,7 @@ class _PrintedPageCandidate:
     zone: str
     start: int
     end: int
+    edge_priority: int = 0
 
 
 class TextLayerMarkdownConverter:
@@ -137,7 +162,7 @@ class TextLayerMarkdownConverter:
             allowed_steps=tuple(self.config.get("text_layer_printed_page_steps", (1, 2))),
         )
         self.last_printed_page_summary = {
-            "strategy": "consecutive_edge_sequence",
+            "strategy": "edge_sequence_dense_sparse",
             "minimum_run": int(self.config.get("text_layer_min_printed_page_run", 3)),
             "allowed_steps": list(self.config.get("text_layer_printed_page_steps", (1, 2))),
             "trusted_source_pages": len(trusted_printed_pages),
@@ -240,6 +265,43 @@ def _normalize_line(value: str) -> str:
     return _SPACE_RE.sub(" ", value).strip()
 
 
+def _candidate_matches(line: str) -> list[re.Match[str]]:
+    """Collect every page-label candidate on an edge line.
+
+    A single ``or`` chain loses a trailing page number when a line begins
+    with a chapter number, for example ``1 Introduction 23``. Return both
+    matches and let document-level sequence evidence distinguish them.
+    """
+    full = _PRINTED_PAGE_RE.fullmatch(line)
+    if full is not None:
+        if _has_matching_brackets(full):
+            return [full]
+        return []
+
+    matches: list[re.Match[str]] = []
+    seen: set[tuple[int, int]] = set()
+    for pattern in (
+        _EDGE_PAGE_PREFIX_RE,
+        _EDGE_PAGE_PREFIX_BRACKET_RE,
+        _EDGE_PAGE_SUFFIX_RE,
+        _EDGE_PAGE_SUFFIX_BRACKET_RE,
+    ):
+        for match in pattern.finditer(line):
+            span = (match.start(), match.end())
+            if span in seen or not _has_matching_brackets(match):
+                continue
+            seen.add(span)
+            matches.append(match)
+    return matches
+
+
+def _has_matching_brackets(match: re.Match[str]) -> bool:
+    groups = match.groupdict()
+    opening = groups.get("open")
+    closing = groups.get("close")
+    return opening is None or _BRACKET_PAIRS.get(opening) == closing
+
+
 def _printed_page_candidates(lines: list[str]) -> list[_PrintedPageCandidate]:
     candidates: list[_PrintedPageCandidate] = []
     edge_size = min(3, len(lines))
@@ -247,13 +309,35 @@ def _printed_page_candidates(lines: list[str]) -> list[_PrintedPageCandidate]:
         zone = "head" if line_index < edge_size else "foot" if line_index >= len(lines) - edge_size else None
         if zone is None:
             continue
-        match = _PRINTED_PAGE_RE.fullmatch(line) or _EDGE_PAGE_PREFIX_RE.search(line) or _EDGE_PAGE_SUFFIX_RE.search(line)
-        if match is None:
-            continue
-        label = match.group("page") if "page" in match.groupdict() else match.group(0)
-        value = _printed_page_value(label)
-        if value is not None:
-            candidates.append(_PrintedPageCandidate(line_index, label, value, zone, match.start(), match.end()))
+        for match in _candidate_matches(line):
+            groups = match.groupdict()
+            label = groups.get("page") or groups.get("page_bracket")
+            value = _printed_page_value(label) if label else None
+            if value is not None:
+                is_whole_line = match.start() == 0 and match.end() == len(line)
+                is_bracketed = groups.get("open") is not None
+                edge_priority = (
+                    5
+                    if is_whole_line
+                    else 4
+                    if is_bracketed and match.end() == len(line)
+                    else 3
+                    if is_bracketed
+                    else 2
+                    if match.end() == len(line)
+                    else 1
+                )
+                candidates.append(
+                    _PrintedPageCandidate(
+                        line_index,
+                        label,
+                        value,
+                        zone,
+                        match.start(),
+                        match.end(),
+                        edge_priority,
+                    )
+                )
     return candidates
 
 
@@ -278,41 +362,79 @@ def _infer_printed_page_sequences(
     minimum_run: int,
     allowed_steps: tuple[int, ...],
 ) -> dict[int, _PrintedPageCandidate]:
-    """Trust only a same-edge, physically consecutive, fixed-step page sequence."""
+    """Trust same-edge page sequences that are dense or physically sparse.
+
+    Dense sequences keep the original behavior: labels appear on consecutive
+    physical pages. Sparse sequences support recto-only numbering and alternating
+    header/footer zones, where the physical page gap equals the printed-number
+    increment. Sparse runs require one additional anchor because they carry less
+    evidence. Keep only runs that cannot extend backward so long sequences do
+    not create every possible suffix as a separate in-memory run.
+    """
     trusted: dict[int, _PrintedPageCandidate] = {}
     minimum_run = max(2, minimum_run)
     allowed_steps = tuple(step for step in allowed_steps if step > 0) or (1,)
+    position_by_page = {page: position for position, page in enumerate(document_pages)}
+    runs: list[tuple[bool, int, list[tuple[int, _PrintedPageCandidate]]]] = []
+
     for start_position, start_page in enumerate(document_pages):
-        for start_candidate in candidates_by_page[start_page]:
-            if start_position + 1 >= len(document_pages):
-                continue
-            next_page = document_pages[start_position + 1]
-            if next_page != start_page + 1:
-                continue
-            for second_candidate in candidates_by_page[next_page]:
-                step = second_candidate.value - start_candidate.value
-                if second_candidate.zone != start_candidate.zone or step not in allowed_steps:
+        for start_candidate in candidates_by_page.get(start_page, []):
+            for distance in sorted(set((1, *allowed_steps))):
+                next_page = start_page + distance
+                next_position = position_by_page.get(next_page)
+                if next_position is None or next_position <= start_position:
                     continue
-                run = [(start_page, start_candidate), (next_page, second_candidate)]
-                expected_value = second_candidate.value + step
-                for page_index in document_pages[start_position + 2 :]:
-                    previous_page = run[-1][0]
-                    if page_index != previous_page + 1:
-                        break
-                    next_candidate = next(
-                        (
-                            candidate
-                            for candidate in candidates_by_page[page_index]
-                            if candidate.zone == start_candidate.zone and candidate.value == expected_value
-                        ),
-                        None,
-                    )
-                    if next_candidate is None:
-                        break
-                    run.append((page_index, next_candidate))
-                    expected_value += step
-                if len(run) >= minimum_run:
-                    trusted.update(run)
+                for second_candidate in candidates_by_page.get(next_page, []):
+                    step = second_candidate.value - start_candidate.value
+                    if second_candidate.zone != start_candidate.zone or step not in allowed_steps:
+                        continue
+                    dense = distance == 1
+                    sparse = distance == step and step > 1
+                    if not dense and not sparse:
+                        continue
+
+                    # A candidate that has an equally valid predecessor belongs
+                    # to a run already discoverable from that earlier page.
+                    prior_page = start_page - distance
+                    prior_candidates = candidates_by_page.get(prior_page, [])
+                    if any(
+                        candidate.zone == start_candidate.zone
+                        and candidate.value == start_candidate.value - step
+                        for candidate in prior_candidates
+                    ):
+                        continue
+
+                    run = [(start_page, start_candidate), (next_page, second_candidate)]
+                    expected_page = next_page + distance
+                    expected_value = second_candidate.value + step
+                    while expected_page in position_by_page:
+                        matching_candidates = [
+                                candidate
+                                for candidate in candidates_by_page.get(expected_page, [])
+                                if candidate.zone == start_candidate.zone
+                                and candidate.value == expected_value
+                        ]
+                        if not matching_candidates:
+                            break
+                        next_candidate = max(
+                            matching_candidates, key=lambda candidate: candidate.edge_priority
+                        )
+                        run.append((expected_page, next_candidate))
+                        expected_page += distance
+                        expected_value += step
+
+                    if len(run) >= (minimum_run + 1 if sparse else minimum_run):
+                        evidence = sum(candidate.edge_priority for _, candidate in run)
+                        runs.append((sparse, evidence, run))
+
+    # Longer runs provide stronger evidence. Prefer a dense run over a sparse
+    # run of equal length. When two labels make equally long sequences (for
+    # example, a chapter number at line start and the page number at line end),
+    # prefer the label with stronger edge evidence, then use source position.
+    runs.sort(key=lambda item: (-len(item[2]), item[0], -item[1], item[2][0][0]))
+    for _, _, run in runs:
+        for page_index, candidate in run:
+            trusted.setdefault(page_index, candidate)
     return trusted
 
 

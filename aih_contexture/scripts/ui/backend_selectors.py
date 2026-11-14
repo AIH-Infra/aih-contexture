@@ -7,30 +7,33 @@ from aih_contexture.backends.ocr import default_ocr_registry
 
 
 LAYOUT_BACKEND_LABELS = {
-    "none": "文本层快速路径（跳过 Layout）",
-    "surya": "Surya（内置通用版面分析）",
-    "mineru_pp_doclayout_v2_direct": "MinerU PP-DocLayoutV2 Direct",
-    "mineru_vl_layout": "MinerU-VL Layout（API）",
-    "surya2_layout": "Surya 2 Layout（API）",
-    "paddle_pp_doclayout_plus_l": "Paddle PP-DocLayout Plus-L",
-    "paddle_pp_doclayout_v3": "Paddle PP-DocLayoutV3",
-    "external_layout_sidecar": "External Layout Sidecar（读取 JSON）",
+    "none": "跳过版面分析（PDF 文本层）",
+    "surya": "Surya（本地版面分析）",
+    "mineru_pp_doclayout_v2_direct": "MinerU PP-DocLayoutV2（共享 PyTorch）",
+    "mineru_vl_layout": "MinerU-VL（API 版面分析）",
+    "surya2_layout": "Surya 2（API 版面分析）",
+    "paddle_pp_doclayout_plus_l": "Paddle PP-DocLayout Plus-L（SDK）",
+    "paddle_pp_doclayout_v3": "Paddle PP-DocLayoutV3（CPU ONNX）",
+    "external_layout_sidecar": "导入外部版面 JSON",
+    "indra_layout": "Indra（CPU 版面分析）",
 }
 
 HIDDEN_LAYOUT_BACKENDS = {"vlm", "vlm_layout"}
 
 OCR_BACKEND_LABELS = {
-    "none": "禁用 OCR（使用 PDF 文本层）",
-    "chrome_screenai": "Chrome ScreenAI（searchable PDF 回流）",
-    "surya": "Surya OCR（内置通用 OCR）",
-    "vlm": "VLM OCR（API 识别）",
-    "vlm_ocr": "VLM OCR（API 识别）",
-    "calamari": "Calamari OCR（欧洲历史文献）",
-    "paddle_ocr_v5": "PaddleOCR PP-OCRv5",
-    "paddleocr_vl_ocr": "PaddleOCR-VL OCR（块级 VLM）",
-    "surya2_ocr": "Surya 2 OCR（块级 VLM）",
-    "mineru_pytorch_paddle_ocr": "MinerU PaddleOCR-Torch",
-    "tesseract": "Tesseract OCR（传统 CPU OCR）",
+    "none": "不重新 OCR（读取 PDF 文本层）",
+    "chrome_screenai": "Chrome ScreenAI（生成可搜索 PDF）",
+    "surya": "Surya OCR（本地）",
+    "vlm": "通用 VLM OCR（API）",
+    "vlm_ocr": "通用 VLM OCR（API）",
+    "calamari": "Calamari（历史文献 HTTP 服务）",
+    "paddle_ocr_v5": "PaddleOCR PP-OCRv5（旧 SDK 配置）",
+    "paddleocr_vl_ocr": "PaddleOCR-VL OCR（API）",
+    "surya2_ocr": "Surya 2 OCR（API）",
+    "glm_ocr": "GLM-OCR（本地 API）",
+    "mineru_pytorch_paddle_ocr": "Paddle OCR Torch（本地 PyTorch）",
+    "indra_ocr": "Indra OCR（CPU）",
+    "tesseract": "Tesseract OCR（系统 CPU）",
 }
 
 
@@ -38,9 +41,10 @@ def layout_backend_options() -> list[str]:
     names = [name for name in default_layout_registry.names() if name not in HIDDEN_LAYOUT_BACKENDS]
     preferred = [
         "surya",
-        "paddle_pp_doclayout_plus_l",
         "paddle_pp_doclayout_v3",
         "mineru_pp_doclayout_v2_direct",
+        "indra_layout",
+        "paddle_pp_doclayout_plus_l",
         "mineru_vl_layout",
         "surya2_layout",
         "external_layout_sidecar",
@@ -51,18 +55,21 @@ def layout_backend_options() -> list[str]:
 
 
 def ocr_backend_options() -> list[str]:
-    names = default_ocr_registry.names()
+    # Keep the old PaddlePaddle backend registered for API/CLI configurations,
+    # but offer one primary local Paddle OCR entry in new UI selections.
+    names = [name for name in default_ocr_registry.names() if name != "paddle_ocr_v5"]
     preferred = [
         "none",
         "chrome_screenai",
         "surya",
-        "paddle_ocr_v5",
         "mineru_pytorch_paddle_ocr",
+        "indra_ocr",
+        "tesseract",
+        "glm_ocr",
         "paddleocr_vl_ocr",
         "surya2_ocr",
-        "tesseract",
-        "calamari",
         "vlm_ocr",
+        "calamari",
     ]
     ordered = [name for name in preferred if name == "none" or name in names]
     ordered.extend(name for name in names if name not in ordered)
@@ -73,17 +80,17 @@ def normalize_layout_backend_state(value: str | None) -> tuple[str | None, str |
     if value == "yolo":
         return (
             "surya",
-            "DocLayout-YOLO 已从主线移除；当前会话已重置为 Surya。后续强版面识别将通过 MinerU/Paddle adapter 接入。",
+            "旧配置中的 DocLayout-YOLO 已停用，当前已切换为 Surya；也可从下方选择其他版面后端。",
         )
     if value in HIDDEN_LAYOUT_BACKENDS:
         return (
             "surya",
-            "VLM Layout 已从前端隐藏；当前会话已重置为 Surya。API 版面识别可通过 VLM 泛化或 VLM 特化模式处理。",
+            "旧配置中的通用 VLM 版面选项已停用，当前已切换为 Surya；如需 API 版面分析，可选择 MinerU-VL 或 Surya 2。",
         )
     if value == "mineru_pp_doclayout_v2":
         return (
             "mineru_pp_doclayout_v2_direct",
-            "MinerU Pipeline Sidecar 已从 layout 主路径移除；当前会话已迁移为 MinerU PP-DocLayoutV2 Direct。官方 MinerU full pipeline 请通过 Middle/MinerU JSON 导入诊断路径使用。",
+            "旧配置中的 MinerU Pipeline Sidecar 已迁移为 MinerU PP-DocLayoutV2 Direct。已有 MinerU 完整解析结果可在「Markdown 后处理 → MinerU 官方 JSON 转换」中导入。",
         )
     return value, None
 
@@ -98,11 +105,11 @@ def should_migrate_legacy_screenai_preprocess(
     legacy_preprocess_backend: str | None,
     current_ocr_backend: str | None,
 ) -> bool:
-    """Migrate only stale ScreenAI preprocess state, never an explicit user choice.
+    """Recognize legacy ScreenAI settings while loading a saved configuration.
 
-    Older saved sessions stored ScreenAI under ``ocr_preprocess_backend``.
-    The current UI stores it in ``ocr_backend``.  In particular, a user who
-    selects ``none`` must remain on the embedded-text fast path.
+    Do not apply this migration during widget reruns: the old preprocessing
+    value may simply belong to the user's previous OCR selection.
+    Explicit ``none`` configurations retain the embedded-text path.
     """
     legacy = str(legacy_preprocess_backend or "none").strip().lower().replace("-", "_")
     return legacy == "chrome_screenai_searchable_pdf" and current_ocr_backend not in {
@@ -138,7 +145,7 @@ def render_layout_backend_selector(st):
         options=layout_backend_options(),
         index=0,
         format_func=lambda value: LAYOUT_BACKEND_LABELS.get(value, value),
-        help="只决定区域检测和阅读顺序；文字识别由 OCR 后端单独决定。",
+        help="只决定区域检测和阅读顺序，不识别文字；PDF 文本层、ScreenAI 或文字识别由 OCR 选项决定。",
         key="layout_backend",
     )
 
@@ -148,6 +155,9 @@ def render_ocr_backend_selector(st, *, options: list[str] | None = None):
         st.warning(warning)
 
     available_options = options or ocr_backend_options()
+    if st.session_state.get("ocr_backend") == "paddle_ocr_v5" and "paddle_ocr_v5" not in available_options:
+        available_options = [*available_options, "paddle_ocr_v5"]
+        st.caption("当前使用旧配置中的 PaddlePaddle 后端。可手动选择 Paddle OCR Torch，切换前请核对模型版本和语言。")
     if st.session_state.get("ocr_backend") not in available_options:
         st.session_state["ocr_backend"] = available_options[0]
 
@@ -156,7 +166,7 @@ def render_ocr_backend_selector(st, *, options: list[str] | None = None):
         options=available_options,
         index=0,
         format_func=lambda value: OCR_BACKEND_LABELS.get(value, value),
-        help="选择文字来源：禁用 OCR 时使用 PDF 文本层；Chrome ScreenAI 会先生成 searchable PDF 再回流文本层，其他 OCR 后端会直接重新识别。",
+        help="选择文字来源：无 OCR 读取 PDF 文本层；Chrome ScreenAI 先生成可搜索 PDF；其他后端按各自方式识别文字。",
         key="ocr_backend",
     )
 

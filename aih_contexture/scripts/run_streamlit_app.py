@@ -64,7 +64,12 @@ def _get_windows_excluded_ports() -> set[int]:
         return set()
 
     excluded_ports: set[int] = set()
-    pattern = re.compile(r"^\s*(\d+)\s+(\d+)\s*(?:\*.*)?$")
+    # netsh 表里带 * 的是「管理的端口排除」（管理员手工添加，例如
+    # netsh int ipv4 add excludedportrange ... 用来把端口带从 Hyper-V/
+    # WinNAT 的动态保留中护住）。这类排除只约束 WinNAT 分配，应用仍可
+    # bind()（实测通过）；无 * 的动态排除才真的拒绝 bind（WinError 10013）。
+    # 因此只跳过动态排除——否则把端口带护住的同时应用自己反而起不来。
+    pattern = re.compile(r"^\s*(\d+)\s+(\d+)\s*(\*.*?)?\s*$")
     for family in ("ipv4", "ipv6"):
         try:
             result = subprocess.run(
@@ -90,7 +95,9 @@ def _get_windows_excluded_ports() -> set[int]:
             match = pattern.match(line)
             if not match:
                 continue
-            start, end = map(int, match.groups())
+            if match.group(3) is not None:
+                continue  # 管理员排除：应用可 bind，不视为不可用。
+            start, end = int(match.group(1)), int(match.group(2))
             excluded_ports.update(range(start, end + 1))
     return excluded_ports
 
@@ -278,8 +285,16 @@ def _verify_instance_identity() -> None:
 
 
 def streamlit_app_cli(app_name: str = "streamlit_app.py"):
-    _verify_instance_identity()
     argv = sys.argv[1:]
+    if "--help" in argv or "-h" in argv:
+        command_name = os.path.basename(sys.argv[0]) if sys.argv else "contexture_gui"
+        print(
+            f"Usage: {command_name} [STREAMLIT_ARGS ...]\n\n"
+            "Start the AIH-Contexture Streamlit app. Extra arguments are forwarded to Streamlit.\n"
+            "Use `python -m streamlit run <app.py>` to pass Streamlit options directly."
+        )
+        return
+    _verify_instance_identity()
     cur_dir = os.path.dirname(os.path.abspath(__file__))
     app_path = os.path.join(cur_dir, app_name)
     host = DEFAULT_STREAMLIT_HOST
@@ -344,3 +359,6 @@ def streamlit_app_cli(app_name: str = "streamlit_app.py"):
 
 def extraction_app_cli():
     streamlit_app_cli("extraction_app.py")
+
+if __name__ == "__main__":
+    streamlit_app_cli()

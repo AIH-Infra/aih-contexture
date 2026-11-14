@@ -20,6 +20,13 @@ from aih_contexture.config.vlm_model_presets import (
 )
 from aih_contexture.logger import get_logger
 from aih_contexture.services.ocr_base import BaseOcrService
+from aih_contexture.vendor.glm_ocr_compat import (
+    clean_glm_text,
+    glm_ocr_prompt,
+    looks_degenerate,
+    sanitize_table_html,
+    table_html_rows,
+)
 from aih_contexture.vendor.mineru_vl_compat import (
     MINERU_VL_PROMPTS,
     convert_mineru_vl_bbox,
@@ -1037,3 +1044,130 @@ class OcrSurya2Service(OpenAICompatibleVlmMixin, BaseOcrService):
         if api_style == "openai" and stripped.endswith("/v1"):
             return f"{stripped}/chat/completions"
         return text
+
+
+class OcrGlmOcrService(OpenAICompatibleVlmMixin, BaseOcrService):
+    """GLM-OCR region-recognition adapter (OpenAI-compatible, e.g. LM Studio).
+
+    GLM-OCR is driven by one short task prompt per region crop (`Text
+    Recognition:`, `Table Recognition:`, `Formula Recognition:`). It returns no
+    coordinates, so callers keep the layout block's own polygon. Results carry
+    an ``issues`` list; a truncated or looping generation is reported, never
+    silently repaired.
+    """
+
+    def __init__(self, config: dict):
+        super().__init__(config)
+        self.ocr_api_style = str(config.get("glm_ocr_api_style") or config.get("ocr_api_style", "openai")).strip().lower()
+        if self.ocr_api_style == "openai-compatible":
+            self.ocr_api_style = "openai"
+        self.ocr_endpoint = OcrSurya2Service._normalize_endpoint(
+            config.get("glm_ocr_endpoint") or config.get("ocr_endpoint") or self.ocr_endpoint,
+            api_style=self.ocr_api_style,
+        )
+        self.glm_ocr_version = normalize_version(
+            "glm_ocr",
+            str(config.get("glm_ocr_version") or default_version("glm_ocr")).strip(),
+        )
+        self.ocr_model = resolve_vlm_model(
+            "glm_ocr",
+            version=self.glm_ocr_version,
+            quant=config.get("glm_ocr_quant"),
+            override=str(config.get("glm_ocr_model") or config.get("ocr_model") or ""),
+        )
+        self.ocr_api_key = str(config.get("glm_ocr_api_key") or config.get("ocr_api_key") or self.ocr_api_key or "").strip()
+        self.ocr_timeout = int(config.get("glm_ocr_timeout", config.get("ocr_timeout", self.ocr_timeout)))
+        self.ocr_max_tokens = int(config.get("glm_ocr_max_tokens", config.get("ocr_max_tokens", self.ocr_max_tokens)))
+        self.image_format = str(config.get("glm_ocr_image_format") or config.get("ocr_image_format") or "PNG").strip().upper() or "PNG"
+        self.image_quality = int(config.get("glm_ocr_image_quality", config.get("ocr_image_quality", 90)))
+        self.block_concurrency = max(1, int(config.get("glm_ocr_block_concurrency", 4) or 4))
+        request_concurrency_value = config.get("glm_ocr_request_concurrency")
+        if request_concurrency_value is None or str(request_concurrency_value).strip() == "":
+            request_concurrency_value = 0
+        self.request_concurrency = max(0, int(request_concurrency_value))
+        self.vlm_request_concurrency = self.request_concurrency
+
+    def get_backend_name(self) -> str:
+        return "glm_ocr"
+
+    def get_runtime_profile(self) -> dict[str, Any]:
+        return {
+            "backend": "glm_ocr",
+            "model_family": model_family_label("glm_ocr", self.glm_ocr_version),
+            "glm_ocr_version": self.glm_ocr_version,
+            "model": self.ocr_model,
+            "api_style": self.ocr_api_style,
+            "official_protocol": "glm_ocr_region_prompt",
+            "image_transport": self.image_format.upper(),
+            "request_concurrency": self.request_concurrency or None,
+            "block_concurrency": self.block_concurrency,
+        }
+
+    async def process_page_async(
+        self,
+        session: aiohttp.ClientSession,
+        img: Image.Image,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        return await self.recognize_image_async(session, img, api_key=api_key, prompt_label="text")
+
+    async def recognize_image_async(
+        self,
+        session: aiohttp.ClientSession,
+        img: Image.Image,
+        *,
+        api_key: str | None = None,
+        prompt_label: str | None = None,
+    ) -> dict[str, Any]:
+        label = str(prompt_label or "text").strip().lower()
+        if label not in {"text", "table", "formula"}:
+            label = "text"
+        prompt = glm_ocr_prompt(label)
+        text, raw = await self._post_vlm(
+            session,
+            img=img.convert("RGB"),
+            prompt=prompt,
+            api_key=api_key,
+            image_format=self.image_format,
+            image_quality=self.image_quality,
+            temperature=0.0,
+            include_system=False,
+        )
+        cleaned = clean_glm_text(text)
+        issues: list[str] = []
+        if not cleaned:
+            issues.append("empty_output")
+        if self._finish_reason(raw) == "length":
+            issues.append("truncated_max_tokens")
+        if looks_degenerate(cleaned):
+            issues.append("repetition_loop")
+        table_html = sanitize_table_html(cleaned) if label == "table" else ""
+        if label == "table":
+            plain = "\n".join(table_html_rows(table_html)) if table_html else html_to_plain_text(cleaned)
+        else:
+            plain = cleaned
+        block: dict[str, Any] = {
+            "label": "table" if label == "table" else ("equation" if label == "formula" else "text"),
+            "type": "table" if label == "table" else ("equation" if label == "formula" else "text"),
+            "text": plain,
+            "raw_prompt": prompt,
+        }
+        if table_html:
+            block["html"] = table_html
+        return {
+            "backend": "glm_ocr",
+            "official_protocol": "glm_ocr_region_prompt",
+            "markdown": plain,
+            "html": table_html,
+            "blocks": [block] if plain else [],
+            "issues": issues,
+            "raw": {"response": raw},
+        }
+
+    @staticmethod
+    def _finish_reason(body: Any) -> str:
+        try:
+            return str(body["choices"][0].get("finish_reason") or "")
+        except (KeyError, IndexError, TypeError, AttributeError):
+            return ""
+

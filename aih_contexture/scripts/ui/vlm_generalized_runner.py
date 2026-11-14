@@ -222,6 +222,12 @@ def run_vlm_generalized_batch(
                 vlm_start_page if vlm_use_page_range else None,
                 vlm_end_page if vlm_use_page_range else None,
             )
+            file_warnings = list(result.warnings) if result is not None else []
+            def _warn(message):
+                if message not in file_warnings:
+                    file_warnings.append(message)
+                st.warning(message)
+
             output_files = save_vlm_generalized_outputs(
                 converter=file_converter,
                 result=result,
@@ -238,7 +244,11 @@ def run_vlm_generalized_batch(
                 emit_layout_overlay=emit_layout_overlay,
                 emit_span_overlay=emit_span_overlay,
                 emit_middle_full_json=emit_middle_full_json,
-                warn=st.warning,
+                warn=_warn,
+            )
+
+            work_ctx.setdefault("warnings", []).extend(
+                message for message in file_warnings if message not in work_ctx.get("warnings", [])
             )
 
             all_output_paths_for_zip.extend(output_files)
@@ -250,7 +260,7 @@ def run_vlm_generalized_batch(
                 started_at=item["started_at"], finished_at=utc_now_iso(),
                 elapsed_seconds=float(item["elapsed_seconds"]), status="succeeded",
                 page_count=_derive_page_count(item),
-                output_paths=output_files, warnings=(result.warnings if result is not None else []), errors=[],
+                output_paths=output_files, warnings=file_warnings, errors=[],
                 source_path=item.get("file_path"),
             )
             register_document_summary(work_ctx, summary_path)

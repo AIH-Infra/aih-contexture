@@ -1,5 +1,8 @@
+import re
+
 from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.blocks import Block
+from aih_contexture.utils.toc_entries import is_toc_line_cluster, plain_toc_text
 
 
 class Text(Block):
@@ -25,7 +28,15 @@ class Text(Block):
         template = super().assemble_html(
             document, child_blocks, parent_structure, block_config
         )
-        template = template.replace("\n", " ")
+        toc_lines = [
+            line.strip()
+            for line in re.split(r"\n|<br\s*/?>", template)
+            if plain_toc_text(line)
+        ]
+        if is_toc_line_cluster(toc_lines):
+            template = "<br>".join(toc_lines)
+        else:
+            template = template.replace("\n", " ")
 
         el_attr = f" block-type='{self.block_type}'"
         if self.has_continuation:

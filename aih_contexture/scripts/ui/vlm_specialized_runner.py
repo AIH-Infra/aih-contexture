@@ -185,6 +185,7 @@ def run_vlm_specialized_batch(
                 vlm_start_page if vlm_use_page_range else None,
                 vlm_end_page if vlm_use_page_range else None,
             )
+            file_warnings = []
             output_files = save_vlm_specialized_outputs(
                 converter=file_converter,
                 markdown_text=markdown,
@@ -200,7 +201,11 @@ def run_vlm_specialized_batch(
                 emit_layout_overlay=emit_layout_overlay,
                 emit_span_overlay=emit_span_overlay,
                 emit_middle_full_json=emit_middle_full_json,
+                warn=file_warnings.append,
             )
+            for message in file_warnings:
+                st.warning(message)
+            work_ctx.setdefault("warnings", []).extend(file_warnings)
 
             all_output_paths_for_zip.extend(output_files)
             record_processed_outputs(work_ctx, file_name, output_files)
@@ -211,7 +216,7 @@ def run_vlm_specialized_batch(
                 started_at=item["started_at"], finished_at=utc_now_iso(),
                 elapsed_seconds=float(item["elapsed_seconds"]), status="succeeded",
                 page_count=_derive_page_count(item),
-                output_paths=output_files, warnings=[], errors=[], source_path=item.get("file_path"),
+                output_paths=output_files, warnings=file_warnings, errors=[], source_path=item.get("file_path"),
             )
             register_document_summary(work_ctx, summary_path)
             st.write(f"  💾 {file_name} 已保存")

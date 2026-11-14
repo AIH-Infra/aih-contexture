@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aih_contexture.backends.external_config import DEFAULT_MINERU_LAYOUT_BATCH_SIZE
 from aih_contexture.config.marginal_output import normalize_marginal_output_mode
 
 from aih_contexture.config.parser import ConfigParser
@@ -181,6 +182,7 @@ def vlm_specialized_cli_config(config_params: dict[str, Any]) -> dict[str, Any]:
         "mineru_vl_layout_image_size": config_params.get("mineru_vl_layout_image_size", (1036, 1036)),
         "churro_marginal_note_enabled": bool(config_params.get("enable_marginal_detection", False)),
         "emit_middle_json": emit_middle_json,
+        "emit_reading_diagnostics": bool(config_params.get('emit_reading_diagnostics', False)),
         "emit_middle_report": emit_middle_report,
         "emit_middle_debug": emit_middle_debug,
         "emit_middle_scholarly": emit_middle_scholarly,
@@ -247,6 +249,7 @@ def pipeline_base_cli_config(
         "ocr_quality": config_params.get("ocr_quality", "auto"),
         "ocr_dpi_override": config_params.get("ocr_dpi_override"),
         "emit_middle_json": emit_middle_json,
+        "emit_reading_diagnostics": bool(config_params.get('emit_reading_diagnostics', False)),
         "emit_middle_report": emit_middle_report,
         "emit_middle_debug": emit_middle_debug,
         "emit_middle_scholarly": emit_middle_scholarly,
@@ -383,7 +386,9 @@ def layout_backend_cli_config(layout_backend: str, config_params: dict[str, Any]
     if layout_backend == "mineru_pp_doclayout_v2_direct":
         config = mineru_direct_layout_fields(config_params, include_external_mapping=True)
         config["mineru_layout_timeout"] = _int_param(config_params, "mineru_layout_timeout", 3600)
-        config["mineru_layout_batch_size"] = _int_param(config_params, "mineru_layout_batch_size", 1)
+        config["mineru_layout_batch_size"] = _int_param(
+            config_params, "mineru_layout_batch_size", DEFAULT_MINERU_LAYOUT_BATCH_SIZE
+        )
         return config
 
     if layout_backend == "mineru_vl_layout":
@@ -564,6 +569,8 @@ def scholarly_detection_cli_config(config_params: dict[str, Any]) -> dict[str, A
         config_params.get("marginal_output_mode"),
         enable_marginal_detection=enable_marginal_detection,
     )
+    cli["classical_marginalia_mode"] = config_params.get("classical_marginalia_mode", "off")
+    cli["classical_text_marginalia_mode"] = config_params.get("classical_text_marginalia_mode", "separate")
     if enable_marginal_detection:
         cli["enable_marginal_detection"] = True
         cli["native_marginalia_enabled"] = native_marginalia_enabled
@@ -583,6 +590,14 @@ def scholarly_detection_cli_config(config_params: dict[str, Any]) -> dict[str, A
 
 
 def build_config_dict(config_params: dict[str, Any]) -> dict[str, Any]:
+    config = _build_config_dict(config_params)
+    config['emit_reading_diagnostics'] = bool(config_params.get('emit_reading_diagnostics', False))
+    if config_params.get('middle_geometry_profile'):
+        config['middle_geometry_profile'] = config_params['middle_geometry_profile']
+    return config
+
+
+def _build_config_dict(config_params: dict[str, Any]) -> dict[str, Any]:
     conversion_mode = config_params.get("conversion_mode", "pipeline")
 
     if conversion_mode == "vlm_generalized":
@@ -597,6 +612,8 @@ def build_config_dict(config_params: dict[str, Any]) -> dict[str, Any]:
             template_manager=None,
         )
         config["conversion_mode"] = conversion_mode
+        config["classical_marginalia_mode"] = config_params.get("classical_marginalia_mode", "off")
+        config["classical_text_marginalia_mode"] = config_params.get("classical_text_marginalia_mode", "separate")
         return config
 
     if conversion_mode == "markdown_postprocess":
@@ -610,6 +627,10 @@ def build_config_dict(config_params: dict[str, Any]) -> dict[str, Any]:
             "middle_rerender_include_page_footer_comments": bool(config_params.get("middle_rerender_include_page_footer_comments", True)),
             "middle_rerender_include_margin_comments": bool(config_params.get("middle_rerender_include_margin_comments", True)),
             "middle_rerender_include_page_separators": bool(config_params.get("middle_rerender_include_page_separators", True)),
+            "middle_rerender_marginal_output_mode": config_params.get("middle_rerender_marginal_output_mode"),
+            "middle_rerender_equation_output_mode": config_params.get("middle_rerender_equation_output_mode", "humanities_safe"),
+            "middle_rerender_classical_marginalia_mode": config_params.get("middle_rerender_classical_marginalia_mode", "off"),
+            "middle_rerender_classical_text_marginalia_mode": config_params.get("middle_rerender_classical_text_marginalia_mode", "separate"),
             "middle_rerender_apply_postprocess": bool(config_params.get("middle_rerender_apply_postprocess", False)),
             "markdown_postprocess_review_only": bool(config_params.get("markdown_postprocess_review_only", True)),
             "markdown_postprocess_enable_cleanup": bool(config_params.get("markdown_postprocess_enable_cleanup", True)),
@@ -625,7 +646,10 @@ def build_config_dict(config_params: dict[str, Any]) -> dict[str, Any]:
         }
 
     if conversion_mode == "vlm_specialized":
-        return vlm_specialized_cli_config(config_params)
+        config = vlm_specialized_cli_config(config_params)
+        config["classical_marginalia_mode"] = config_params.get("classical_marginalia_mode", "off")
+        config["classical_text_marginalia_mode"] = config_params.get("classical_text_marginalia_mode", "separate")
+        return config
 
     ocr_backend = config_params.get("ocr_backend", "surya")
     layout_backend = config_params.get("layout_backend", "surya")

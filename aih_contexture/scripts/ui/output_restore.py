@@ -6,6 +6,12 @@ from typing import Iterable
 
 
 _SUFFIX_FORMATS: tuple[tuple[str, str], ...] = (
+    ('.page_repaired.review.md', 'markdown'),
+    ('.page_repaired.md', 'markdown'),
+    ('.diagnostics.json', 'reading_diagnostics'),
+    ("_table_review.jsonl", "table_review"),
+    ("_classical_marginalia.jsonl", "classical_marginalia"),
+    ("_classical_manifest.json", "classical_manifest"),
     (".postprocess_report.json", "postprocess_report"),
     ("_middle_scholarly_report.json", "middle_scholarly_report"),
     ("_middle_scholarly.md", "middle_scholarly"),
@@ -29,6 +35,7 @@ _EXTENSION_FORMATS: dict[str, str] = {
 }
 
 _FORMAT_ORDER: dict[str, int] = {
+    'reading_diagnostics': 145,
     "markdown": 10,
     "json": 20,
     "html": 30,
@@ -43,6 +50,9 @@ _FORMAT_ORDER: dict[str, int] = {
     "postprocess_report": 120,
     "layout_overlay": 130,
     "span_overlay": 140,
+    "table_review": 150,
+    "classical_marginalia": 160,
+    "classical_manifest": 170,
     "pdf": 900,
     "zip": 910,
     "file": 999,
@@ -92,13 +102,13 @@ def scan_output_records_for_restore(out_dir: str | os.PathLike[str]) -> dict[str
     # Outputs are isolated per input file. Scan recursively so the history
     # panel can restore both the new layout and legacy flat outputs.
     for entry in sorted(out_path.rglob("*"), key=lambda item: str(item).lower()):
-        if not entry.is_file() or entry.name.startswith("."):
+        relative = entry.relative_to(out_path)
+        if not entry.is_file() or any(part.startswith(".") for part in relative.parts):
             continue
         if entry.suffix.lower() == ".zip":
             continue
         base, artifact_format = classify_output_file(entry)
         # Prefer the containing folder as the history group for the new layout.
-        relative = entry.relative_to(out_path)
         group = relative.parts[0] if len(relative.parts) > 1 else base
         found.setdefault(group, []).append(
             {

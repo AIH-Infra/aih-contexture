@@ -1,0 +1,15 @@
+root = true
+
+[*]
+charset = utf-8
+insert_final_newline = true
+
+[*.{py,md,toml,json,yml,yaml,sh,command}]
+end_of_line = lf
+
+[*.py]
+indent_style = space
+indent_size = 4
+
+[*.bat]
+end_of_line = crlf

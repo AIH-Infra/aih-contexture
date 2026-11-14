@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields, is_dataclass
+import copy
 from typing import Any, Literal
 
 SCHEMA_VERSION = "contexture-middle-json/0.1"
@@ -73,6 +74,31 @@ class MiddleSpan:
     confidence: float | None = None
     attrs: dict[str, Any] = field(default_factory=dict)
     provenance: list[MiddleProvenance] = field(default_factory=list)
+
+
+def reading_middle_dict(value):
+    """Project the same evidence that compact storage keeps before full copies.
+
+    Full exports still use to_dict(). This avoids materializing polygon/font
+    details that ordinary span storage has always discarded.
+    """
+    if isinstance(value, MiddleSpan):
+        return {'text': value.text, 'bbox': copy.deepcopy(value.bbox),
+                'attrs': {k: reading_middle_dict(v) for k, v in value.attrs.items()
+                          if k in {'font_size', 'formats', 'has_superscript', 'has_subscript', 'char_range'}},
+                'provenance': [{k: getattr(p, k) for k in ('backend', 'stage')} for p in value.provenance]}
+    if is_dataclass(value) and not isinstance(value, type):
+        result = {item.name: reading_middle_dict(getattr(value, item.name)) for item in fields(value)}
+        if isinstance(value, MiddleDocument):
+            result['page_count'] = len(value.pages)
+        elif isinstance(value, MiddlePage):
+            result.update(anchor_start=value.index, anchor_end=value.index + 1)
+        return result
+    if isinstance(value, dict):
+        return {k: reading_middle_dict(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [reading_middle_dict(v) for v in value]
+    return copy.deepcopy(value)
 
 
 @dataclass(slots=True)

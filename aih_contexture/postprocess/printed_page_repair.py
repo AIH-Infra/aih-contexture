@@ -4,8 +4,9 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from aih_contexture.postprocess.reporting import PrintedPageAction
+from aih_contexture.utils.markdown_regions import markdown_lines
 
-PAGE_ANCHOR_RE = re.compile(r"(?m)^\{(\d+)\}\s*$")
+PAGE_ANCHOR_RE = re.compile(r"(?m)^\{(\d+)\}[ \t]*(?=\r?$)")
 PAGE_COMMENT_RE = re.compile(r"<!--\s*Page:\s*(.*?)\s*-->", re.IGNORECASE)
 ROMAN_RE = re.compile(r"^[ivxlcdm]+$", re.IGNORECASE)
 ARABIC_RE = re.compile(r"^\d+$")
@@ -18,6 +19,7 @@ class ParsedPageBlock:
     raw_candidate: str | None
     normalized_candidate: str | None
     candidate_kind: str
+    start_offset: int = 0
 
 
 @dataclass
@@ -88,13 +90,13 @@ class QueryZone:
 
 
 def parse_markdown_pages(markdown: str) -> list[ParsedPageBlock]:
-    matches = list(PAGE_ANCHOR_RE.finditer(markdown or ""))
+    matches = list(PAGE_ANCHOR_RE.finditer(_unprotected_view(markdown or "")))
     pages: list[ParsedPageBlock] = []
     for idx, match in enumerate(matches):
         start = match.start()
         end = matches[idx + 1].start() if idx + 1 < len(matches) else len(markdown)
         block = markdown[start:end]
-        comment_match = PAGE_COMMENT_RE.search(block)
+        comment_match = PAGE_COMMENT_RE.search(_unprotected_view(block))
         raw_candidate = comment_match.group(1).strip() if comment_match else None
         normalized = normalize_candidate(raw_candidate)
         pages.append(
@@ -104,9 +106,16 @@ def parse_markdown_pages(markdown: str) -> list[ParsedPageBlock]:
                 raw_candidate=raw_candidate or None,
                 normalized_candidate=normalized,
                 candidate_kind=detect_candidate_kind(normalized),
+                start_offset=start,
             )
         )
     return pages
+
+
+def _unprotected_view(text: str) -> str:
+    """Mask structural contents without changing any character offsets."""
+    return ''.join(''.join(c if c in '\r\n' else ' ' for c in line) if protected else line
+                   for line, protected in markdown_lines(text, protect_indented=True))
 
 
 def normalize_candidate(value: str | None) -> str | None:
@@ -137,13 +146,14 @@ def detect_candidate_kind(value: str | None) -> str:
 
 
 def _replace_block_comment(block: str, final_value: str | None) -> str:
-    has_comment = bool(PAGE_COMMENT_RE.search(block))
+    match = PAGE_COMMENT_RE.search(_unprotected_view(block))
+    has_comment = match is not None
     if final_value is None:
-        return PAGE_COMMENT_RE.sub("", block, count=1) if has_comment else block
+        return block[:match.start()] + block[match.end():] if has_comment else block
 
     replacement = f"<!-- Page: {final_value} -->"
     if has_comment:
-        return PAGE_COMMENT_RE.sub(replacement, block, count=1)
+        return block[:match.start()] + replacement + block[match.end():]
 
     anchor_match = PAGE_ANCHOR_RE.search(block)
     if not anchor_match:
@@ -1203,6 +1213,9 @@ def infer_sequence_repairs(markdown: str) -> tuple[str, list[PrintedPageAction],
         return rewritten, actions, warnings
 
     page_lookup = {page.pdf_page: page for page in pages}
+    counts = Counter(page.pdf_page for page in pages)
+    original_lengths = {page.start_offset: len(page.raw_block) for page in pages}
+    edits = {}
     seen: set[tuple[int, str, str | None]] = set()
 
     for proposal in proposals:
@@ -1210,6 +1223,8 @@ def infer_sequence_repairs(markdown: str) -> tuple[str, list[PrintedPageAction],
         action = proposal.get("action")
         proposed_value = proposal.get("proposed_value")
         if not isinstance(pdf_page, int) or action not in {"replace", "fill_null", "delete_to_null"}:
+            continue
+        if counts[pdf_page] != 1:
             continue
         page = page_lookup.get(pdf_page)
         if page is None:
@@ -1228,7 +1243,7 @@ def infer_sequence_repairs(markdown: str) -> tuple[str, list[PrintedPageAction],
             continue
 
         new_block = _replace_block_comment(page.raw_block, proposed_value)
-        rewritten = rewritten.replace(page.raw_block, new_block, 1)
+        edits[page.start_offset] = new_block
         actions.append(
             PrintedPageAction(
                 pdf_page=pdf_page,
@@ -1248,6 +1263,8 @@ def infer_sequence_repairs(markdown: str) -> tuple[str, list[PrintedPageAction],
             candidate_kind=detect_candidate_kind(normalize_candidate(proposed_value)),
         )
 
+    for offset, replacement in sorted(edits.items(), reverse=True):
+        rewritten = rewritten[:offset] + replacement + rewritten[offset + original_lengths[offset]:]
     if not actions:
         warnings.append("No conservative printed-page repairs were applied.")
 

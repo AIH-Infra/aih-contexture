@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from aih_contexture.backends.external_config import default_mineru_python, mineru_project_root_from_python
+from aih_contexture.backends.external_config import default_mineru_layout_python
 from aih_contexture.backends.sidecar_pool import SidecarProcessSpec, SidecarRuntimePool
 
 
@@ -24,18 +24,20 @@ class MineruDirectLayoutRuntime:
     def python(self) -> str:
         if self._selected_python:
             return self._selected_python
-        configured = self.config.get("mineru_layout_python") or self.config.get("mineru_python")
+        # Only an explicit layout interpreter overrides the shared PyTorch
+        # environment; the generic mineru_python belongs to the OCR/CLI paths.
+        configured = self.config.get("mineru_layout_python")
         value = configured or self._default_python_with_fallback()
         if not value:
             raise RuntimeError(
-                "MinerU direct layout requires a MinerU Python interpreter. "
-                "Set 'mineru_layout_python' or CONTEXTURE_MINERU_PYTHON."
+                "PP-DocLayoutV2 layout needs a Python interpreter with PyTorch. "
+                "Set 'mineru_layout_python' or CONTEXTURE_MINERU_LAYOUT_PYTHON."
             )
         self._selected_python = str(value)
         return self._selected_python
 
     def _default_python_with_fallback(self) -> str | None:
-        primary = default_mineru_python()
+        primary = default_mineru_layout_python()
         candidates = []
         if primary:
             candidates.append(str(primary))
@@ -44,7 +46,9 @@ class MineruDirectLayoutRuntime:
             candidates.append(current)
 
         for candidate in candidates:
-            if self._python_can_import_layout(candidate):
+            # The interpreter already running Contexture is the last resort and
+            # needs no probe: importing torch just to confirm it costs seconds.
+            if candidate == current or self._python_can_import_layout(candidate):
                 return candidate
         return primary
 
@@ -54,7 +58,7 @@ class MineruDirectLayoutRuntime:
                 [
                     str(python),
                     "-c",
-                    "import torch; from mineru.model.layout.pp_doclayoutv2 import PPDocLayoutV2LayoutModel",
+                    "from aih_contexture.backends.layout.pp_doclayoutv2_model import PPDocLayoutV2LayoutModel",
                 ],
                 cwd=Path(__file__).resolve().parents[3],
                 env=self._env_for_python(str(python)),
@@ -123,6 +127,8 @@ class MineruDirectLayoutRuntime:
                 env=self._env(),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=int(self.config.get("mineru_layout_timeout", self.config.get("mineru_timeout", 3600))),
                 check=False,
             )
@@ -181,10 +187,9 @@ class MineruDirectLayoutRuntime:
         env = os.environ.copy()
         repo_root = str(Path(__file__).resolve().parents[3])
         existing = env.get("PYTHONPATH")
+        # The PP-DocLayoutV2 driver is vendored in this package, so the sidecar
+        # only needs this repository on PYTHONPATH — no external MinerU source.
         python_paths = [repo_root]
-        external_root = mineru_project_root_from_python(python)
-        if external_root:
-            python_paths.append(str(external_root))
         if existing:
             python_paths.append(existing)
         env["PYTHONPATH"] = os.pathsep.join(python_paths)

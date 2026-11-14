@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from aih_contexture.backends.external_config import DEFAULT_MINERU_LAYOUT_BATCH_SIZE
 from aih_contexture.builders.ocr_line_crops import (
     DEFAULT_OCR_CROP_PADDING_FRAC,
     DEFAULT_OCR_CROP_PADDING_PX,
@@ -61,10 +62,10 @@ def mineru_layout_fields(values: Mapping[str, Any], *, include_external_mapping:
 
 def mineru_direct_layout_fields(values: Mapping[str, Any], *, include_external_mapping: bool = False) -> dict[str, Any]:
     fields = {
-        "mineru_layout_python": values.get("mineru_layout_python") or values.get("mineru_python"),
+        "mineru_layout_python": values.get("mineru_layout_python"),
         "mineru_layout_model_dir": values.get("mineru_layout_model_dir"),
         "mineru_layout_device": values.get("mineru_layout_device"),
-        "mineru_layout_batch_size": values.get("mineru_layout_batch_size", 1),
+        "mineru_layout_batch_size": values.get("mineru_layout_batch_size", DEFAULT_MINERU_LAYOUT_BATCH_SIZE),
         "mineru_layout_use_paddlex_filter_boxes": values.get("mineru_layout_use_paddlex_filter_boxes"),
         "mineru_layout_timeout": values.get("mineru_layout_timeout", values.get("mineru_timeout", 3600)),
     }
@@ -144,9 +145,56 @@ def surya2_vlm_fields(values: Mapping[str, Any], *, layout_only: bool = False, p
     }
 
 
+def indra_fields(values: Mapping[str, Any]) -> dict[str, Any]:
+    """Settings of the Indra direct route (layout + OCR in one CPU pass); empty values fall back to environment defaults."""
+    return {
+        key: values.get(key)
+        for key in (
+            "indra_python", "indra_model_dir", "indra_mode", "indra_dpi", "indra_cores",
+            "indra_math", "indra_allow_download", "indra_cache_dir", "indra_timeout", "indra_review_mean", "indra_review_min",
+        )
+        if values.get(key) not in (None, "")
+    }
+
+
+def glm_ocr_fields(values: Mapping[str, Any]) -> dict[str, Any]:
+    """Pipeline block-OCR settings for GLM-OCR served over an OpenAI-compatible API."""
+    endpoint = values.get("glm_ocr_endpoint")
+    if endpoint is None:
+        endpoint = values.get("ocr_endpoint", values.get("openai_base_url"))
+    endpoint = _openai_vlm_endpoint(endpoint, api_style="openai")
+    api_key = values.get("glm_ocr_api_key")
+    if api_key is None:
+        api_key = values.get("ocr_api_key", values.get("openai_api_key"))
+    version = values.get("glm_ocr_version", default_version("glm_ocr"))
+    quant = values.get("glm_ocr_quant") or default_quant("glm_ocr")
+    model = values.get("glm_ocr_model") or resolve_vlm_model("glm_ocr", version=version, quant=quant)
+    return {
+        "ocr_endpoint": endpoint,
+        "ocr_api_key": api_key,
+        "glm_ocr_endpoint": endpoint,
+        "glm_ocr_api_key": api_key,
+        "glm_ocr_version": version,
+        "glm_ocr_quant": quant,
+        "glm_ocr_model": model,
+        "glm_ocr_timeout": values.get("glm_ocr_timeout", values.get("ocr_timeout", 120)),
+        "glm_ocr_max_tokens": values.get("glm_ocr_max_tokens", 4096),
+        "glm_ocr_block_concurrency": values.get("glm_ocr_block_concurrency", 4),
+        "glm_ocr_request_concurrency": values.get("glm_ocr_request_concurrency", 0),
+        "glm_ocr_image_format": values.get("glm_ocr_image_format", "PNG"),
+        "glm_ocr_image_quality": values.get("glm_ocr_image_quality", values.get("ocr_image_quality", 90)),
+        "glm_ocr_crop_padding_px": values.get("glm_ocr_crop_padding_px", 4),
+        "glm_ocr_crop_padding_frac": values.get("glm_ocr_crop_padding_frac", 0.02),
+        "glm_ocr_recognize_formulas": bool(values.get("glm_ocr_recognize_formulas", False)),
+    }
+
+
 def mineru_ocr_fields(values: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "mineru_ocr_python": values.get("mineru_ocr_python") or values.get("mineru_layout_python") or values.get("mineru_python"),
+        "mineru_ocr_python": values.get("mineru_ocr_python") or values.get("mineru_python"),
+        "mineru_ocr_model_dir": values.get("mineru_ocr_model_dir"),
+        "mineru_ocr_version": values.get("mineru_ocr_version") or "PP-OCRv5",
+        "mineru_ocr_allow_download": values.get("mineru_ocr_allow_download", False),
         "mineru_ocr_lang": values.get("mineru_ocr_lang", values.get("paddle_ocr_lang", "ch")),
         "mineru_ocr_device": values.get("mineru_ocr_device"),
         "mineru_ocr_timeout": values.get("mineru_ocr_timeout", values.get("mineru_timeout", 3600)),
@@ -168,6 +216,7 @@ def paddle_layout_fields(
         "paddle_layout_python": values.get("paddle_layout_python"),
         "paddle_layout_model_name": model_name,
         "paddle_layout_model_dir": values.get("paddle_layout_model_dir"),
+        "paddle_layout_allow_download": values.get("paddle_layout_allow_download", False),
         "paddle_layout_device": values.get("paddle_layout_device"),
         "paddle_layout_engine": values.get("paddle_layout_engine"),
         "paddle_layout_enable_mkldnn": values.get("paddle_layout_enable_mkldnn", False),

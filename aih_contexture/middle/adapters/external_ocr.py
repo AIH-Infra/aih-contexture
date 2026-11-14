@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from aih_contexture.middle.storage import decode_middle_storage
+
 import copy
 from typing import Any
 
@@ -22,7 +24,7 @@ def merge_external_ocr_into_middle_document(
     This is an offline bridge for PaddleOCR/MinerU/generic OCR JSON. It does not
     run OCR and does not render Markdown.
     """
-    data = copy.deepcopy(middle_payload)
+    data = copy.deepcopy(decode_middle_storage(middle_payload))
     data.setdefault("metadata", {})["ocr_import_source"] = source
     backends = data.setdefault("backends", {})
     backends["ocr"] = backend

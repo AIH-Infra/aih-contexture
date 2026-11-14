@@ -34,6 +34,8 @@ class PaddleOcrBuilder(BaseBuilder):
     paddle_ocr_min_containment: Annotated[float, "Minimum OCR box containment ratio needed to attach to an existing line."] = 0.20
     paddle_ocr_append_unmatched_lines: Annotated[bool, "Append unmatched OCR boxes as new lines inside the best text block."] = True
 
+    ocr_backend_name = "paddle_ocr_v5"  # recorded on every line/span this builder writes (subclasses reuse the write-back)
+
     skip_ocr_blocks: Annotated[list[BlockTypes], "Block types to skip OCR."] = [
         BlockTypes.Equation,
         BlockTypes.Figure,
@@ -97,14 +99,14 @@ class PaddleOcrBuilder(BaseBuilder):
             if line is None:
                 continue
             span = self._span_from_item(page, item, polygon)
+            # replace_line_spans deep-copies spans while restoring any links from
+            # the existing line. Set metadata first so each resulting fragment
+            # (including hyperlink fragments) retains the OCR provenance.
+            line.set_internal_metadata("ocr_backend", self.ocr_backend_name)
+            line.set_internal_metadata("ocr_confidence", item.get("confidence"))
+            span.set_internal_metadata("ocr_backend", self.ocr_backend_name)
+            span.set_internal_metadata("ocr_confidence", item.get("confidence"))
             self._ocr_helper.replace_line_spans(document, page, line, [span])
-            try:
-                line.set_internal_metadata("ocr_backend", "paddle_ocr_v5")
-                line.set_internal_metadata("ocr_confidence", item.get("confidence"))
-                span.set_internal_metadata("ocr_backend", "paddle_ocr_v5")
-                span.set_internal_metadata("ocr_confidence", item.get("confidence"))
-            except Exception:
-                pass
 
     def _best_line(self, document: Document, page: PageGroup, polygon: PolygonBox):
         best_line = None

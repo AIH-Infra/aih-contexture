@@ -22,3 +22,6 @@ def structured_source_cli(input_path: Path, output_dir: Path, emit_line_indexes:
 def validate_source_package_cli(package_dir: Path) -> None:
     manifest = validate_source_package(package_dir)
     click.echo(json.dumps({"valid": True, "document_id": manifest["document_id"]}, ensure_ascii=False))
+
+if __name__ == "__main__":
+    structured_source_cli()

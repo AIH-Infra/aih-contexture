@@ -5,7 +5,7 @@ from aih_contexture.config.vlm_model_presets import default_quant, default_versi
 
 def render_mineru_vl_layout_settings(st, *, description: str) -> dict[str, object]:
     st.info(description)
-    st.caption("仅调用 MinerU-VL 的 Layout Detection；正文 OCR 仍由下方 OCR 后端决定。")
+    st.caption("仅调用 MinerU-VL 的版面检测；文字来源由下方 OCR 后端决定。")
 
     api_style_options = ["lmstudio-native", "openai"]
     api_style = st.selectbox(
@@ -37,7 +37,7 @@ def render_mineru_vl_layout_settings(st, *, description: str) -> dict[str, objec
     default_model = resolve_vlm_model("mineru_vl", version=version, quant=quant)
 
     endpoint = st.text_input(
-        "Endpoint",
+        "API 端点",
         value=st.session_state.get("mineru_vl_endpoint", _default_endpoint(api_style)),
         help="OpenAI 兼容通常以 /v1/chat/completions 结尾；LM Studio 原生通常为 /api/v1/chat。",
         key="mineru_vl_endpoint",
@@ -57,14 +57,14 @@ def render_mineru_vl_layout_settings(st, *, description: str) -> dict[str, objec
     col1, col2 = st.columns(2)
     with col1:
         concurrency = st.slider(
-            "Layout 请求并发",
+            "版面请求并发数",
             min_value=1,
             max_value=8,
             value=int(st.session_state.get("mineru_vl_layout_concurrency", 1)),
             key="mineru_vl_layout_concurrency",
         )
         timeout = st.number_input(
-            "Layout 超时（秒）",
+            "版面请求超时（秒）",
             min_value=30,
             max_value=1200,
             value=int(st.session_state.get("mineru_vl_layout_timeout", 120)),
@@ -73,7 +73,7 @@ def render_mineru_vl_layout_settings(st, *, description: str) -> dict[str, objec
         )
     with col2:
         image_size = st.number_input(
-            "Layout 图像边长",
+            "版面图像边长（像素）",
             min_value=512,
             max_value=2048,
             value=int(_image_size_value(st.session_state.get("mineru_vl_layout_image_size", (1036, 1036)))),

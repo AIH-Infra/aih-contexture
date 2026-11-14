@@ -145,4 +145,4 @@ class Line(Block):
         if self.formats is None:
             self.formats = other.formats
         elif other.formats is not None:
-            self.formats = list(set(self.formats + other.formats))
+            self.formats = sorted(set(self.formats + other.formats))

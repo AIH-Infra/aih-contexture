@@ -10,6 +10,7 @@ from aih_contexture.runtime.run_summary import ensure_processing_id, utc_now_iso
 from aih_contexture.scripts.ui.batch_inputs import materialize_pdf_batch, pdf_page_count, safe_cleanup_temp_files
 from aih_contexture.scripts.ui.pipeline_batch_plan import plan_pipeline_page_ranges
 from aih_contexture.scripts.ui.pipeline_job_plan import build_pipeline_batch_jobs, build_pipeline_file_job_spec
+from aih_contexture.runtime.pipeline_parallelism import plan_from_values
 from aih_contexture.scripts.ui.pipeline_subprocess import run_pipeline_file_subprocess
 from aih_contexture.scripts.ui.task_outputs import (
     get_output_basename,
@@ -119,14 +120,18 @@ def run_pipeline_file(
         total_pages = pdf_page_count(file_path)
         write(f"📊 检测到 {total_pages} 页")
 
+        parallel_plan = None
         if _is_text_layer_fast_path(values):
             page_ranges = _text_layer_page_range(total_pages, values)
         else:
-            effective_pages_per_batch = _effective_pages_per_batch(values)
+            parallel_plan = plan_from_values(dict(values), total_pages=total_pages)
+            effective_pages_per_batch = _effective_pages_per_batch(
+                {**values, "pages_per_batch": parallel_plan.pages_per_batch}
+            )
             page_ranges = plan_pipeline_page_ranges(
                 total_pages=total_pages,
                 process_mode=values.get("process_mode", "自动"),
-                batch_threshold=int(values.get("batch_threshold", 50)),
+                batch_threshold=parallel_plan.batch_threshold,
                 pages_per_batch=effective_pages_per_batch,
                 use_page_range=bool(values.get("use_page_range", False)),
                 start_page_1based=values.get("start_page_1based"),
@@ -175,7 +180,13 @@ def run_pipeline_file(
             batch_jobs=batch_jobs,
             processing_id=processing_id,
             file_index=file_idx + 1,
+            pipeline_workers=parallel_plan.workers if parallel_plan and len(batch_jobs) > 1 else 1,
         )
+        if parallel_plan is not None:
+            workers = parallel_plan.workers if len(batch_jobs) > 1 else 1
+            write(f"⚙️ 性能配置：{workers} 个并行进程 × {len(batch_jobs)} 批（每批 {effective_pages_per_batch} 页）")
+            for note in parallel_plan.notes:
+                warning(note)
 
         write(f"🚀 启动单文件子进程: {file_name}")
         stall_timeout_seconds = max(

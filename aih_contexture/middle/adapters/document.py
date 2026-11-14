@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from copy import deepcopy
 
 from aih_contexture.middle.heading_levels import normalize_middle_heading_levels
 from aih_contexture.middle.labels import normalize_block_type
@@ -12,6 +13,7 @@ from aih_contexture.middle.schema import (
     MiddleSpan,
 )
 from aih_contexture.schema import BlockTypes
+from aih_contexture.utils.footnote_markers import match_leading_footnote_marker
 
 
 def document_to_middle(
@@ -50,6 +52,10 @@ def document_to_middle(
         pages=pages,
         backends=backends,
     )
+    from aih_contexture.middle.indra_evidence import collect_indra_evidence
+    indra = collect_indra_evidence(pages)
+    if indra:
+        document.metadata["indra"] = indra
     return normalize_middle_heading_levels(document)
 
 
@@ -65,7 +71,10 @@ def _page_to_middle(
     page_index = int(getattr(page, "page_id", 0))
     page_polygon = getattr(page, "polygon", None)
     page_metadata = dict(getattr(page, "_internal_metadata", {}) or {})
+    getter = getattr(page, "get_internal_metadata", None)
+    indra_evidence = getter("indra") if callable(getter) else None
     blocks = []
+    source_blocks = []
 
     structure = list(getattr(page, "structure", []) or [])
     for order, block_id in enumerate(structure):
@@ -82,11 +91,20 @@ def _page_to_middle(
                 ocr_backend=ocr_backend,
             )
         )
+        source_blocks.append(block)
+
+    page_height = getattr(page_polygon, "height", None)
+    _infer_bold_text_footnotes(
+        blocks,
+        source_blocks=source_blocks,
+        document=document,
+        page_height=page_height,
+    )
 
     return MiddlePage(
         index=page_index,
         width=getattr(page_polygon, "width", None),
-        height=getattr(page_polygon, "height", None),
+        height=page_height,
         printed_page=_text_or_none(page_metadata.get("printed_page_number")),
         blocks=blocks,
         attrs={
@@ -95,6 +113,7 @@ def _page_to_middle(
             "machine_page_number": page_metadata.get("machine_page_number"),
             "page_header_text": page_metadata.get("page_header_text"),
             "page_footer_text": page_metadata.get("page_footer_text"),
+            **({"indra": deepcopy(indra_evidence)} if indra_evidence else {}),
         },
         provenance=[
             MiddleProvenance(
@@ -105,6 +124,51 @@ def _page_to_middle(
             )
         ],
     )
+
+
+def _infer_bold_text_footnotes(
+    blocks: list[MiddleBlock],
+    *,
+    source_blocks: list[Any],
+    document: Any,
+    page_height: float | None,
+) -> None:
+    """Recover text-layer footnotes missed by layout classification.
+
+    Some modern publisher PDFs label a lower-page footnote as ``Text`` while
+    retaining a bold leading marker span. Treat only that narrow combination
+    as an inferred Footnote; ordinary numbered body paragraphs remain Text.
+    """
+    if not isinstance(page_height, (int, float)) or page_height <= 0:
+        return
+
+    for middle_block, source_block in zip(blocks, source_blocks):
+        if middle_block.type != "Text":
+            continue
+        marker = match_leading_footnote_marker(middle_block.text or "")
+        if marker is None or marker.style == "alpha":
+            continue
+        if not middle_block.bbox or float(middle_block.bbox[1]) < float(page_height) * 0.5:
+            continue
+
+        try:
+            spans = source_block.contained_blocks(document, (BlockTypes.Span,))
+        except Exception:
+            spans = []
+        first_span = next((span for span in spans if str(getattr(span, "text", "")).strip()), None)
+        formats = set(getattr(first_span, "formats", []) or []) if first_span is not None else set()
+        font_weight = float(getattr(first_span, "font_weight", 0) or 0) if first_span is not None else 0.0
+        if "bold" not in formats and font_weight < 600:
+            continue
+
+        middle_block.type = "Footnote"
+        middle_block.attrs.update(
+            {
+                "inferred_type": "Footnote",
+                "raw_block_type_before_inference": "Text",
+                "footnote_evidence": ["leading_marker", "bold_marker", "lower_page_region"],
+            }
+        )
 
 
 def _text_or_none(value: Any) -> str | None:
@@ -150,11 +214,17 @@ def _block_to_middle(
         "backend_label",
         "label_source",
         "native_layout_backend",
+        "native_polygon",
+        "native_reading_order",
         "marginal_source",
         "marginal_subtype",
         "position_type",
         "original_block_type",
         "block_source",
+        "ocr_backend",
+        "ocr_failure",
+        "ocr_prompt_label",
+        "ocr_bbox_precision",
     ):
         if key in block_metadata:
             attrs[key] = block_metadata[key]
@@ -167,6 +237,9 @@ def _block_to_middle(
         attrs["raw_block_type"] = block_label
     if native_raw_label and str(native_raw_label) != block_label:
         attrs["native_raw_label"] = str(native_raw_label)
+
+    from aih_contexture.middle.reading_structure import source_block_reading_attrs
+    attrs.update(source_block_reading_attrs(block, document, canonical_type))
 
     return MiddleBlock(
         id=str(getattr(block, "id", f"p{page_index}-b{order}")),

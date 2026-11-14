@@ -1,17 +1,28 @@
 from __future__ import annotations
 
+from aih_contexture.middle.storage import decode_middle_storage
+
 import copy
 import html
 import re
+import hashlib
+import json
 from typing import Any
+from aih_contexture.utils.markdown_regions import transform_prose_regions
+from aih_contexture.utils.storage_numbers import storage_numbers
 
 from aih_contexture.utils.footnote_markers import (
     match_leading_footnote_marker,
     normalize_footnote_marker,
 )
+from aih_contexture.middle.semantics.page_furniture import (
+    PAGE_FURNITURE_VERSION,
+    DocumentFurnitureContext,
+    review_page_furniture,
+)
 
 
-FOOTNOTE_SEMANTIC_VERSION = "footnote-superscript/0.2"
+FOOTNOTE_SEMANTIC_VERSION = "footnote-superscript/0.8"
 
 _HTML_SUP_RE = re.compile(r"<sup>\s*(.*?)\s*</sup>", re.IGNORECASE | re.DOTALL)
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -56,7 +67,7 @@ def resolve_middle_for_rendering(
     force: bool = False,
 ) -> dict[str, Any]:
     config = config or {}
-    return resolve_document_semantics(
+    resolved = resolve_document_semantics(
         middle_json,
         footnote_enabled=bool(config.get("footnote_enabled", True)),
         marginal_detection_enabled=bool(config.get("marginal_detection_enabled", True)),
@@ -64,6 +75,10 @@ def resolve_middle_for_rendering(
         profile=str(config.get("semantic_profile", "humanities")),
         force=force,
     )
+    if isinstance(resolved, dict):
+        from aih_contexture.middle.page_folios import annotate_observed_folios
+        annotate_observed_folios(resolved)
+    return resolved
 
 
 def resolve_document_semantics(
@@ -75,20 +90,33 @@ def resolve_document_semantics(
     profile: str = "humanities",
     force: bool = False,
 ) -> dict[str, Any]:
+    middle_json = decode_middle_storage(middle_json)
     if not isinstance(middle_json, dict):
         return middle_json
 
+    from aih_contexture.middle.semantics.recorded_annotations import normalize_recorded_annotations
+    middle_json = storage_numbers(middle_json)
+    normalize_recorded_annotations(middle_json)
     metadata = middle_json.get("metadata")
+    source_fingerprint = _semantic_source_fingerprint(middle_json)
+    requested = {
+        'profile': profile, 'footnote_enabled': footnote_enabled,
+        'marginal_detection_enabled': marginal_detection_enabled,
+        'superscript_policy': superscript_policy,
+    }
     if (
         not force
         and isinstance(metadata, dict)
         and isinstance(metadata.get("semantic_resolution"), dict)
         and metadata["semantic_resolution"].get("version") == FOOTNOTE_SEMANTIC_VERSION
+        and metadata['semantic_resolution'].get('page_furniture_version') == PAGE_FURNITURE_VERSION
         and metadata["semantic_resolution"].get("completed") is True
+        and all(metadata['semantic_resolution'].get(key) == value for key, value in requested.items())
+        and metadata['semantic_resolution'].get('source_fingerprint') == source_fingerprint
     ):
-        return copy.deepcopy(middle_json)
+        return middle_json  # Numeric normalization already owns a private tree.
 
-    data = copy.deepcopy(middle_json)
+    data = middle_json  # Already a private copy, normalized above.
     pages = data.get("pages")
     if not isinstance(pages, list):
         return data
@@ -100,23 +128,76 @@ def resolve_document_semantics(
         "visual_superscripts_unwrapped": 0,
         "marginal_line_numbers": 0,
         "toc_page_numbers_unwrapped": 0,
+        "page_footers_reviewed": 0,
+        "footnotes_pending_verification": 0,
     }
     warnings: list[str] = []
+    previous_resolution = metadata.get('semantic_resolution') if isinstance(metadata, dict) else None
+
+    def source_blocks(blocks):
+        for block in blocks or []:
+            if not isinstance(block, dict):
+                continue
+            attrs = _attrs(block)
+            furniture = attrs.get('semantic_furniture_source') or attrs.get('page_furniture_review')
+            if isinstance(furniture, dict):
+                originals = furniture.get('original_attributes') or {}
+                for key in ('footnote_confidence', 'footnote_status', 'excluded_from'):
+                    if key in originals:
+                        attrs[key] = copy.deepcopy(originals[key])
+                    else:
+                        attrs.pop(key, None)
+                attrs.pop('page_furniture_review', None)
+                attrs.pop('semantic_furniture_source', None)
+            previous_marks = attrs.get('inline_marks') or []
+            if 'semantic_source_text' in attrs:
+                if block.get('text') == attrs.get('semantic_rendered_text'):
+                    block['text'] = attrs['semantic_source_text']
+                else:
+                    # A caller edited the source text since the previous read.
+                    attrs['semantic_source_text'] = str(block.get('text') or '')
+                attrs.pop('inline_marks', None)
+            elif footnote_enabled and any(mark.get('reason') == 'footnote_disabled'
+                    for mark in previous_marks if isinstance(mark, dict)):
+                warnings.append('historical_superscript_source_unavailable')
+            if 'semantic_source_type' in attrs:
+                if block.get('type') == attrs.get('semantic_rendered_type'):
+                    block['type'] = attrs['semantic_source_type']
+                else:
+                    attrs['semantic_source_type'] = str(block.get('type') or '')
+                attrs.pop('page_furniture_review', None)
+            if isinstance(previous_resolution, dict) and previous_resolution.get('completed'):
+                attrs.pop('inline_marks', None)
+            yield block
+            yield from source_blocks(block.get('children'))
+
+    for page in pages:
+        if isinstance(page, dict):
+            list(source_blocks(page.get('blocks')))
+
+    doc_context = DocumentFurnitureContext(pages)
 
     for page in pages:
         if not isinstance(page, dict):
             continue
         _resolve_page(
             page,
+            doc_context=doc_context,
             footnote_enabled=footnote_enabled,
             marginal_detection_enabled=marginal_detection_enabled,
             counts=counts,
             warnings=warnings,
         )
+        for block in _walk_semantic_blocks(page.get('blocks')):
+            attrs = _attrs(block)
+            if 'semantic_source_text' in attrs:
+                attrs['semantic_rendered_text'] = str(block.get('text') or '')
 
     data.setdefault("metadata", {})["semantic_resolution"] = {
         "version": FOOTNOTE_SEMANTIC_VERSION,
+        "page_furniture_version": PAGE_FURNITURE_VERSION,
         "completed": True,
+        "source_fingerprint": _semantic_source_fingerprint(data),
         "profile": profile,
         "footnote_enabled": footnote_enabled,
         "marginal_detection_enabled": marginal_detection_enabled,
@@ -130,14 +211,112 @@ def resolve_document_semantics(
     return data
 
 
+def _walk_semantic_blocks(blocks):
+    for block in blocks or []:
+        if isinstance(block, dict):
+            yield block
+            yield from _walk_semantic_blocks(block.get('children'))
+
+
+def _semantic_source_fingerprint(data: dict[str, Any]) -> str:
+    def source_block(block):
+        attrs = block.get('attrs') or {}
+        text = _block_text(block)
+        if block.get('text') == attrs.get('semantic_rendered_text') and 'semantic_source_text' in attrs:
+            text = attrs['semantic_source_text']
+        block_type = attrs.get('semantic_source_type') if (
+            'semantic_source_type' in attrs and block.get('type') == attrs.get('semantic_rendered_type')
+        ) else block.get('type')
+        from aih_contexture.middle.native_geometry import compact_native_spans
+        # Layout is now semantic evidence too: edited geometry or upstream
+        # confidence must invalidate the furniture decision after a reload.
+        return {'id': block.get('id'), 'type': block_type, 'text': text,
+                'bbox': block.get('bbox'), 'confidence': block.get('confidence'),
+                'coordinate_space': attrs.get('coordinate_space'),
+                'spans': compact_native_spans({**block, 'text': text}),
+                'children': [source_block(child) for child in block.get('children') or [] if isinstance(child, dict)]}
+    pages = data.get('pages')
+    payload = [{'index': page.get('index'), 'width': page.get('width'), 'height': page.get('height'),
+                'blocks': [source_block(b) for b in page.get('blocks') or [] if isinstance(b, dict)]}
+               for page in (pages if isinstance(pages, list) else []) if isinstance(page, dict)]
+    return hashlib.sha256(json.dumps(storage_numbers(payload), ensure_ascii=False, sort_keys=True).encode('utf-8')).hexdigest()
+
+
+def _retain_semantic_source(block: dict[str, Any], text: str) -> None:
+    _attrs(block).setdefault('semantic_source_text', text)
+
+
+def normalize_legacy_markdown_footnote_definitions(
+    markdown: str,
+    middle_json: dict[str, Any],
+) -> str:
+    """Repair legacy Markdown markers using resolved Middle footnote evidence.
+
+    The legacy HTML renderer can preserve a PDF's visual ``<b>25</b>`` marker
+    even when Middle semantics has already identified the block as a Footnote.
+    Convert only a bold marker whose following body matches a resolved
+    footnote definition; unrelated bold numbered prose remains untouched.
+    """
+    definitions: dict[str, list[str]] = {}
+    for page in (middle_json or {}).get("pages", []):
+        for block in page.get("blocks", []):
+            if str(block.get("type") or "") != "Footnote":
+                continue
+            text = str(block.get("text") or "")
+            marker_match = match_leading_footnote_marker(text)
+            attrs = block.get("attrs") if isinstance(block.get("attrs"), dict) else {}
+            marker = attrs.get("marker_normalized") or (
+                marker_match.normalized if marker_match else None
+            )
+            if not marker:
+                continue
+            body = text[marker_match.body_start :] if marker_match else text
+            definitions.setdefault(str(marker), []).append(_normalize_legacy_text(body))
+
+    if not definitions:
+        return markdown
+
+    line_re = re.compile(r"^(?P<indent>\s*)\*\*(?P<marker>[^*\n]+)\*\*(?P<rest>\s+.+?)\s*$", re.MULTILINE)
+
+    def replace(match: re.Match[str]) -> str:
+        marker = normalize_footnote_marker(match.group("marker"))
+        if marker is None or marker not in definitions:
+            return match.group(0)
+        rest = _normalize_legacy_text(match.group("rest"))
+        if not rest:
+            return match.group(0)
+        if not any(_legacy_prefix_matches(rest, body) for body in definitions[marker]):
+            return match.group(0)
+        return f"{match.group('indent')}<sup>{marker}</sup>{match.group('rest')}"
+
+    return line_re.sub(replace, str(markdown or ""))
+
+
+def _normalize_legacy_text(value: str) -> str:
+    value = html.unescape(str(value or ""))
+    value = re.sub(r"<[^>]+>", " ", value)
+    value = re.sub(r"[*_`]+", "", value)
+    return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def _legacy_prefix_matches(left: str, right: str) -> bool:
+    if not left or not right:
+        return False
+    sample_left = left[:120]
+    sample_right = right[:120]
+    return sample_left.startswith(sample_right) or sample_right.startswith(sample_left)
+
 def _resolve_page(
     page: dict[str, Any],
     *,
+    doc_context: DocumentFurnitureContext | None = None,
     footnote_enabled: bool,
     marginal_detection_enabled: bool,
     counts: dict[str, int],
     warnings: list[str],
 ) -> None:
+    if doc_context is not None:
+        review_page_furniture(page, doc_context, counts=counts)
     blocks = [block for block in page.get("blocks", []) or [] if isinstance(block, dict)]
     footnotes = _prepare_blocks_and_collect_footnotes(
         blocks,
@@ -150,7 +329,7 @@ def _resolve_page(
         if block_type == "Footnote":
             continue
         if block_type in _INLINE_REFERENCE_EXCLUDED_TYPES:
-            if block_type != "Equation":
+            if block_type in {'PageHeader', 'PageFooter', 'PageNumber', 'TableOfContents'}:
                 _unwrap_excluded_block_superscripts(block, block_type=block_type, counts=counts)
             continue
         _resolve_inline_superscripts(
@@ -169,7 +348,6 @@ def _prepare_blocks_and_collect_footnotes(
     counts: dict[str, int],
 ) -> dict[str, dict[str, Any]]:
     footnotes: dict[str, dict[str, Any]] = {}
-    footnote_seq = 1
     for block in blocks:
         block_type = str(block.get("type") or "")
         attrs = _attrs(block)
@@ -180,17 +358,38 @@ def _prepare_blocks_and_collect_footnotes(
 
         text = _block_text(block)
         if block_type == "Footnote":
-            marker = _extract_leading_marker(text) or str(footnote_seq)
+            if attrs.get('footnote_status') == 'unconfirmed':
+                attrs['semantic_role'] = 'footnote_pending_verification'
+                # An uncertain note cannot establish a made-up numeric call.
+                continue
+            candidate = match_leading_footnote_marker(text, allow_ambiguous_alpha=True)
+            alpha_evidence = False
+            if candidate and candidate.style in {'alpha', 'roman'}:
+                reference = re.compile(r'<sup>\s*' + re.escape(candidate.original) + r'\s*</sup>', re.I)
+                alpha_evidence = any(reference.search(_block_text(other)) for other in blocks
+                                     if other.get('type') in {'Text', 'ListItem'})
+                if not alpha_evidence:
+                    from aih_contexture.middle.native_geometry import compact_native_spans
+                    spans = compact_native_spans(block)
+                    alpha_evidence = bool(spans and (spans[0].get('attrs') or {}).get('has_superscript'))
+            match = match_leading_footnote_marker(text, allow_ambiguous_alpha=alpha_evidence)
+            marker = match.original if match else None
+            if not marker:
+                attrs['footnote_status'] = 'unconfirmed'
+                attrs['semantic_role'] = 'footnote_pending_verification'
+                attrs.pop('marker', None)
+                attrs.pop('marker_normalized', None)
+                continue
             marker_norm = _normalize_marker(marker)
             attrs["semantic_role"] = "footnote_definition"
             attrs["marker"] = marker
             attrs["marker_normalized"] = marker_norm
-            attrs["footnote_confidence"] = "strong"
-            attrs["footnote_evidence"] = _unique_list(
-                list(attrs.get("footnote_evidence") or []) + ["block_type", "backend_label"]
-            )
+            if attrs.get("footnote_confidence") != "pending_verification":
+                attrs["footnote_confidence"] = "strong"
+                attrs["footnote_evidence"] = _unique_list(
+                    list(attrs.get("footnote_evidence") or []) + ["block_type", "backend_label"]
+                )
             footnotes.setdefault(marker_norm, block)
-            footnote_seq += 1
             counts["footnote_definitions"] += 1
             continue
 
@@ -241,6 +440,7 @@ def _unwrap_excluded_block_superscripts(
 
     new_text = _HTML_SUP_RE.sub(replace, text)
     if new_text != text:
+        _retain_semantic_source(block, text)
         block["text"] = new_text
         _extend_inline_marks(block, inline_marks)
 
@@ -258,6 +458,7 @@ def _resolve_inline_superscripts(
         return
 
     inline_marks: list[dict[str, Any]] = []
+    context = [text]
 
     def replace(match: re.Match[str]) -> str:
         marker = _plain_marker(match.group(1))
@@ -285,7 +486,7 @@ def _resolve_inline_superscripts(
             )
             return match.group(0)
 
-        if _looks_like_reference_context(text[: match.start()], marker):
+        if _looks_like_reference_context(context[0][: match.start()], marker):
             counts["visual_superscripts_unwrapped"] += 1
             inline_marks.append(_inline_mark(marker, "ordinary_text", "unwrap_sup", "reference_context"))
             return html.escape(marker, quote=False)
@@ -304,10 +505,14 @@ def _resolve_inline_superscripts(
         inline_marks.append(_inline_mark(marker, "visual_superscript", "preserve_sup", "no_matching_footnote"))
         return match.group(0)
 
-    new_text = _HTML_SUP_RE.sub(replace, text)
+    def process(segment):
+        context[0] = segment
+        return _HTML_SUP_RE.sub(replace, segment)
+    new_text = transform_prose_regions(text, process)
     if inline_marks:
         _extend_inline_marks(block, inline_marks)
     if new_text != text:
+        _retain_semantic_source(block, text)
         block["text"] = new_text
         warnings.append(
             f"Unwrapped superscript markers in block {block.get('id') or '(unknown)'}"

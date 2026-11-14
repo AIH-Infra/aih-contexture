@@ -4,19 +4,36 @@ from aih_contexture.postprocess.markdown_config import MarkdownPostprocessConfig
 from aih_contexture.postprocess.markdown_lm import MarkdownLMAdapter
 from aih_contexture.postprocess.printed_page_repair import build_segment_diagnostics, build_segment_review_proposals, infer_sequence_repairs
 import re
+from aih_contexture.utils.markdown_regions import markdown_lines
 
 from aih_contexture.postprocess.reporting import MarkdownPostprocessResult
 
 
 def _cleanup_text(full_text: str) -> str:
-    full_text = re.sub(r"\n{3,}", "\n\n", full_text)
-    full_text = re.sub(r"(\n\s){3,}", "\n\n", full_text)
-    return full_text.strip()
+    # Structural regions own their whitespace (including string literals in
+    # code). Never run a whole-document cleanup after restoring those regions.
+    output, prose = [], []
+    def flush():
+        value = ''.join(prose)
+        value = re.sub(r'(?:(?:\r?\n)[ \t]*){3,}',
+                       lambda m: ('\r\n' if '\r\n' in m[0] else '\n') * 2, value)
+        if output and output[-1].endswith('\n'):
+            value = re.sub(r'^(?:[ \t]*\r?\n){2,}',
+                           lambda m: '\r\n' if '\r\n' in m[0] else '\n', value)
+        output.append(value)
+        prose.clear()
+    for line, protected in markdown_lines(full_text, protect_indented=True):
+        if protected:
+            flush()
+            output.append(line)
+        else:
+            prose.append(line)
+    flush()
+    return ''.join(output)
 
 
 def _normalize_spacing(markdown: str) -> str:
-    markdown = re.sub(r"\n{3,}", "\n\n", markdown)
-    return markdown.strip()
+    return _cleanup_text(markdown)
 
 
 class MarkdownPostprocessEngine:
@@ -37,7 +54,6 @@ class MarkdownPostprocessEngine:
 
         if self.config.markdown_postprocess_enable_cleanup:
             current = _cleanup_text(current)
-            current = _normalize_spacing(current)
 
         review_base = current
 

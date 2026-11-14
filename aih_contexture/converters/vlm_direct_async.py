@@ -1593,8 +1593,10 @@ class VlmDirectAsyncConverter(BaseConverter):
         last_truncated = False
         last_error_kind = "retry_exhausted"
         max_retries = self.max_retries
+        response_format_fallback_used = False
 
-        for attempt in range(max_retries + 1):
+        attempt = 0
+        while attempt <= max_retries:
             current_key = None
             try:
                 current_key = self._acquire_api_key()
@@ -1658,10 +1660,35 @@ class VlmDirectAsyncConverter(BaseConverter):
                         self._mark_api_key_failure(current_key)
                         if attempt < max_retries:
                             await asyncio.sleep(2 * (attempt + 1))
+                            attempt += 1
                             continue
                         return result
 
                     error_text = await response.text()
+                    lower_error = error_text.lower()
+                    if (
+                        response.status == 400
+                        and not response_format_fallback_used
+                        and payload.get("response_format", {}).get("type") == "json_object"
+                        and "response_format.type" in lower_error
+                        and ("json_schema" in lower_error or "must be" in lower_error)
+                    ):
+                        # Some OpenAI-compatible endpoints accept JSON prompts but
+                        # reject OpenAI's legacy json_object response format. Retry
+                        # once without that optional constraint; the existing JSON
+                        # parser still validates the model's response.
+                        payload.pop("response_format", None)
+                        response_format_fallback_used = True
+                        self._record_response_metadata({
+                            **request_metadata,
+                            "attempt": attempt + 1,
+                            "http_status": response.status,
+                            "compatibility_fallback": "omit_response_format",
+                        })
+                        logger.warning(
+                            "[VlmDirectAsyncConverter] Endpoint rejected response_format; retrying without it"
+                        )
+                        continue
                     self._record_response_metadata({
                         **request_metadata,
                         "attempt": attempt + 1,
@@ -1679,6 +1706,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                     self._mark_api_key_failure(current_key)
                     if attempt < max_retries:
                         await asyncio.sleep(2 * (attempt + 1))
+                        attempt += 1
                         continue
                     break
 
@@ -1693,7 +1721,9 @@ class VlmDirectAsyncConverter(BaseConverter):
                 self._mark_api_key_failure(current_key)
                 if attempt < max_retries:
                     await asyncio.sleep(2 * (attempt + 1))
+                    attempt += 1
                     continue
+                break
 
             except Exception as e:
                 last_error = e
@@ -1702,6 +1732,7 @@ class VlmDirectAsyncConverter(BaseConverter):
                 self._mark_api_key_failure(current_key)
                 if attempt < max_retries:
                     await asyncio.sleep(2 * (attempt + 1))
+                    attempt += 1
                     continue
                 break
 

@@ -23,6 +23,11 @@ def vlm_json_document_to_middle_document(
     JSON strings, and document wrappers with ``pages`` or ``json_pages``.
     """
     pages_data = _extract_pages(payload)
+    if not pages_data:
+        raise ValueError(
+            "Unsupported or empty VLM JSON: expected pages/regions from structured VLM output. "
+            "For Markdown-only exports, import the Markdown file through markdown_postprocess instead."
+        )
     pages = [
         vlm_json_page_to_middle_page(
             page_data,
@@ -76,8 +81,17 @@ def vlm_json_page_to_middle_page(
         )
         for order, region in enumerate(_extract_regions(page_data))
     ]
+    for block, region in zip(blocks, _extract_regions(page_data)):
+        space = region.get("coordinate_space")
+        if space is None:
+            space = page_data.get("coordinate_space")
+        if space is not None:
+            _normalize_declared_geometry(block, str(space).lower(), width, height)
 
     attrs = {}
+    if page_data.get("coordinate_space") is not None:
+        declared = str(page_data["coordinate_space"]).lower()
+        attrs["coordinate_space"] = "page" if declared in {"normalized", "normalized_1000"} and width and height else declared
     if raw_page_number is not None:
         attrs["raw_page_number"] = raw_page_number
     if page_data.get("error"):
@@ -174,6 +188,24 @@ def _region_to_middle_block(
     )
 
 
+def _normalize_declared_geometry(block: MiddleBlock, space: str, width: float | None, height: float | None) -> None:
+    block.attrs["coordinate_space"] = space
+    scale = {"normalized": 1.0, "normalized_1000": 1000.0}.get(space)
+    if scale is None or not width or not height:
+        return
+    def box(value):
+        return [value[0] * width / scale, value[1] * height / scale,
+                value[2] * width / scale, value[3] * height / scale] if value else value
+    block.bbox = box(block.bbox)
+    if block.polygon:
+        block.polygon = [[x * width / scale, y * height / scale] for x, y in block.polygon]
+    for span in block.spans:
+        span.bbox = box(span.bbox)
+        if span.polygon:
+            span.polygon = [[x * width / scale, y * height / scale] for x, y in span.polygon]
+    block.attrs.update(coordinate_space="page", coordinate_transform={"from": space, "width": width, "height": height})
+
+
 def _extract_pages(payload: dict[str, Any] | list[Any] | str) -> list[dict[str, Any]]:
     parsed = _parse_item(payload)
     if isinstance(parsed, list):
@@ -182,7 +214,7 @@ def _extract_pages(payload: dict[str, Any] | list[Any] | str) -> list[dict[str, 
             pages.extend(_extract_pages(item))
         return pages
     if not isinstance(parsed, dict):
-        return []
+        raise ValueError("Unsupported VLM JSON page: expected a structured regions object")
     for key in ("pages", "json_pages"):
         value = parsed.get(key)
         if isinstance(value, list):
@@ -191,7 +223,7 @@ def _extract_pages(payload: dict[str, Any] | list[Any] | str) -> list[dict[str, 
         return _extract_pages(parsed["res"])
     if isinstance(parsed.get("regions"), list):
         return [parsed]
-    return []
+    raise ValueError("Unsupported VLM JSON page: missing regions; import Markdown-only exports as Markdown")
 
 
 def _parse_item(value: Any) -> Any:

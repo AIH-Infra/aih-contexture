@@ -66,6 +66,9 @@ def save_vlm_middle_artifacts_for_converter(
     emit_span_overlay: bool = False,
     emit_middle_full_json: bool = False,
     equation_output_mode: str = "humanities_safe",
+    classical_marginalia_mode: str = "off",
+    classical_text_marginalia_mode: str = "separate",
+    generic_line_output_mode: str | None = None,
 ) -> dict[str, str]:
     if mode == "vlm_generalized":
         middle_json = middle_json_from_vlm_generalized_converter(
@@ -85,21 +88,11 @@ def save_vlm_middle_artifacts_for_converter(
     if middle_json is None:
         return {}
 
-    include_page_header_comments = True
-    include_page_footer_comments = True
-    include_margin_comments = True
-    include_blockquote_markers = True
-    if mode == "vlm_generalized":
-        config = getattr(converter, "config", {}) or {}
-        include_page_header_comments = not bool(config.get("vlm_filter_page_header", False))
-        include_page_footer_comments = not bool(config.get("vlm_filter_page_footer", False))
-        include_margin_comments = not bool(config.get("vlm_filter_margin_notes", False))
-        include_blockquote_markers = not bool(config.get("vlm_filter_blockquote_markers", False))
-    elif mode == "vlm_specialized":
-        include_page_header_comments = not bool(getattr(converter, "filter_page_header", False))
-        include_page_footer_comments = not bool(getattr(converter, "filter_page_footer", False))
-        include_margin_comments = not bool(getattr(converter, "filter_margin_notes", False))
-        include_blockquote_markers = not bool(getattr(converter, "filter_blockquote_markers", False))
+    config = getattr(converter, "config", {}) or {}
+    prefix = "vlm_" if mode == "vlm_generalized" else "ocr_"
+    def include(output_key: str, filter_key: str) -> bool:
+        filtered = config.get(prefix + filter_key, getattr(converter, filter_key, False))
+        return bool(config.get(output_key, not bool(filtered)))
 
     return save_middle_json_artifacts(
         middle_json,
@@ -112,9 +105,15 @@ def save_vlm_middle_artifacts_for_converter(
         emit_layout_overlay=emit_layout_overlay,
         emit_span_overlay=emit_span_overlay,
         emit_middle_full_json=emit_middle_full_json,
+        emit_reading_diagnostics=bool(config.get('emit_reading_diagnostics', False)),
+        middle_geometry_profile=config.get('middle_geometry_profile'),
         equation_output_mode=equation_output_mode,
-        include_page_header_comments=include_page_header_comments,
-        include_page_footer_comments=include_page_footer_comments,
-        include_margin_comments=include_margin_comments,
-        include_blockquote_markers=include_blockquote_markers,
+        include_page_header_comments=include("include_page_header_comments", "filter_page_header"),
+        include_page_footer_comments=include("include_page_footer_comments", "filter_page_footer"),
+        include_margin_comments=include("include_margin_comments", "filter_margin_notes"),
+        include_blockquote_markers=include("include_blockquote_markers", "filter_blockquote_markers"),
+        classical_marginalia_mode=classical_marginalia_mode,
+        classical_text_marginalia_mode=classical_text_marginalia_mode,
+        generic_line_output_mode=(generic_line_output_mode if generic_line_output_mode is not None
+                                  else config.get('generic_line_output_mode')),
     )

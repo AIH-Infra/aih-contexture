@@ -52,6 +52,12 @@ _PLAIN_ALPHA_LEADING_RE = re.compile(
     r"^\s*(?P<marker>[A-Za-z]{1,3})(?P<suffix>[.)])(?P<space>\s+)",
     re.IGNORECASE,
 )
+_PAREN_NUMERIC_LEADING_RE = re.compile(
+    r'^\s*\((?P<marker>[0-9]{1,4})\)(?P<suffix>[.]?)(?P<space>\s+)'
+)
+_AMBIGUOUS_ALPHA_PROSE_RE = re.compile(
+    r'^\s*(?:d\.\s*[hi]\.|z\.\s*b\.|u\.\s*a\.|s\.\s*(?:\d|den\b|die\b|das\b|auch\b|oben\b|unten\b))', re.I
+)
 _STRONG_INTERNAL_MARKER_RE = re.compile(
     rf"(?P<boundary>^|[\n\r.!?。！？;；:：])(?P<space>[ \t]*)"
     rf"(?P<marker>[0-9]{{1,4}}|[⁰¹²³⁴⁵⁶⁷⁸⁹]+|[{ENCLOSED_MARKER_CLASS}])"
@@ -117,7 +123,7 @@ def marker_from_value(value: str) -> FootnoteMarkerMatch | None:
     return FootnoteMarkerMatch(original, normalized, style, 0, len(str(value or "")), len(str(value or "")))
 
 
-def match_leading_footnote_marker(text: str) -> FootnoteMarkerMatch | None:
+def match_leading_footnote_marker(text: str, *, allow_ambiguous_alpha: bool = False) -> FootnoteMarkerMatch | None:
     value = str(text or "")
     for pattern in (
         _HTML_SUP_LEADING_RE,
@@ -125,6 +131,7 @@ def match_leading_footnote_marker(text: str) -> FootnoteMarkerMatch | None:
         _UNICODE_SUPERSCRIPT_LEADING_RE,
         _LATEX_SUPERSCRIPT_LEADING_RE,
         _CARET_SUPERSCRIPT_LEADING_RE,
+        _PAREN_NUMERIC_LEADING_RE,
         _PLAIN_ALPHA_LEADING_RE,
         _PLAIN_LEADING_RE,
     ):
@@ -132,6 +139,15 @@ def match_leading_footnote_marker(text: str) -> FootnoteMarkerMatch | None:
         if not match:
             continue
         original = match.group("marker")
+        # A plain multi-letter word followed by a period is not sufficient
+        # evidence for a note call (Anm., Cf., ed., etc.). Explicit superscript
+        # markers and roman numerals retain their existing representation.
+        if pattern in {_PLAIN_ALPHA_LEADING_RE, _PLAIN_LEADING_RE} and not allow_ambiguous_alpha:
+            if _AMBIGUOUS_ALPHA_PROSE_RE.match(value):
+                continue
+            if (len(original) > 1 and original.isalpha()
+                    and not re.fullmatch(r'[ivxlcdmIVXLCDM]{1,12}', original)):
+                continue
         normalized = normalize_footnote_marker(original)
         style = marker_style(original)
         if normalized is None or style is None:

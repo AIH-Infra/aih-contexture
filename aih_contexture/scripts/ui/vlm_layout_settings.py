@@ -65,7 +65,7 @@ def render_vlm_layout_settings(
             key="vlm_layout_model",
         )
         api_key = st.text_area(
-            "API Keys（可多个）",
+            "API Key（支持多个）",
             value=api_key,
             height=100,
             help="每行一个或用英文逗号分隔。多 key 可轮换请求。",

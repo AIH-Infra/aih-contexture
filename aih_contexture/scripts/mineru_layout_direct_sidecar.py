@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -34,16 +35,11 @@ def mineru_layout_direct_sidecar_cli(job_json: str | None, result_json: str | No
 
 class MineruDirectLayoutSession:
     def __init__(self, config: dict[str, Any]):
-        from mineru.model.layout.pp_doclayoutv2 import PPDocLayoutV2LayoutModel
-        from mineru.utils.config_reader import get_device
-        from mineru.utils.enum_class import ModelPath
-        from mineru.utils.models_download_utils import auto_download_and_get_model_root_path
+        from aih_contexture.backends.layout.pp_doclayoutv2_model import PPDocLayoutV2LayoutModel
 
         self.config = dict(config or {})
-        model_path = str(self.config.get("mineru_layout_model_dir") or "")
-        if not model_path:
-            model_path = str(Path(auto_download_and_get_model_root_path(ModelPath.pp_doclayout_v2)) / ModelPath.pp_doclayout_v2)
-        device = str(self.config.get("mineru_layout_device") or get_device())
+        model_path = _resolve_model_path(self.config)
+        device = _resolve_device(self.config)
         self.batch_size = int(self.config.get("mineru_layout_batch_size") or 1)
         self.use_paddlex_filter_boxes = self.config.get("mineru_layout_use_paddlex_filter_boxes")
         self.model = PPDocLayoutV2LayoutModel(model_path, device)
@@ -118,15 +114,10 @@ def run_layout_only(
     page_sizes: list[tuple[int, int]] | None,
     config: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    from mineru.model.layout.pp_doclayoutv2 import PPDocLayoutV2LayoutModel
-    from mineru.utils.config_reader import get_device
-    from mineru.utils.enum_class import ModelPath
-    from mineru.utils.models_download_utils import auto_download_and_get_model_root_path
+    from aih_contexture.backends.layout.pp_doclayoutv2_model import PPDocLayoutV2LayoutModel
 
-    model_path = str(config.get("mineru_layout_model_dir") or "")
-    if not model_path:
-        model_path = str(Path(auto_download_and_get_model_root_path(ModelPath.pp_doclayout_v2)) / ModelPath.pp_doclayout_v2)
-    device = str(config.get("mineru_layout_device") or get_device())
+    model_path = _resolve_model_path(config)
+    device = _resolve_device(config)
     batch_size = int(config.get("mineru_layout_batch_size") or 1)
     use_paddlex_filter_boxes = config.get("mineru_layout_use_paddlex_filter_boxes")
 
@@ -148,6 +139,45 @@ def run_layout_only(
             close()
 
     return _payload_from_raw_results(raw_results, page_sizes=page_sizes)
+
+
+def _resolve_model_path(config: dict[str, Any]) -> str:
+    """Resolve PP-DocLayoutV2 weights from our managed cache.
+
+    The layout driver is vendored in this package, so weights resolution is
+    ours too: explicit config, then the managed/legacy caches, then an
+    on-demand download into the managed cache.
+    """
+
+    model_path = str(config.get("mineru_layout_model_dir") or "")
+    if model_path:
+        return model_path
+
+    from aih_contexture.backends.external_config import (
+        default_mineru_layout_model_dir,
+        ensure_mineru_layout_model_dir,
+    )
+
+    resolved = default_mineru_layout_model_dir()
+    if resolved:
+        return resolved
+    return ensure_mineru_layout_model_dir()
+
+
+def _resolve_device(config: dict[str, Any]) -> str:
+    """Resolve the layout device: explicit config, env, then torch probe."""
+
+    device = str(config.get("mineru_layout_device") or "")
+    if device:
+        return device
+
+    env_device = os.getenv("MINERU_DEVICE_MODE")
+    if env_device:
+        return env_device
+
+    import torch
+
+    return "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def _payload_from_raw_results(

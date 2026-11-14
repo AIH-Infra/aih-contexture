@@ -1,7 +1,6 @@
 import argparse
 import os
 import subprocess
-import pkg_resources
 
 
 def chunk_convert_cli():
@@ -18,3 +17,7 @@ def chunk_convert_cli():
 
     # Execute the shell script
     subprocess.run(cmd, shell=True, check=True)
+
+
+if __name__ == "__main__":
+    chunk_convert_cli()

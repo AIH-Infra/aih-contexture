@@ -15,6 +15,8 @@ from aih_contexture.backends.external_config import default_mineru_command
 @click.option("--health-timeout", default=3.0, type=float, show_default=True, help="Timeout in seconds for service probes.")
 @click.option("--mineru-command", default=None, help="Legacy MinerU command used for full-pipeline diagnostic/import workflows.")
 @click.option("--paddle-python", default=None, help="External Python used for Paddle sidecar diagnostics.")
+@click.option("--indra-python", default=None, help="Python interpreter for the Indra OCR worker; checks its configured path without installing packages.")
+@click.option("--indra-model-dir", default=None, help="Existing local Indra model folder to check; doctor never downloads model files.")
 @click.option("--openai-base-url", default=None, help="OpenAI-compatible base URL used for VLM service diagnostics.")
 @click.option("--ocr-endpoint", default=None, help="OCR/VLM endpoint used for specialized VLM diagnostics.")
 @click.option("--calamari-base-url", default=None, help="Calamari service base URL used for health diagnostics.")
@@ -26,6 +28,8 @@ def doctor_cli(
     health_timeout: float,
     mineru_command: str | None,
     paddle_python: str | None,
+    indra_python: str | None,
+    indra_model_dir: str | None,
     openai_base_url: str | None,
     ocr_endpoint: str | None,
     calamari_base_url: str | None,
@@ -39,6 +43,8 @@ def doctor_cli(
         config={
             "mineru_command": mineru_command or default_mineru_command(),
             "paddle_python": paddle_python,
+            "indra_python": indra_python,
+            "indra_model_dir": indra_model_dir,
             "probe_services": probe_services,
             "backend_health_timeout": health_timeout,
             "openai_base_url": openai_base_url,

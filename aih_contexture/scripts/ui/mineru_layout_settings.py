@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 from aih_contexture.backends.external_config import (
+    DEFAULT_MINERU_LAYOUT_BATCH_SIZE,
+    EXPECTED_BACKEND_ENV,
     MINERU_COMMAND_ENV,
+    MINERU_LAYOUT_PYTHON_ENV,
     MINERU_PYTHON_ENV,
     default_mineru_command,
+    default_mineru_layout_model_dir,
+    default_mineru_layout_python,
     default_mineru_python,
 )
 
@@ -105,17 +110,28 @@ def render_mineru_layout_settings(st, *, description: str) -> dict:
 
 def render_mineru_direct_layout_settings(st, *, description: str) -> dict:
     st.info(description)
-    st.caption("这个后端只做 layout，不执行 MinerU 的 OCR、表格或公式 pipeline。")
-
-    mineru_layout_python = st.text_input(
-        "MinerU 外部 Python",
-        value=st.session_state.get("mineru_layout_python", default_mineru_python() or ""),
-        help=f"指向 MinerU 虚拟环境的 Python 可执行文件；也可用 {MINERU_PYTHON_ENV} 指定。",
-        key="mineru_layout_python",
+    st.caption(
+        "版面模型代码已内置在 Contexture 中，与 Surya 共用同一个 PyTorch 环境，不需要外部 MinerU 环境；"
+        "此后端只做版面分析，不执行 MinerU 的文字、表格或公式识别。"
     )
+
+    with st.expander("高级：指定其他 Python 环境（通常留空）", expanded=False):
+        resolved_python = default_mineru_layout_python()
+        st.caption(f"当前使用：`{resolved_python}`" if resolved_python else "当前使用：未找到可用的 Python")
+        mineru_layout_python = st.text_input(
+            "版面子进程 Python（留空 = 当前 PyTorch 环境）",
+            value=st.session_state.get("mineru_layout_python", ""),
+            help=(
+                "只在需要让版面子进程跑在另一个装有 PyTorch 的环境时填写。留空时按本实例的 GPU 环境"
+                f"（{EXPECTED_BACKEND_ENV}）、再按当前运行 Contexture 的环境解析；"
+                f"也可用 {MINERU_LAYOUT_PYTHON_ENV} 指定。"
+                "OCR 的 Python 可单独指定；只有 MinerU CLI 兼容路径需要完整 MinerU 环境。"
+            ),
+            key="mineru_layout_python",
+        )
     _DEVICE_OPTIONS = ["auto", "cuda", "cuda:0", "cpu", "custom"]
     _DEVICE_LABELS = {
-        "auto": "自动（使用 MinerU 配置）",
+        "auto": "自动（有 GPU 用 GPU）",
         "cuda": "CUDA（默认 GPU）",
         "cuda:0": "CUDA 0",
         "cpu": "CPU",
@@ -128,14 +144,14 @@ def render_mineru_direct_layout_settings(st, *, description: str) -> dict:
         options=_DEVICE_OPTIONS,
         index=_DEVICE_OPTIONS.index(selected_device),
         format_func=lambda value: _DEVICE_LABELS.get(value, value),
-        help="auto 使用 MinerU 配置。若外部环境里的 torch 是 CPU 版，cuda 会失败。",
+        help="auto 按当前 PyTorch 环境探测（CUDA/ROCm 可用即用 GPU）。若该环境里的 torch 是 CPU 版，cuda 会失败。",
         key="mineru_layout_device_select",
     )
     if mineru_layout_device == "custom":
         custom_device = st.text_input(
             "自定义运行设备",
             value=current_device if current_device not in _DEVICE_OPTIONS else "",
-            help="例如 cuda:1。可用设备取决于 MinerU 外部虚拟环境中的 torch。",
+            help="例如 cuda:1。可用设备取决于版面子进程所用环境中的 torch。",
             key="mineru_layout_device",
         )
         resolved_device = custom_device.strip() or None
@@ -144,17 +160,20 @@ def render_mineru_direct_layout_settings(st, *, description: str) -> dict:
         st.session_state["mineru_layout_device"] = resolved_device or ""
     mineru_layout_model_dir = st.text_input(
         "PP-DocLayoutV2 模型目录",
-        value=st.session_state.get("mineru_layout_model_dir", ""),
-        help="留空时按 MinerU 官方逻辑从 ModelScope/HuggingFace 缓存解析。",
+        value=st.session_state.get("mineru_layout_model_dir", default_mineru_layout_model_dir() or ""),
+        help=(
+            "留空时按 CONTEXTURE_MINERU_MODEL_DIR、共享托管目录、旧的官方缓存依次解析；"
+            "都没有时首次运行会自动下载到共享托管目录（需安装 modelscope）。"
+        ),
         key="mineru_layout_model_dir",
     )
     mineru_layout_batch_size = st.number_input(
-        "批大小",
+        "版面推理批次大小",
         min_value=1,
         max_value=64,
-        value=int(st.session_state.get("mineru_layout_batch_size", 1)),
+        value=int(st.session_state.get("mineru_layout_batch_size", DEFAULT_MINERU_LAYOUT_BATCH_SIZE)),
         step=1,
-        help="默认保守为 1。显存足够时可逐步试 2/4/8。",
+        help="默认每次推理提交 4 页；显存不足时可减至 1，资源充足时可逐步增大，并用实际材料检查耗时与稳定性。",
         key="mineru_layout_batch_size",
     )
     mineru_layout_timeout = st.number_input(
@@ -184,17 +203,37 @@ def render_mineru_direct_layout_settings(st, *, description: str) -> dict:
 
 def render_mineru_ocr_settings(st, *, description: str) -> dict:
     st.info(description)
-    st.caption("这个后端调用 MinerU 内部的 PytorchPaddleOCR，可与任意 layout 后端组合。")
+    st.caption("推理代码已内置。安装 Contexture 的 paddle-torch 可选依赖后，复用当前 PyTorch 环境；无需完整 MinerU 或 PaddlePaddle。")
 
     mineru_ocr_python = st.text_input(
-        "MinerU OCR 外部 Python",
-        value=st.session_state.get("mineru_ocr_python", st.session_state.get("mineru_layout_python", default_mineru_python() or "")),
-        help=f"指向 MinerU 虚拟环境的 Python 可执行文件；也可用 {MINERU_PYTHON_ENV} 指定。",
+        "OCR Python（通常留空）",
+        value=st.session_state.get("mineru_ocr_python", ""),
+        help="留空使用运行 Contexture 的 Python。仅在手动指定其他已安装可选依赖的环境时填写。",
         key="mineru_ocr_python",
+    )
+    versions = ["PP-OCRv5", "PP-OCRv6"]
+    current_version = st.session_state.get("mineru_ocr_version", "PP-OCRv5")
+    mineru_ocr_version = st.selectbox(
+        "OCR 模型版本", options=versions,
+        index=versions.index(current_version) if current_version in versions else 0,
+        key="mineru_ocr_version",
+    )
+    if mineru_ocr_version == "PP-OCRv6":
+        st.caption("PP-OCRv6 官方 safetensors 可在显式启用下载后自动获取；也可指定已有权重目录。")
+    mineru_ocr_model_dir = st.text_input(
+        "OCR 权重目录（可选）",
+        value=st.session_state.get("mineru_ocr_model_dir", ""),
+        help="目录中直接放置所选模型的权重文件。留空时复用 Contexture 托管目录或已有模型缓存。",
+        key="mineru_ocr_model_dir",
+    )
+    mineru_ocr_allow_download = st.checkbox(
+        "允许下载缺失的 OCR 权重",
+        value=bool(st.session_state.get("mineru_ocr_allow_download", False)),
+        key="mineru_ocr_allow_download",
     )
     _DEVICE_OPTIONS = ["auto", "cuda", "cuda:0", "cpu", "custom"]
     _DEVICE_LABELS = {
-        "auto": "自动（使用 MinerU 配置）",
+        "auto": "自动（按当前 Torch 环境）",
         "cuda": "CUDA（默认 GPU）",
         "cuda:0": "CUDA 0",
         "cpu": "CPU",
@@ -207,14 +246,14 @@ def render_mineru_ocr_settings(st, *, description: str) -> dict:
         options=_DEVICE_OPTIONS,
         index=_DEVICE_OPTIONS.index(selected_device),
         format_func=lambda value: _DEVICE_LABELS.get(value, value),
-        help="通过 MINERU_DEVICE_MODE 传给 MinerU。是否真能走 GPU 取决于外部虚拟环境里的 torch/CUDA。",
+        help="复用当前 PyTorch 的 CPU、CUDA 或 ROCm 支持；ROCm 同样使用 cuda 设备名。",
         key="mineru_ocr_device_select",
     )
     if mineru_ocr_device == "custom":
         custom_device = st.text_input(
             "自定义 OCR 运行设备",
             value=current_device if current_device not in _DEVICE_OPTIONS else "",
-            help="例如 cuda:1。可用设备取决于 MinerU 外部虚拟环境中的 torch。",
+            help="例如 cuda:1。可用设备取决于版面子进程所用环境中的 torch。",
             key="mineru_ocr_device",
         )
         resolved_device = custom_device.strip() or None
@@ -225,7 +264,7 @@ def render_mineru_ocr_settings(st, *, description: str) -> dict:
     mineru_ocr_lang = st.text_input(
         "OCR 语言",
         value=st.session_state.get("mineru_ocr_lang", st.session_state.get("paddle_ocr_lang", "ch")),
-        help="传给 MinerU PytorchPaddleOCR 的 lang，例如 ch、en、japan。",
+        help="例如 ch、ch_server、en、japan、latin；不同模型版本支持的语言配置不同，不支持的取值会明确报错。",
         key="mineru_ocr_lang",
     )
     mineru_ocr_timeout = st.number_input(
@@ -261,6 +300,9 @@ def render_mineru_ocr_settings(st, *, description: str) -> dict:
 
     return {
         "mineru_ocr_python": mineru_ocr_python.strip() or None,
+        "mineru_ocr_model_dir": mineru_ocr_model_dir.strip() or None,
+        "mineru_ocr_version": mineru_ocr_version,
+        "mineru_ocr_allow_download": bool(mineru_ocr_allow_download),
         "mineru_ocr_device": resolved_device,
         "mineru_ocr_lang": mineru_ocr_lang.strip() or "ch",
         "mineru_ocr_timeout": int(mineru_ocr_timeout),

@@ -79,7 +79,7 @@ class PaddleOcrRuntime:
                         "task": "ocr",
                         "image_paths": [str(path) for path in image_paths],
                         "page_sizes": page_sizes,
-                        "config": self.config,
+                        "config": {key: value for key, value in self.config.items() if not str(key).startswith("_")},
                     },
                     ensure_ascii=False,
                 ),

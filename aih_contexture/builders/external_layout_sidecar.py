@@ -155,6 +155,8 @@ def _looks_like_contexture_middle(payload: Any) -> bool:
 
 
 def _middle_document_from_dict(payload: dict[str, Any]) -> MiddleDocument:
+    from aih_contexture.middle.storage import decode_middle_storage
+    payload = decode_middle_storage(payload)
     pages = []
     for page_data in payload.get("pages", []):
         if not isinstance(page_data, dict):
@@ -295,6 +297,10 @@ def _layout_metadata(block: MiddleBlock) -> dict[str, Any]:
         metadata["block_source"] = attrs["block_source"]
     raw = attrs.get("raw")
     if isinstance(raw, dict):
+        if raw.get("polygon_points") is not None:
+            metadata["native_polygon"] = raw["polygon_points"]
+        if "native_order" in raw:
+            metadata["native_reading_order"] = raw["native_order"]
         block_source = raw.get("block_source")
         if block_source:
             metadata["block_source"] = block_source

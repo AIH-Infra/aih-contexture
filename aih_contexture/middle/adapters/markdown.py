@@ -30,6 +30,12 @@ def markdown_to_middle_document(
             start = match.end()
             end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
             page_text = text[start:end].strip()
+            # Contexture closes paged Markdown with a final {n} anchor. Match
+            # the reading preview: that empty sentinel is not another page.
+            if index == len(matches) - 1 and len(matches) > 1 and page_text in {"", "---"}:
+                break
+            if index == 0 and text[:match.start()].strip():
+                page_text = text[:match.start()].strip() + "\n\n" + page_text
             page_index = int(match.group("page"))
             pages.append(_page(page_index, page_text, source_name, backend, model))
     else:

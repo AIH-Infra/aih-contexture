@@ -5,20 +5,30 @@ from starlette.responses import HTMLResponse
 
 import asyncio
 import base64
+import json
 from contextlib import asynccontextmanager
-from typing import Optional, Annotated, Any
+from typing import Optional, Annotated, Any, Literal
 import io
 import os
 import threading
+from pathlib import Path
 
 from fastapi import FastAPI, Form, File, HTTPException, UploadFile
 from aih_contexture.backends.catalog import backend_catalog
-from aih_contexture.backends.external_config import default_mineru_command, default_mineru_python
+from aih_contexture.backends.external_config import (
+    DEFAULT_MINERU_LAYOUT_BATCH_SIZE,
+    default_mineru_command,
+    default_mineru_layout_model_dir,
+    default_mineru_layout_python,
+    default_mineru_python,
+)
 from aih_contexture.models import create_model_dict
 from aih_contexture.runtime.job import ContextureJob, ContextureResult
 from aih_contexture.runtime.runner import run_job
 from aih_contexture.settings import settings
 from aih_contexture.logger import get_logger
+from aih_contexture.middle.validation import validate_middle_for_publication
+from aih_contexture.runtime.errors import ContextureConfigError
 
 app_data = {}
 logger = get_logger()
@@ -111,6 +121,16 @@ class CommonParams(BaseModel):
         Optional[int],
         Field(description="Advanced override for layout render DPI."),
     ] = None
+    indra_python: Annotated[Optional[str], Field(description="Python executable for the local Indra OCR sidecar.")] = None
+    indra_model_dir: Annotated[Optional[str], Field(description="Local Indra model directory; the API never downloads weights unless explicitly enabled.")] = None
+    indra_mode: Annotated[str, Field(description="Indra page mode: auto, ocr, or text.")] = "auto"
+    indra_dpi: Annotated[Optional[int], Field(description="Indra render DPI (minimum 72).") ] = None
+    indra_math: Annotated[bool, Field(description="Enable Indra math recognition.")] = False
+    indra_cores: Annotated[Optional[int], Field(description="Requested Indra CPU worker count.")] = None
+    indra_allow_download: Annotated[bool, Field(description="Allow downloading Indra weights when the local model is missing.")] = False
+    indra_cache_dir: Annotated[Optional[str], Field(description="Optional per-page Indra result cache directory.")] = None
+    indra_review_mean: Annotated[Optional[float], Field(description="Indra mean-confidence review threshold.")] = None
+    indra_review_min: Annotated[Optional[float], Field(description="Indra minimum-line-confidence review threshold.")] = None
     external_layout_json: Annotated[
         Optional[str],
         Field(description="Server-side path to external layout JSON for external_layout_sidecar."),
@@ -169,19 +189,22 @@ class CommonParams(BaseModel):
     ] = None
     mineru_layout_python: Annotated[
         Optional[str],
-        Field(description="Optional MinerU sidecar Python executable for mineru_pp_doclayout_v2_direct."),
+        Field(description="Optional Python executable (with PyTorch) for the mineru_pp_doclayout_v2_direct layout sidecar. Defaults to the interpreter running Contexture."),
     ] = None
     mineru_ocr_python: Annotated[
         Optional[str],
-        Field(description="Optional MinerU sidecar Python executable for ocr_backend=mineru_pytorch_paddle_ocr."),
+        Field(description="Optional Python override for native Paddle OCR Torch. Defaults to Contexture's Python; no MinerU installation required."),
     ] = None
+    mineru_ocr_model_dir: Optional[str] = Field(default=None, description="Native Paddle OCR Torch weight folder; existing caches are reused if omitted.")
+    mineru_ocr_version: Literal["PP-OCRv5", "PP-OCRv6"] = Field(default="PP-OCRv5", description="Native Paddle OCR Torch model family.")
+    mineru_ocr_allow_download: bool = Field(default=False, description="Explicitly allow downloading missing native OCR weights.")
     mineru_ocr_lang: Annotated[
         str,
         Field(description="MinerU PytorchPaddleOCR language code."),
     ] = "ch"
     mineru_ocr_device: Annotated[
         Optional[str],
-        Field(description="Optional MinerU OCR device via MINERU_DEVICE_MODE, e.g. cpu, cuda, cuda:0."),
+        Field(description="Native Paddle OCR Torch device, e.g. cpu, cuda, cuda:0."),
     ] = None
     mineru_ocr_timeout: Annotated[
         int,
@@ -198,7 +221,7 @@ class CommonParams(BaseModel):
     mineru_layout_batch_size: Annotated[
         int,
         Field(description="Batch size for MinerU PP-DocLayoutV2 direct layout inference."),
-    ] = 1
+    ] = DEFAULT_MINERU_LAYOUT_BATCH_SIZE
     mineru_layout_use_paddlex_filter_boxes: Annotated[
         bool,
         Field(description="Enable MinerU/PaddleX-style layout box filtering for direct layout inference."),
@@ -211,13 +234,15 @@ class CommonParams(BaseModel):
         str,
         Field(description="PaddleOCR LayoutDetection model name."),
     ] = "PP-DocLayout_plus-L"
+    paddle_layout_allow_download: bool = Field(default=False, description="Explicitly allow downloading the optional native PP-DocLayoutV3 ONNX model.")
+    paddle_layout_batch_size: Optional[int] = Field(default=None, description="Layout inference batch size; native V3 CPU supports 1 to 8.")
     paddle_layout_python: Annotated[
         Optional[str],
         Field(description="Optional external Python executable for Paddle layout sidecar."),
     ] = None
     paddle_layout_model_dir: Annotated[
         Optional[str],
-        Field(description="Optional local PaddleOCR layout model directory."),
+        Field(description="Model directory: inference.onnx plus inference.yml for native PP-DocLayoutV3, or Paddle model files for an explicit SDK engine."),
     ] = None
     paddle_layout_device: Annotated[
         Optional[str],
@@ -225,7 +250,7 @@ class CommonParams(BaseModel):
     ] = None
     paddle_layout_engine: Annotated[
         Optional[str],
-        Field(description="Optional PaddleOCR inference engine, e.g. paddle, paddle_static, or paddle_dynamic."),
+        Field(description="PP-DocLayoutV3 defaults to native CPU onnxruntime; explicit paddle engines retain the SDK compatibility path."),
     ] = None
     paddle_layout_enable_mkldnn: Annotated[
         bool,
@@ -421,14 +446,15 @@ def _normalize_pipeline_ocr_options(options: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _convert_pdf(params: CommonParams):
-    assert params.output_format in ["markdown", "json", "html", "chunks"], (
-        "Invalid output format"
-    )
+    if params.output_format not in {"markdown", "json", "html", "chunks"}:
+        raise HTTPException(status_code=422, detail=f"Unsupported output format: {params.output_format}")
     options = params.model_dump()
     if not options.get("mineru_command") or options.get("mineru_command") == "mineru":
         options["mineru_command"] = default_mineru_command()
     if not options.get("mineru_layout_python"):
-        options["mineru_layout_python"] = default_mineru_python()
+        options["mineru_layout_python"] = default_mineru_layout_python()
+    if not options.get("mineru_layout_model_dir"):
+        options["mineru_layout_model_dir"] = default_mineru_layout_model_dir()
     options = _normalize_pipeline_ocr_options(options)
     if (
         options.get("layout_backend") == "paddle_pp_doclayout_v3"
@@ -436,15 +462,18 @@ async def _convert_pdf(params: CommonParams):
     ):
         options["paddle_layout_model_name"] = "PP-DocLayoutV3"
     options["pdftext_workers"] = 1
-    job = ContextureJob.from_dict(
-        {
-            "input_path": params.filepath,
-            "mode": "pipeline",
-            "output_formats": [params.output_format],
-            "page_range": params.page_range,
-            "config": options,
-        }
-    )
+    try:
+        job = ContextureJob.from_dict(
+            {
+                "input_path": params.filepath,
+                "mode": "pipeline",
+                "output_formats": [params.output_format],
+                "page_range": params.page_range,
+                "config": options,
+            }
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return await _run_job_response(job, params.output_format)
 
 
@@ -463,16 +492,23 @@ def _run_job_response_sync(job: ContextureJob, output_format: str) -> dict:
 def _run_job_response_unlocked(job: ContextureJob, output_format: str) -> dict:
     try:
         result = run_job(job, artifact_dict=app_data["models"])
-        text = _result_text(result, output_format)
+        output_formats = list(dict.fromkeys(job.output_formats or [output_format]))
+        if output_format not in output_formats:
+            output_formats.insert(0, output_format)
+        outputs = {name: _result_text(result, name) for name in output_formats}
+        text = outputs[output_format]
         images = result.images
         metadata = result.metadata
         middle_json = result.middle_json
+    except HTTPException:
+        raise
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except (ContextureConfigError, ValueError, TypeError) as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except Exception as e:
         logger.exception("Runtime conversion failed for mode=%s output_format=%s", job.mode, output_format)
-        return {
-            "success": False,
-            "error": str(e),
-        }
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
     encoded = {}
     for k, v in images.items():
@@ -482,13 +518,38 @@ def _run_job_response_unlocked(job: ContextureJob, output_format: str) -> dict:
             settings.OUTPUT_ENCODING
         )
 
+    failed_pages = list(result.failed_pages or [])
+    if not isinstance(middle_json, dict):
+        raise HTTPException(status_code=422, detail="Conversion did not produce a Middle JSON document")
+    middle_validation = validate_middle_for_publication(middle_json)
+    if not middle_validation.ok and not failed_pages:
+        messages = [issue.message for issue in middle_validation.errors]
+        raise HTTPException(status_code=422, detail=f"Conversion produced invalid Middle JSON: {'; '.join(messages)}")
     return {
         "format": output_format,
         "output": text,
+        "outputs": outputs,
         "images": encoded,
         "metadata": metadata,
+        "structured_artifacts": result.structured_artifacts,
         "middle_json": middle_json,
-        "success": True,
+        "middle_validation": {
+            "ok": middle_validation.ok,
+            "errors": [
+                {"path": issue.path, "message": issue.message}
+                for issue in middle_validation.errors
+            ],
+            "warnings": [
+                {"path": issue.path, "message": issue.message}
+                for issue in middle_validation.warnings
+            ],
+        },
+        "page_count": result.page_count,
+        "failed_pages": failed_pages,
+        "diagnostics": result.diagnostics,
+        "warnings": result.warnings,
+        "success": not failed_pages,
+        "error": f"Failed pages: {failed_pages}" if failed_pages else None,
     }
 
 
@@ -502,6 +563,15 @@ def _result_text(result: ContextureResult, output_format: str) -> str:
             return result.json_text or ""
         case "chunks":
             return result.chunks or ""
+        case "source_package":
+            package = (result.structured_artifacts or {}).get("source_package")
+            if not isinstance(package, dict):
+                raise HTTPException(status_code=422, detail="Structured source package was not generated")
+            path = package.get("path")
+            manifest = package.get("manifest")
+            if not path or not Path(path).is_dir() or not isinstance(manifest, dict) or not manifest:
+                raise HTTPException(status_code=422, detail="Structured source package is missing its directory or manifest")
+            return json.dumps({"path": str(path), "manifest": manifest}, ensure_ascii=False)
         case _:
             return ""
 
@@ -514,15 +584,32 @@ async def convert_pdf(params: CommonParams):
 @app.post("/v1/convert")
 async def convert_runtime(params: RuntimeConvertParams):
     output_formats = params.output_formats or [params.output_format]
-    job = ContextureJob.from_dict(
-        {
-            "input_path": params.filepath,
-            "mode": params.mode,
-            "output_formats": output_formats,
-            "page_range": params.page_range,
-            "config": params.config,
-        }
-    )
+    try:
+        job = ContextureJob.from_dict(
+            {
+                "input_path": params.filepath,
+                "mode": params.mode,
+                "output_formats": output_formats,
+                "page_range": params.page_range,
+                "config": params.config,
+            }
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if job.mode == "structured_source":
+        allowed_formats = {"markdown", "json", "html", "source_package"}
+    else:
+        allowed_formats = {"markdown", "json", "html", "chunks"}
+    unsupported = [name for name in output_formats if name not in allowed_formats]
+    if unsupported:
+        raise HTTPException(status_code=422, detail=f"Unsupported output format(s): {', '.join(unsupported)}")
+    if job.mode == "structured_source" and "source_package" in output_formats:
+        output_dir = job.config.get("output_dir")
+        if not isinstance(output_dir, str) or not output_dir.strip():
+            raise HTTPException(
+                status_code=422,
+                detail="structured_source output_format=source_package requires config.output_dir",
+            )
     return await _run_job_response(job, output_formats[0] if output_formats else "markdown")
 
 
@@ -581,10 +668,12 @@ async def convert_pdf_upload(
     mineru_layout_python: Optional[str] = Form(default=None),
     mineru_layout_model_dir: Optional[str] = Form(default=None),
     mineru_layout_device: Optional[str] = Form(default=None),
-    mineru_layout_batch_size: Optional[int] = Form(default=1),
+    mineru_layout_batch_size: Optional[int] = Form(default=DEFAULT_MINERU_LAYOUT_BATCH_SIZE),
     mineru_layout_use_paddlex_filter_boxes: bool = Form(default=False),
     mineru_layout_timeout: Optional[int] = Form(default=3600),
     paddle_layout_model_name: Optional[str] = Form(default="PP-DocLayout_plus-L"),
+    paddle_layout_allow_download: bool = Form(default=False),
+    paddle_layout_batch_size: Optional[int] = Form(default=None),
     paddle_layout_python: Optional[str] = Form(default=None),
     paddle_layout_model_dir: Optional[str] = Form(default=None),
     paddle_layout_device: Optional[str] = Form(default=None),
@@ -594,6 +683,13 @@ async def convert_pdf_upload(
     paddle_layout_threshold: Optional[float] = Form(default=None),
     paddle_layout_img_size: Optional[int] = Form(default=None),
     ocr_backend: Optional[str] = Form(default="surya"),
+    mineru_ocr_python: Optional[str] = Form(default=None),
+    mineru_ocr_model_dir: Optional[str] = Form(default=None),
+    mineru_ocr_version: Literal["PP-OCRv5", "PP-OCRv6"] = Form(default="PP-OCRv5"),
+    mineru_ocr_allow_download: bool = Form(default=False),
+    mineru_ocr_lang: str = Form(default="ch"),
+    mineru_ocr_device: Optional[str] = Form(default=None),
+    mineru_ocr_timeout: int = Form(default=3600),
     ocr_quality: Optional[str] = Form(default="auto"),
     ocr_dpi_override: Optional[int] = Form(default=None),
     ocr_preprocess_backend: Optional[str] = Form(default="none"),
@@ -621,6 +717,16 @@ async def convert_pdf_upload(
     paddle_ocr_use_doc_orientation_classify: bool = Form(default=False),
     paddle_ocr_use_doc_unwarping: bool = Form(default=False),
     paddle_ocr_use_textline_orientation: bool = Form(default=False),
+    indra_python: Optional[str] = Form(default=None),
+    indra_model_dir: Optional[str] = Form(default=None),
+    indra_mode: Optional[str] = Form(default="auto"),
+    indra_dpi: Optional[int] = Form(default=None),
+    indra_math: bool = Form(default=False),
+    indra_cores: Optional[int] = Form(default=None),
+    indra_allow_download: bool = Form(default=False),
+    indra_cache_dir: Optional[str] = Form(default=None),
+    indra_review_mean: Optional[float] = Form(default=None),
+    indra_review_min: Optional[float] = Form(default=None),
     equation_output_mode: Optional[str] = Form(default="humanities_safe"),
     emit_middle_json: Optional[bool] = Form(default=False),
     emit_middle_report: Optional[bool] = Form(default=False),
@@ -635,9 +741,8 @@ async def convert_pdf_upload(
     ),
 ):
     output_format = output_format or "markdown"
-    assert output_format in ["markdown", "json", "html", "chunks"], (
-        "Invalid output format"
-    )
+    if output_format not in {"markdown", "json", "html", "chunks"}:
+        raise HTTPException(status_code=422, detail=f"Unsupported output format: {output_format}")
     max_upload_bytes = _max_upload_bytes()
     file_contents = await file.read(max_upload_bytes + 1)
     if len(file_contents) > max_upload_bytes:
@@ -677,13 +782,15 @@ async def convert_pdf_upload(
         "mineru_server_url": mineru_server_url,
         "mineru_timeout": int(mineru_timeout or 3600),
         "mineru_extra_args": mineru_extra_args,
-        "mineru_layout_python": mineru_layout_python or default_mineru_python(),
-        "mineru_layout_model_dir": mineru_layout_model_dir,
+        "mineru_layout_python": mineru_layout_python or default_mineru_layout_python(),
+        "mineru_layout_model_dir": mineru_layout_model_dir or default_mineru_layout_model_dir(),
         "mineru_layout_device": mineru_layout_device,
-        "mineru_layout_batch_size": int(mineru_layout_batch_size or 1),
+        "mineru_layout_batch_size": int(mineru_layout_batch_size or DEFAULT_MINERU_LAYOUT_BATCH_SIZE),
         "mineru_layout_use_paddlex_filter_boxes": mineru_layout_use_paddlex_filter_boxes,
         "mineru_layout_timeout": int(mineru_layout_timeout or 3600),
         "paddle_layout_model_name": paddle_layout_model_name or default_paddle_model,
+        "paddle_layout_allow_download": paddle_layout_allow_download,
+        "paddle_layout_batch_size": paddle_layout_batch_size,
         "paddle_layout_python": paddle_layout_python,
         "paddle_layout_model_dir": paddle_layout_model_dir,
         "paddle_layout_device": paddle_layout_device,
@@ -693,6 +800,13 @@ async def convert_pdf_upload(
         "paddle_layout_threshold": paddle_layout_threshold,
         "paddle_layout_img_size": paddle_layout_img_size,
         "ocr_backend": ocr_backend or "surya",
+        "mineru_ocr_python": mineru_ocr_python,
+        "mineru_ocr_model_dir": mineru_ocr_model_dir,
+        "mineru_ocr_version": mineru_ocr_version,
+        "mineru_ocr_allow_download": mineru_ocr_allow_download,
+        "mineru_ocr_lang": mineru_ocr_lang,
+        "mineru_ocr_device": mineru_ocr_device,
+        "mineru_ocr_timeout": mineru_ocr_timeout,
         "disable_ocr": ocr_backend == "none",
         "ocr_quality": ocr_quality or "auto",
         "ocr_dpi_override": ocr_dpi_override,
@@ -721,6 +835,16 @@ async def convert_pdf_upload(
         "paddle_ocr_use_doc_orientation_classify": paddle_ocr_use_doc_orientation_classify,
         "paddle_ocr_use_doc_unwarping": paddle_ocr_use_doc_unwarping,
         "paddle_ocr_use_textline_orientation": paddle_ocr_use_textline_orientation,
+        "indra_python": indra_python,
+        "indra_model_dir": indra_model_dir,
+        "indra_mode": indra_mode or "auto",
+        "indra_dpi": indra_dpi,
+        "indra_math": indra_math,
+        "indra_cores": indra_cores,
+        "indra_allow_download": indra_allow_download,
+        "indra_cache_dir": indra_cache_dir,
+        "indra_review_mean": indra_review_mean,
+        "indra_review_min": indra_review_min,
         "equation_output_mode": equation_output_mode or "humanities_safe",
         "emit_middle_json": bool(emit_middle_json),
         "emit_middle_report": bool(emit_middle_report),
@@ -738,16 +862,19 @@ async def convert_pdf_upload(
         and options.get("paddle_layout_model_name") == "PP-DocLayout_plus-L"
     ):
         options["paddle_layout_model_name"] = "PP-DocLayoutV3"
-    job = ContextureJob.from_dict(
-        {
-            "input_bytes": file_contents,
-            "input_name": file.filename,
-            "mode": "pipeline",
-            "output_formats": [output_format],
-            "page_range": page_range,
-            "config": options,
-        }
-    )
+    try:
+        job = ContextureJob.from_dict(
+            {
+                "input_bytes": file_contents,
+                "input_name": file.filename,
+                "mode": "pipeline",
+                "output_formats": [output_format],
+                "page_range": page_range,
+                "config": options,
+            }
+        )
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return await _run_job_response(job, output_format)
 
 
@@ -763,3 +890,6 @@ def server_cli(port: int, host: str):
         host=host,
         port=port,
     )
+
+if __name__ == "__main__":
+    server_cli()

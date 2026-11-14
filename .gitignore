@@ -193,3 +193,7 @@ tmp*/
 .pytest-*/
 pytest-cache-files-*/
 manual_test_tmp*/
+
+# Local backup copies
+*.bak-*
+*.bak

@@ -3,10 +3,21 @@ chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 
-echo Re-running the standard Contexture installer to restore project dependencies.
-call "%~dp0install.bat"
+echo.
+echo AIH-Contexture Windows runtime repair
+echo This reruns install.bat to reinstall and verify the selected PyTorch profile.
+echo Windows will not restart automatically.
+echo.
+
+call "%~dp0install.bat" %*
 set "REPAIR_EXIT=%errorlevel%"
-if not "%REPAIR_EXIT%"=="0" (
-    echo [Error] Reinstallation failed with exit code %REPAIR_EXIT%.
+
+echo.
+if "%REPAIR_EXIT%"=="0" (
+    echo [OK] Runtime repair completed.
+) else (
+    echo [Error] Runtime repair failed with exit code %REPAIR_EXIT%.
 )
+echo.
+pause
 exit /b %REPAIR_EXIT%

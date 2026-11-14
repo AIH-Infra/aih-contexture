@@ -90,6 +90,12 @@ def create_layout_builder(
         logger.info("[PdfConverter] Using Surya 2 Layout JSON backend")
         return Surya2LayoutBuilder(config=config)
 
+    if layout_backend == "indra_layout":
+        from aih_contexture.builders.indra_layout import IndraLayoutBuilder
+
+        logger.info("[PdfConverter] Using Indra layout backend")
+        return IndraLayoutBuilder(config=config)
+
     if layout_backend in ("paddle_pp_doclayout_plus_l", "paddle_pp_doclayout_v3"):
         from aih_contexture.builders.paddle_layout import PaddleLayoutDetectionBuilder
 
@@ -179,10 +185,22 @@ def create_ocr_builder(
         logger.warning("[PdfConverter] Using Surya 2 block OCR backend")
         return Surya2OcrBuilder(config=config)
 
+    if ocr_backend == "indra_ocr":
+        from aih_contexture.builders.indra_ocr import IndraOcrBuilder
+
+        logger.warning("[PdfConverter] Using Indra OCR backend")
+        return IndraOcrBuilder(config=config)
+
+    if ocr_backend == "glm_ocr":
+        from aih_contexture.builders.glm_ocr import GlmOcrBuilder
+
+        logger.warning("[PdfConverter] Using GLM-OCR block OCR backend")
+        return GlmOcrBuilder(config=config)
+
     if ocr_backend == "mineru_pytorch_paddle_ocr":
         from aih_contexture.builders.mineru_ocr import MineruPytorchPaddleOcrBuilder
 
-        logger.warning("[PdfConverter] Using MinerU PyTorch/Paddle OCR backend")
+        logger.warning("[PdfConverter] Using native Paddle OCR Torch backend")
         return MineruPytorchPaddleOcrBuilder(config=config)
 
     if ocr_backend == "tesseract":

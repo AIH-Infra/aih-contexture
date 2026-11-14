@@ -310,6 +310,9 @@ def markdown_to_html(markdown: str) -> str:
         logger.error("markdown2 not installed. Install with: pip install markdown2")
         return f"<pre>{markdown}</pre>"
 
+    from aih_contexture.utils.markdown_regions import transform_prose_regions
+    from aih_contexture.utils.reading_literals import escape_literal_angles
+    markdown = transform_prose_regions(markdown, escape_literal_angles)
     html_body = markdown2.markdown(
         markdown,
         extras=[

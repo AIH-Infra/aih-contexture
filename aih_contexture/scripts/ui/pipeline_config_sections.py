@@ -7,6 +7,8 @@ from aih_contexture.config.marginal_output import normalize_marginal_output_mode
 from aih_contexture.runtime.backend_field_sets import (
     chrome_screenai_preprocess_fields,
     external_layout_sidecar_fields,
+    glm_ocr_fields,
+    indra_fields,
     mineru_direct_layout_fields,
     mineru_vl_layout_fields,
     mineru_ocr_fields,
@@ -23,6 +25,8 @@ PIPELINE_UI_VALUE_KEYS = (
     "process_mode",
     "batch_threshold",
     "pages_per_batch",
+    "pipeline_performance_mode",
+    "pipeline_workers",
     "stall_timeout_minutes",
     "use_page_range",
     "start_page_1based",
@@ -48,6 +52,8 @@ PIPELINE_UI_VALUE_KEYS = (
     "chrome_rasterize_dpi",
     "chrome_model_dir",
     "emit_middle_json",
+    "emit_reading_diagnostics",
+    "middle_geometry_profile",
     "emit_middle_report",
     "emit_middle_debug",
     "emit_middle_scholarly",
@@ -115,7 +121,35 @@ PIPELINE_UI_VALUE_KEYS = (
     "surya2_image_quality",
     "surya2_crop_padding_px",
     "surya2_crop_padding_frac",
+    "glm_ocr_endpoint",
+    "glm_ocr_api_key",
+    "glm_ocr_version",
+    "glm_ocr_quant",
+    "glm_ocr_model",
+    "glm_ocr_timeout",
+    "glm_ocr_max_tokens",
+    "glm_ocr_block_concurrency",
+    "glm_ocr_request_concurrency",
+    "glm_ocr_image_format",
+    "glm_ocr_image_quality",
+    "glm_ocr_crop_padding_px",
+    "glm_ocr_crop_padding_frac",
+    "glm_ocr_recognize_formulas",
+    "indra_python",
+    "indra_model_dir",
+    "indra_mode",
+    "indra_dpi",
+    "indra_cores",
+    "indra_math",
+    "indra_allow_download",
+    "indra_cache_dir",
+    "indra_timeout",
+    "indra_review_mean",
+    "indra_review_min",
     "mineru_ocr_python",
+    "mineru_ocr_model_dir",
+    "mineru_ocr_version",
+    "mineru_ocr_allow_download",
     "mineru_ocr_lang",
     "mineru_ocr_device",
     "mineru_ocr_timeout",
@@ -125,6 +159,7 @@ PIPELINE_UI_VALUE_KEYS = (
     "paddle_layout_model_name",
     "paddle_layout_python",
     "paddle_layout_model_dir",
+    "paddle_layout_allow_download",
     "paddle_layout_device",
     "paddle_layout_engine",
     "paddle_layout_enable_mkldnn",
@@ -253,6 +288,9 @@ PIPELINE_UI_VALUE_KEYS = (
     "native_marginalia_enabled",
     "heuristic_marginal_detection_enabled",
     "marginal_output_mode",
+    "classical_marginalia_mode",
+    "classical_text_marginalia_mode",
+    "generic_line_output_mode",
     "left_margin_threshold",
     "right_margin_threshold",
     "top_margin_threshold",
@@ -299,6 +337,8 @@ def pipeline_config_for_page_range(page_range: tuple[int, int], values: Mapping[
         "ocr_quality": values.get("ocr_quality", "auto"),
         "ocr_dpi_override": values.get("ocr_dpi_override"),
         "emit_middle_json": values.get("emit_middle_json"),
+        "emit_reading_diagnostics": bool(values.get('emit_reading_diagnostics', False)),
+        "middle_geometry_profile": values.get('middle_geometry_profile') or 'full',
         "emit_middle_report": values.get("emit_middle_report"),
         "emit_middle_debug": values.get("emit_middle_debug"),
         "emit_middle_scholarly": values.get("emit_middle_scholarly"),
@@ -362,6 +402,9 @@ def pipeline_layout_backend_config(layout_backend: str, values: Mapping[str, Any
     if layout_backend in ("paddle_pp_doclayout_plus_l", "paddle_pp_doclayout_v3"):
         return paddle_layout_fields(layout_backend, values)
 
+    if layout_backend == "indra_layout":
+        return indra_fields(values)
+
     return {}
 
 
@@ -417,6 +460,12 @@ def pipeline_ocr_backend_config(ocr_backend: str, values: Mapping[str, Any]) -> 
 
     if ocr_backend == "surya2_ocr":
         return surya2_vlm_fields(values, pipeline_ocr=True)
+
+    if ocr_backend == "glm_ocr":
+        return glm_ocr_fields(values)
+
+    if ocr_backend == "indra_ocr":
+        return indra_fields(values)
 
     if ocr_backend == "mineru_pytorch_paddle_ocr":
         return mineru_ocr_fields(values)
@@ -567,6 +616,9 @@ def pipeline_scholarly_config(values: Mapping[str, Any]) -> dict[str, Any]:
         "emit_page_footer_comment": emit_page_footer_comment,
         "keep_pageheader_in_output": keep_pageheader_in_output,
         "keep_pagefooter_in_output": keep_pagefooter_in_output,
+        "classical_marginalia_mode": values.get("classical_marginalia_mode", "off"),
+        "classical_text_marginalia_mode": values.get("classical_text_marginalia_mode", "separate"),
+        "generic_line_output_mode": values.get("generic_line_output_mode", "drop"),
     }
 
     if (

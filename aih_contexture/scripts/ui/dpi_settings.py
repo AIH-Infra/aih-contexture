@@ -61,7 +61,7 @@ def render_pipeline_layout_dpi_settings(
                 options=_LAYOUT_QUALITY_OPTIONS,
                 index=_option_index(_LAYOUT_QUALITY_OPTIONS, selected_quality, "fast"),
                 format_func=lambda value: _LAYOUT_QUALITY_LABELS.get(value, value),
-                help="只影响 Surya Layout 的页面渲染 DPI；坐标会统一归化到 PDF 点。",
+                help="只影响 Surya 版面分析的页面渲染 DPI；坐标会统一转换为 PDF 点。",
                 key="surya_layout_quality",
             )
             preset_dpi = LAYOUT_QUALITY_PRESETS.get(selected_quality, LAYOUT_QUALITY_PRESETS["fast"])

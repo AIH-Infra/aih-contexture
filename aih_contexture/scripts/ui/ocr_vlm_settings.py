@@ -63,7 +63,7 @@ def render_vlm_ocr_settings(
     )
     model = st.text_input("模型名称", value=model, key="vlm_ocr_model")
     api_key = st.text_area(
-        "API Keys (支持多个)",
+        "API Key（支持多个）",
         value=api_key,
         height=100,
         help="每行一个或用英文逗号分隔。多 key 可轮换请求。",
@@ -104,7 +104,7 @@ def render_vlm_ocr_settings(
     if mode == "full_page":
         if layout_backend == "surya":
             st.info(
-                "当前为 Surya Layout + VLM 整页 OCR：Surya 提供区域结构，VLM 负责整页识别。"
+                "当前为 Surya 版面分析 + VLM 整页 OCR：Surya 提供区域结构，VLM 负责整页识别。"
                 "适用于复杂页面试验；速度和稳定性取决于 VLM 服务。"
             )
         elif layout_backend == "none":
@@ -143,7 +143,7 @@ def render_vlm_ocr_settings(
 
         if mode == "full_page":
             full_page_max_tokens = st.number_input(
-                "整页 max_tokens",
+            "整页最大输出 token 数",
                 min_value=512,
                 max_value=8192,
                 value=int(full_page_max_tokens),
@@ -212,7 +212,7 @@ def render_paddleocr_vl_ocr_settings(
     _sync_paddleocr_vl_model_state(st, version=selected_version, default_model=default_model)
 
     endpoint = st.text_input(
-        "Endpoint",
+        "API 端点",
         value=_normalize_paddleocr_vl_endpoint(endpoint, api_style=api_style),
         help="PaddleOCR-VL prompt/VLRecognition 的完整请求地址。OpenAI 兼容通常以 /v1/chat/completions 结尾。",
         key="paddleocr_vl_endpoint",
@@ -235,7 +235,7 @@ def render_paddleocr_vl_ocr_settings(
         min_value=1,
         max_value=20,
         value=max(1, int(block_concurrency)),
-        help="Pipeline 中同时提交给 PaddleOCR-VL 的 layout block crop 数量；本地模型通常从 1 开始较稳。",
+        help="同时提交给 PaddleOCR-VL 的版面区域裁切图数量；应根据服务能力与可用资源调整。",
         key="paddleocr_vl_block_concurrency",
     )
 

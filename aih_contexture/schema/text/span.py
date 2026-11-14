@@ -5,6 +5,7 @@ from typing import ClassVar, List, Literal, Optional
 from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.blocks import Block
 from aih_contexture.util import unwrap_math
+from aih_contexture.utils.footnote_markers import normalize_footnote_marker
 
 
 ESCAPED_ALLOWED_INLINE_TAG_RE = re.compile(r"&lt;(/?)(sup|sub)&gt;", re.IGNORECASE)
@@ -145,13 +146,30 @@ class Span(Block):
             if "<sup>" not in text:
                 text = f"<sup>{text}</sup>"
 
-        if self.url:
+        # Semantic footnote markers take precedence over the source PDF's
+        # visual bold flag. Modern publisher PDFs commonly encode the
+        # footnote number as a bold span even though our output contract
+        # requires a leading <sup> marker. Keep this narrow: only a
+        # standalone numeric/roman/symbol marker inside a Footnote block is
+        # affected, so ordinary bold text remains unchanged.
+        render_as_footnote_marker = (
+            self.bold
+            and self._is_inside_block_type(document, BlockTypes.Footnote)
+            and self._standalone_footnote_marker(text)
+        )
+        if render_as_footnote_marker:
+            text = f"<sup>{normalize_footnote_marker(text.strip())}</sup>"
+
+        # Some publisher PDFs expose broken internal dests such as
+        # ``#page--1-0`` on TOC entries and note numbers. Do not publish
+        # those placeholder links, but preserve valid external/internal URLs.
+        if self.url and not self._is_placeholder_page_link():
             text = f"<a href='{self.url}'>{text}</a>"
 
         # TODO Support multiple formats
         if self.italic:
             text = f"<i>{text}</i>"
-        elif self.bold:
+        elif self.bold and not render_as_footnote_marker:
             text = f"<b>{text}</b>"
         elif self.math:
             block_envs = ["split", "align", "gather", "multline"]
@@ -265,6 +283,20 @@ class Span(Block):
 
         return self.SUP_CONTENT_RE.sub(replace, text)
 
+    @classmethod
+    def _standalone_footnote_marker(cls, text: str) -> bool:
+        raw = str(text or "").strip()
+        if not raw or not re.fullmatch(
+            r"(?:\d{1,4}|[IVXLCDMivxlcdm]{1,12}|[*†‡§¶#]+)[)\].-]?",
+            raw,
+        ):
+            return False
+        return normalize_footnote_marker(raw) is not None
+
+    def _is_placeholder_page_link(self) -> bool:
+        from aih_contexture.utils.scholarly_lists import is_placeholder_page_link
+        return is_placeholder_page_link(self.url)
+
     @staticmethod
     def _plain_marker(text: str) -> str:
         return html.unescape(re.sub(r"<[^>]+>", "", text)).strip()
@@ -304,6 +336,15 @@ class Span(Block):
         if page is None:
             return False
 
+        cache = getattr(document, '_render_lookup_cache', None)
+        key = ('members', self.page_id, block_type)
+        if isinstance(cache, dict):
+            if key not in cache:
+                cache[key] = {child.id for block in page.current_children
+                              if block.block_type == block_type
+                              for child in block.contained_blocks(document)}
+            return self.id in cache[key]
+
         for block in page.current_children:
             if block.block_type != block_type:
                 continue
@@ -323,6 +364,13 @@ class Span(Block):
             return False
 
         marker_pattern = re.compile(rf"^\s*{re.escape(marker)}(?:\s|[)\].-]|$)")
+        cache = getattr(document, '_render_lookup_cache', None)
+        key = ('footnote_texts', self.page_id)
+        if isinstance(cache, dict):
+            if key not in cache:
+                cache[key] = [re.sub(r'<[^>]+>', '', html.unescape(note.raw_text(document)).strip()).strip()
+                              for note in page.contained_blocks(document, (BlockTypes.Footnote,))]
+            return any(marker_pattern.match(value) for value in cache[key])
         for footnote in page.contained_blocks(document, (BlockTypes.Footnote,)):
             footnote_text = html.unescape(footnote.raw_text(document)).strip()
             footnote_text = re.sub(r"<[^>]+>", "", footnote_text).strip()

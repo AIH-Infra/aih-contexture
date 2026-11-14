@@ -31,6 +31,7 @@ def build_pipeline_file_job_spec(
     batch_jobs: Sequence[dict[str, Any]],
     processing_id: str | None = None,
     file_index: int | None = None,
+    pipeline_workers: int = 1,
 ) -> dict[str, Any]:
     return {
         "file_path": file_path,
@@ -41,4 +42,5 @@ def build_pipeline_file_job_spec(
         "batch_jobs": list(batch_jobs),
         "processing_id": processing_id,
         "file_index": file_index,
+        "pipeline_workers": max(1, int(pipeline_workers or 1)),
     }

@@ -17,7 +17,7 @@ from aih_contexture.schema.registry import get_block_class
 
 
 class MineruPytorchPaddleOcrBuilder(BaseBuilder):
-    """OCR builder backed by MinerU's internal PytorchPaddleOCR engine."""
+    """Write native Paddle OCR Torch results into Contexture's document."""
 
     mineru_ocr_lang: Annotated[str, "MinerU OCR language code."] = "ch"
     mineru_ocr_min_containment: Annotated[float, "Minimum OCR box containment ratio needed to attach to an existing line."] = 0.20

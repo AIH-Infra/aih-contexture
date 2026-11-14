@@ -9,7 +9,7 @@ import click
 from aih_contexture.middle.adapters.external_ocr import merge_external_ocr_into_middle_document
 from aih_contexture.middle.debug_markdown import render_middle_debug_markdown
 from aih_contexture.middle.semantics import resolve_middle_for_rendering
-from aih_contexture.middle.validation import validate_middle_json
+from aih_contexture.middle.validation import validate_middle_for_publication
 
 
 @click.command(help="Merge external OCR JSON into an existing Contexture Middle JSON file.")
@@ -56,11 +56,9 @@ def import_external_ocr_cli(
         min_containment=min_containment,
     )
     data = resolve_middle_for_rendering(data)
-    validation = validate_middle_json(data)
+    validation = validate_middle_for_publication(data)
 
     output_path = Path(output) if output else middle_path.with_name(f"{middle_path.stem}_with_ocr.json")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     report_data = {
         "ok": validation.ok,
@@ -74,6 +72,14 @@ def import_external_ocr_cli(
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(json.dumps(report_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    failed = bool(validation.errors) or (strict and bool(validation.warnings))
+    if failed:
+        raise click.ClickException(
+            f"External OCR import validation failed: {len(validation.errors)} errors, {len(validation.warnings)} warnings"
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
     if debug_markdown:
         debug_path = Path(debug_markdown)
         debug_path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,13 +89,6 @@ def import_external_ocr_cli(
     click.echo(f"Wrote {output_path}")
     if debug_markdown:
         click.echo(f"Wrote debug Markdown: {debug_markdown}")
-
-    failed = bool(validation.errors) or (strict and bool(validation.warnings))
-    if failed:
-        raise click.ClickException(
-            f"External OCR import validation failed: {len(validation.errors)} errors, {len(validation.warnings)} warnings"
-        )
-
 
 if __name__ == "__main__":
     import_external_ocr_cli()

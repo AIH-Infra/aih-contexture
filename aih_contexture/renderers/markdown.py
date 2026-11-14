@@ -15,6 +15,7 @@ from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.document import Document
 from aih_contexture.formatters import PageAnchorFormatter, CustomIDInjector
 from aih_contexture.postprocess import MarkdownPostprocessEngine
+from aih_contexture.utils.scholarly_lists import repair_scholarly_reference_markdown
 
 logger = get_logger()
 
@@ -503,10 +504,17 @@ class MarkdownFormatter:
         # 6. 解包明确的正文引用编号误上标，如 "paragraph <sup>121</sup>"
         markdown_text = self._unwrap_reference_context_superscripts(markdown_text)
 
-        # 7. 避免学术段落编号被 Markdown 误渲染为有序列表
+        # 7. Flatten hanging-indent notes, un-nest page-start leftovers in place, drop
+        #    placeholder ``#page--`` note links before list escaping.
+        markdown_text = repair_scholarly_reference_markdown(markdown_text)
+
+        # 8. 避免学术段落编号被 Markdown 误渲染为有序列表
         markdown_text = self._escape_scholarly_numbered_paragraphs(markdown_text)
 
-        # 8. 统一空行
+        # 9. 修复目录中标题与罗马页码粘连（如 Illustrationsvii）。
+        markdown_text = self._fix_toc_page_spacing(markdown_text)
+
+        # 10. 统一空行
         markdown_text = self._normalize_spacing(markdown_text)
 
         return markdown_text
@@ -646,6 +654,24 @@ class MarkdownFormatter:
                     sequence_offsets.add(entries[run_idx][0])
             idx += 1
         return sequence_offsets
+
+    def _fix_toc_page_spacing(self, text: str) -> str:
+        """Keep Roman page numbers separate from preceding TOC text."""
+        contents_match = re.search(
+            r"(?ims)^(?P<header>#{1,6}\s+\*?\*?contents\*?\*?\s*$)(?P<body>.*?)(?=^#{1,6}\s+|\Z)",
+            text,
+        )
+        if not contents_match:
+            return text
+
+        body = contents_match.group("body")
+        body = re.sub(
+            r"(?P<word>[A-Za-z]{2,}?)(?P<page>viii|vii|vi|iv|iii|ii|ix|x|xi|xii|xiii|xiv|xv|xvi)\b",
+            r"\g<word> \g<page>",
+            body,
+            flags=re.IGNORECASE,
+        )
+        return text[: contents_match.start("body")] + body + text[contents_match.end("body") :]
 
     def _normalize_spacing(self, text: str) -> str:
         """统一空行"""

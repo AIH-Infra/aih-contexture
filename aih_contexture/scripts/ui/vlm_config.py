@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from typing import Any
+from aih_contexture.middle.semantics.classical_marginalia import (
+    normalize_classical_marginalia_mode, normalize_classical_text_marginalia_mode,
+)
+from aih_contexture.scripts.ui.classical_marginalia_controls import normalize_generic_line_output_mode
 
 from aih_contexture.config.vlm_model_presets import (
     default_quant,
@@ -57,6 +61,9 @@ def build_vlm_generalized_config(
     api_preset = preset_options.get(selected_preset, selected_preset) or "high_accuracy"
     config: dict[str, Any] = {
         "vlm_api_provider": values.get("vlm_api_provider"),
+        "classical_marginalia_mode": normalize_classical_marginalia_mode(values.get("classical_marginalia_mode")),
+        "classical_text_marginalia_mode": normalize_classical_text_marginalia_mode(values.get("classical_text_marginalia_mode")),
+        "generic_line_output_mode": normalize_generic_line_output_mode(values.get("generic_line_output_mode")),
         "vlm_direct_base_url": values.get("vlm_direct_base_url"),
         "vlm_direct_model": values.get("vlm_direct_model"),
         "vlm_direct_api_key": values.get("vlm_direct_api_key"),
@@ -99,6 +106,8 @@ def build_vlm_generalized_config(
         "vlm_direct_use_markdown_footnotes": False,
         "vlm_direct_footnote_backlink": False,
         "emit_middle_json": values.get("emit_middle_json"),
+        "emit_reading_diagnostics": bool(values.get('emit_reading_diagnostics', False)),
+        "middle_geometry_profile": values.get('middle_geometry_profile') or 'full',
         "emit_middle_report": values.get("emit_middle_report"),
         "emit_middle_debug": values.get("emit_middle_debug"),
         "emit_middle_scholarly": values.get("emit_middle_scholarly"),
@@ -218,6 +227,9 @@ def build_vlm_specialized_config(
 
     config: dict[str, Any] = {
         "ocr_backend": ocr_backend,
+        "classical_marginalia_mode": normalize_classical_marginalia_mode(values.get("classical_marginalia_mode")),
+        "classical_text_marginalia_mode": normalize_classical_text_marginalia_mode(values.get("classical_text_marginalia_mode")),
+        "generic_line_output_mode": normalize_generic_line_output_mode(values.get("generic_line_output_mode")),
         "chandra_version": chandra_version if ocr_backend == "chandra" else None,
         "chandra_quant": chandra_quant if ocr_backend == "chandra" else None,
         "churro_version": churro_version if ocr_backend == "churro" else None,
@@ -296,6 +308,8 @@ def build_vlm_specialized_config(
         "include_margin_comments": not bool(_fallback(values.get("ocr_filter_margin_notes"), False)),
         "include_blockquote_markers": not bool(_fallback(values.get("ocr_filter_blockquote_markers"), False)),
         "emit_middle_json": values.get("emit_middle_json"),
+        "emit_reading_diagnostics": bool(values.get('emit_reading_diagnostics', False)),
+        "middle_geometry_profile": values.get('middle_geometry_profile') or 'full',
         "emit_middle_report": values.get("emit_middle_report"),
         "emit_middle_debug": values.get("emit_middle_debug"),
         "emit_middle_scholarly": values.get("emit_middle_scholarly"),

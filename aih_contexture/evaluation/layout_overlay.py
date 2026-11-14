@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from aih_contexture.middle.storage import decode_middle_storage
+
 import json
 from pathlib import Path
 from typing import Any
@@ -43,6 +45,7 @@ def render_middle_layout_overlay(
 
     This is an inspection artifact. It does not alter Middle JSON or Markdown.
     """
+    middle = decode_middle_storage(middle)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     page_images = _load_page_images(middle, source_pdf=source_pdf, dpi=dpi)
@@ -117,6 +120,7 @@ def render_middle_span_overlay(
     max_label_chars: int = 32,
 ) -> dict[str, Any]:
     """Render span bbox overlays from Contexture Middle JSON."""
+    middle = decode_middle_storage(middle)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     page_images = _load_page_images(middle, source_pdf=source_pdf, dpi=dpi)
@@ -198,6 +202,7 @@ def render_middle_review_crops(
     ComplexRegion blocks are suspicious enough to inspect, but not enough to
     justify a global label remap.
     """
+    middle = decode_middle_storage(middle)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     page_images = _load_page_images(middle, source_pdf=source_pdf, dpi=dpi)

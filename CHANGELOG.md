@@ -6,6 +6,37 @@
 
 ---
 
+## [1.0.0] - 2026-11-04
+
+自 0.9.0 之后的累积变化，作为 1.0.0 发布。依据为各提交与 `FULL_ACCEPTANCE_20261030.md`、`INDRA_MIXED_ACCEPTANCE_20261030.md`、`PLAN_INDRA_INTEGRATION_20261030.md`。
+
+> 说明：2026-10-10 整理的 `aih-contexture-1.0` 目录曾以 0.10 工作目录为基线使用过 1.0.0 的版本号；本次 1.0.0 以 develop 的 0.9.0 之后提交为准，取代该快照。
+
+### 新增
+
+- **Indra OCR**：CPU（ONNX）版面标签 + 阅读顺序 + 文字。版面 `indra_layout` 与 OCR `indra_ocr` 可分别选择：版面可配 PDF 文字层（`--disable_ocr`）、Chrome ScreenAI 或其他 OCR；OCR 可配任意版面；两者同选且未禁用 OCR 时走原生直连（PDF → Middle → Markdown/JSON，不加载 Surya、不占 GPU）。核心数自动规划（物理核心、可用内存、页数、实测收益上限 12）或 `--indra_cores` 手动；运行在独立解释器的 sidecar 中，权重由使用者自备，默认不联网；逐页缓存、页级置信证据与可选复核诊断。可选安装项 `.[indra]`。
+- **glm_ocr** 块级 OCR 后端（OpenAI 兼容服务，失败显式记录）。
+- **内置 PP-DocLayoutV3**（CPU ONNX，`.[paddle-layout]`）与 **Paddle OCR Torch**（与主环境共用 PyTorch，`.[paddle-torch]`，可选 PP-OCRv5/v6）；原生多边形与阅读顺序保存在 Middle。
+- **评估**：`contexture_eval_text`（文字/表格/阅读顺序基线）、基准评测集与运行器、30 页手标版面真值与评分器（`benchmarks/`、`evaluation/`）。
+- 模式 `middle_geometry_profile=lean`（不保存逐词坐标）；Pipeline 并行进程数与每批页数按可用显存联动。
+
+### 变更（可能影响现有用法）
+
+- API 在存在失败页时返回 `success=false`，响应附失败页、诊断与警告；Source Package 请求必须提供 `config.output_dir`；多格式请求生成全部所请求格式并新增 `outputs` 映射（首格式 `format/output` 保持兼容）。
+- 未指定独立解释器时，PP-DocLayoutV3 改走内置 ONNX 路径；显式指定 Paddle SDK、GPU 或解释器的配置保持原路径。
+- 命令行 `--help` 不再误启动 Streamlit；帮助输出对不可编码字符做兼容转义。
+- Middle 存储不再丢弃 `native_polygon` 与 `native_reading_order`；span formats 排序输出以保证可复现。
+
+### 已知限制
+
+- 真实浏览器文件上传验收未通过（扩展权限阻断），其余前端流程已验收。
+- 所有验收仅在 Windows 本机完成；macOS、Linux 未验证。
+- 30 项测试因缺固定模型或文献样本而跳过，对应的可选后端未被普遍实测。
+- Indra 在旧式印刷体与脚注上较弱；低置信复核阈值（0.92 / 0.60）为起点，未校准；真实旋转扫描 PDF 未验证。
+- OXR 仅为评测候选，未集成。
+
+---
+
 ## [0.9.0] - 2026-07-26
 
 0.9.0 consolidates Contexture as a clean, installable single-user source release for Windows, macOS, and Linux. It preserves optional external backends while making direct VLM and text-layer operation easier to automate on a personal workstation or server.

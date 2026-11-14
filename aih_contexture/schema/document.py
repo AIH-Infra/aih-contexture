@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import List, Sequence, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
+from contextlib import contextmanager
 
 from aih_contexture.schema import BlockTypes
 from aih_contexture.schema.blocks import Block, BlockId, BlockOutput
@@ -28,6 +29,22 @@ class Document(BaseModel):
     block_type: BlockTypes = BlockTypes.Document
     table_of_contents: List[TocItem] | None = None
     debug_data_path: str | None = None  # Path that debug data was saved to
+    _render_lookup_cache: dict | None = PrivateAttr(default=None)
+
+    @contextmanager
+    def render_lookup_context(self):
+        """Indexes live only while this immutable rendering transaction runs."""
+        if self._render_lookup_cache is not None:
+            yield
+            return
+        pages = {}
+        for page in self.pages:
+            pages.setdefault(page.page_id, page)
+        self._render_lookup_cache = {'pages': pages}
+        try:
+            yield
+        finally:
+            self._render_lookup_cache = None
 
     def get_block(self, block_id: BlockId):
         page = self.get_page(block_id.page_id)
@@ -37,6 +54,9 @@ class Document(BaseModel):
         return None
 
     def get_page(self, page_id):
+        cache = self._render_lookup_cache
+        if cache is not None:
+            return cache['pages'].get(page_id)
         for page in self.pages:
             if page.page_id == page_id:
                 return page
@@ -93,6 +113,10 @@ class Document(BaseModel):
         return template
 
     def render(self, block_config: Optional[dict] = None):
+        with self.render_lookup_context():
+            return self._render_indexed(block_config)
+
+    def _render_indexed(self, block_config):
         child_content = []
         section_hierarchy = None
         for page in self.pages:

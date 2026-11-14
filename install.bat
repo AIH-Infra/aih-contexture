@@ -96,7 +96,7 @@ if "!PYTHON_CMD!"=="" (
     echo Required: Python 3.10, 3.11, or 3.12
     echo.
     echo Please install Python 3.12 from:
-    echo https://www.python.org/downloads/release/python-3129/
+    echo https://www.python.org/downloads/
     echo.
     echo Make sure to check "Add Python to PATH"
     echo.
@@ -237,8 +237,7 @@ if !errorlevel! neq 0 (
     echo.
     echo [Error] The installed PyTorch build does not match the selected profile
     echo [Action] If the error mentions c10.dll, WinError 1114, or DLL initialization,
-    echo [Action] Run repair_windows_runtime.bat to rerun the standard installer.
-    echo [Action] Restart Windows if the DLL initialization error remains afterward.
+    echo          run repair_windows_runtime.bat, restart Windows, and rerun install.bat.
     pause
     exit /b 1
 )
@@ -266,7 +265,7 @@ if !errorlevel! neq 0 (
     echo.
     echo [Error] Project dependency installation changed the verified PyTorch profile
     echo Re-run install.bat and keep the displayed verification error for diagnosis.
-    echo If the error mentions c10.dll or WinError 1114, run repair_windows_runtime.bat to rerun the installer.
+    echo If the error mentions c10.dll or WinError 1114, run repair_windows_runtime.bat first.
     pause
     exit /b 1
 )
@@ -316,9 +315,9 @@ if "!TESS_FOUND!"=="0" (
         if /i "!INSTALL_TESS!"=="y" (
             winget install --id UB-Mannheim.TesseractOCR -e
             if !errorlevel! neq 0 (
-                echo [Warning] Optional Tesseract installation failed. Install it manually or set CONTEXTURE_TESSERACT_CMD.
+                echo [Warning] Tesseract installation failed; it remains optional and unavailable.
             ) else (
-                echo [Info] Restart this terminal before using Tesseract.
+                echo [Info] Tesseract installed. Restart this terminal before using it.
             )
         )
     ) else (

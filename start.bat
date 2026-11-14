@@ -39,8 +39,7 @@ if %errorlevel% neq 0 (
 if %errorlevel% neq 0 (
     echo [Warning] PyTorch could not be loaded. Local Surya/PyTorch backends will be unavailable.
     echo [Warning] API backends and JSON rerendering can still be used.
-    echo [Action] Run repair_windows_runtime.bat to reinstall the selected PyTorch profile.
-    echo [Action] Restart Windows if the DLL initialization error remains after reinstalling.
+    echo [Action] Run repair_windows_runtime.bat, restart Windows, then start Contexture again.
     echo [Detail] See .torch_startup_check.log for the original import error.
     echo.
 )
@@ -51,6 +50,8 @@ set "TRANSFORMERS_CACHE=%~dp0.cache\huggingface"
 set "TORCH_HOME=%~dp0.cache\torch"
 
 :: Start application
+echo [Code] "%CD%"
+echo [Python] "%CD%\.venv\Scripts\python.exe"
 echo Starting the web UI...
 echo.
 echo The app will choose an available port starting from 8501
@@ -59,10 +60,5 @@ echo Press Ctrl+C to stop
 echo.
 
 ".venv\Scripts\python.exe" contexture_app.py
-set "APP_EXIT=%errorlevel%"
-if not "%APP_EXIT%"=="0" (
-    echo [Error] Contexture exited with code %APP_EXIT%. Review the error shown above.
-)
 
 pause
-exit /b %APP_EXIT%

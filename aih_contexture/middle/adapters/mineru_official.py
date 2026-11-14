@@ -20,7 +20,7 @@ def detect_mineru_official_json_kind(payload: Any, *, file_name: str | None = No
     protocols.
     """
     name = (file_name or "").lower()
-    if isinstance(payload, dict) and payload.get("schema_version") == "contexture-middle-json/0.1":
+    if isinstance(payload, dict) and payload.get("schema_version") in {"contexture-middle-json/0.1", "contexture-middle-storage/1"}:
         return "contexture_middle_json"
     if isinstance(payload, dict) and isinstance(payload.get("pdf_info"), list):
         return "mineru_middle_json"

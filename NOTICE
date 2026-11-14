@@ -18,15 +18,14 @@ Authors: Güriedrich & Baireinhold (橘里德里希 & 白茵霍尔德)
 主要修改内容
 ================================================================================
 
-Contexture 在 Marker 基础上进行了以下修改：
+Contexture 在 Marker 基础上进行了以下重大修改和创新：
 
-1. 可组合的文献处理
-   - OCR 后端可插拔架构（支持 Surya / Calamari / Chandra / VLM）
-   - Layout 后端可插拔架构（支持 Surya / YOLO / DocLayout-YOLO / VLM）
-   - 五种界面工作流：Pipeline、VLM 泛化、VLM 特化、结构化源导入和 Markdown 后处理
+1. 架构创新
+   - OCR 与 Layout 后端可独立选择，并可导入已有识别和版面结果
+   - 五模式工作流（Pipeline / VLM 泛化 / VLM 特化 / 结构化源导入 / Markdown 后处理）
    - 异步并发处理架构
 
-2. 文献语义处理
+2. 人文学科专用功能（完全原创）
    - 双重页码系统（PDF 页码 + 印刷页码）
    - 页码锚点系统（{n} 包裹结构）
    - 页码模式识别与自动修正
@@ -47,26 +46,45 @@ Contexture 在 Marker 基础上进行了以下修改：
 Datalab 项目（Endless Labs, Inc.）：
   - Marker (GPL-3.0) - 核心框架
   - Surya (GPL-3.0) - OCR 引擎
-  - Chandra 集成代码（Apache-2.0）- 可选特化 VLM OCR；模型权重另受其模型许可约束
+  - Chandra (Apache-2.0) - 高级 OCR
   - PDFText (Apache-2.0) - PDF 文本提取
 
 其他项目：
   - Calamari OCR (Apache-2.0) - 欧洲历史文献 OCR
     通过 Docker 容器集成，作为可选 OCR 后端
-  - locro (MIT) - Chrome ScreenAI 的 ctypes 封装；源码位于
-    `aih_contexture/vendor/locro/`，许可证保留于该目录的 `LICENSE`。
-
-Chrome ScreenAI 调用的原生库和模型是 Google 专有组件，不随本项目分发。
-发行包不包含模型权重。根目录 `MODEL_LICENSE` 提供单独的修改版 OpenRAIL-M
-模型许可证文本；具体模型权重仍须遵循其来源方的许可和使用条款。
+  - MinerU (Apache-2.0 附加条款) - PP-DocLayoutV2 版面检测与 Paddle OCR Torch
+    驱动代码（pp_doclayoutv2.py）以源码形式并入
+    aih_contexture/backends/layout/pp_doclayoutv2_model.py，
+    OCR 推理、模型结构及前后处理代码并入
+    aih_contexture/backends/ocr/paddle_torch/；完整上游许可保留于
+    aih_contexture/vendor/licenses/mineru-ocr-LICENSE.md，来源与修改见组件内说明。
+    版权归 Opendatalab 所有；附加条款要求在线服务署名，
+    商用规模超过 1 亿 MAU 或月营收 2000 万美元须另行取得商业授权。
+    仓库：https://github.com/opendatalab/MinerU
+  - PaddleX (Apache-2.0) - PP-DocLayoutV3 版面后处理
+    阅读顺序、框过滤、多边形处理代码并入
+    aih_contexture/backends/layout/doclayout_postprocess.py 与 doclayout_box_ops.py；
+    许可保留于 aih_contexture/vendor/licenses/paddlex-layout-LICENSE，
+    来源说明见 DOCLAYOUT_V3_PROVENANCE.md。ONNX 权重不随主包分发。
+  - Indra OCR (代码 Apache-2.0；模型权重为修改版 OpenRAIL-M) - CPU 版面标签与 OCR
+    仅作为可选依赖（`pip install ".[indra]"`）在独立解释器的 sidecar 中调用，
+    本项目不并入其代码、不随包分发权重；权重由使用者自行下载，其使用限制
+    由使用者按权重许可自行遵守，默认不联网下载。
+    仓库：https://github.com/datalab-to/indra
+  - locro (MIT) - Chrome Screen AI OCR 的 ctypes 直调封装
+    以源码形式并入 aih_contexture/backends/ocr/screenai/
+    （上游 commit ba53ee2），版权归 Sergio Correia 所有。
+    仓库：https://github.com/sergiocorreia/clv-locro
+    注意：其调用的 chrome_screen_ai.dll 与模型文件为 Google 专有
+    组件，不随本项目分发，仅由使用者在本地经 Chrome 组件更新
+    获取后复制进托管缓存目录。
 
 ================================================================================
 许可证兼容性说明
 ================================================================================
 
 - GPL-3.0 组件：Marker, Surya → 本项目必须使用 GPL-3.0
-- Apache-2.0 组件：Chandra, PDFText, Calamari → 与 GPL-3.0 兼容
-- locro 源码使用 MIT；相应许可证随源码保留。
-- 模型权重不随发行包分发；模型许可证及外部服务条款独立于本项目代码许可证。
+- Apache-2.0 组件：Chandra, PDFText, Calamari, Indra（代码，仅作可选依赖调用）→ 与 GPL-3.0 兼容
+- 模型权重（Indra 的 OpenRAIL-M、PP-DocLayoutV3 ONNX、PP-OCR 权重等）不随本项目分发，各自许可由使用者在下载时确认
 
 本项目整体使用 GPL-3.0-or-later 许可证。

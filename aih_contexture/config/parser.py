@@ -18,8 +18,114 @@ logger = get_logger()
 
 
 class ConfigParser:
-    def __init__(self, cli_options: dict):
-        self.cli_options = cli_options
+    def __init__(self, cli_options: dict, *, explicit_options=None, click_context=None):
+        self.cli_options = dict(cli_options or {})
+        self._explicit_options, self._click_defaults = self._resolve_option_sources(
+            explicit_options, click_context
+        )
+        self._effective_options = None
+
+    @classmethod
+    def from_click(cls, cli_options: dict, *, context=None):
+        """Build a parser using Click's actual parameter sources.
+
+        Call this only from a Click callback. Ordinary ConfigParser instances
+        treat their supplied mapping as explicit, even if created while an
+        unrelated Click context happens to be active.
+        """
+        context = context or click.get_current_context(silent=True)
+        return cls(cli_options, click_context=context)
+
+    def _resolve_option_sources(self, explicit_options, click_context):
+        """Return explicit and Click-default option names.
+
+        API and internal callers have no Click parameter source, so every value
+        they pass is an explicit option. During a matching Click invocation,
+        Click defaults form the lowest-precedence layer, followed by config_json
+        and then command line/environment/prompt values.
+        """
+        if explicit_options is not None:
+            if isinstance(explicit_options, dict):
+                return (
+                    {key for key, is_explicit in explicit_options.items() if is_explicit},
+                    set(),
+                )
+            return set(explicit_options), set()
+
+        context = click_context
+        if context is None:
+            return set(self.cli_options), set()
+
+        context_params = getattr(context, "params", {}) or {}
+        matching_params = set(context_params).intersection(self.cli_options)
+        if not matching_params:
+            return set(self.cli_options), set()
+
+        explicit = set()
+        defaults = set()
+        for key in self.cli_options:
+            if key not in context_params:
+                # Preserve caller-supplied/internal configuration values that
+                # are not Click parameters.
+                explicit.add(key)
+                continue
+            source = context.get_parameter_source(key)
+            if source == click.core.ParameterSource.DEFAULT:
+                defaults.add(key)
+            else:
+                explicit.add(key)
+        return explicit, defaults
+
+    def get_effective_options(self) -> dict:
+        """Return options merged as JSON configuration, then explicit options.
+
+        Click-injected defaults are omitted from the override layer, preventing
+        defaults such as output_format=markdown from masking an explicit value
+        in config_json. False values are retained so negative boolean flags and
+        explicit API configuration remain effective.
+        """
+        if self._effective_options is not None:
+            return dict(self._effective_options)
+
+        # Click defaults remain available when no JSON value replaces them.
+        # This preserves the CLI's normal behavior while giving the file
+        # priority over an injected default.
+        effective = {
+            key: self.cli_options[key]
+            for key in self._click_defaults
+            if key in self.cli_options
+            and key != "config_json"
+            and self.cli_options[key] is not None
+            and self.cli_options[key] != ""
+        }
+        config_json = self.cli_options.get("config_json")
+        if config_json:
+            with open(config_json, "r", encoding="utf-8") as f:
+                file_options = json.load(f)
+            if not isinstance(file_options, dict):
+                raise ValueError(
+                    f"Configuration JSON must contain an object: {config_json}"
+                )
+            effective.update(
+                {
+                    key: value
+                    for key, value in file_options.items()
+                    if value is not None and value != ""
+                }
+            )
+
+        for key in self._explicit_options:
+            if key == "config_json" or key not in self.cli_options:
+                continue
+            value = self.cli_options[key]
+            # Empty/None values mean unspecified; False remains meaningful.
+            if value is None or value == "":
+                continue
+            effective[key] = value
+
+        effective.pop("config_json", None)
+        self._effective_options = effective
+        return dict(effective)
 
     @staticmethod
     def common_options(fn):
@@ -65,7 +171,7 @@ class ConfigParser:
             "--layout_backend",
             type=str,
             default="surya",
-            help="Pipeline layout backend. Current implemented values: surya, vlm_layout, external_layout_sidecar, mineru_pp_doclayout_v2_direct, mineru_vl_layout, surya2_layout, paddle_pp_doclayout_plus_l, paddle_pp_doclayout_v3.",
+            help="Pipeline layout backend. Current implemented values: surya, vlm_layout, external_layout_sidecar, mineru_pp_doclayout_v2_direct, mineru_vl_layout, surya2_layout, paddle_pp_doclayout_plus_l, paddle_pp_doclayout_v3, indra_layout (Indra labels + reading order; pair with --disable_ocr / chrome_screenai / another OCR, or with indra_ocr for the direct CPU route).",
         )(fn)
         fn = click.option(
             "--surya_layout_quality",
@@ -167,7 +273,7 @@ class ConfigParser:
             "--mineru_layout_python",
             type=click.Path(exists=False),
             default=None,
-            help="Optional MinerU sidecar Python executable for mineru_pp_doclayout_v2_direct. Defaults to CONTEXTURE_MINERU_PYTHON.",
+            help="Optional Python executable (with PyTorch) for the mineru_pp_doclayout_v2_direct layout sidecar. Defaults to CONTEXTURE_MINERU_LAYOUT_PYTHON, then this instance's GPU runtime env, then the interpreter running Contexture.",
         )(fn)
         fn = click.option(
             "--mineru_layout_model_dir",
@@ -223,10 +329,33 @@ class ConfigParser:
         fn = click.option("--surya2_image_quality", type=int, default=None, help="Image quality for JPEG/WEBP Surya 2 requests.")(fn)
         fn = click.option("--surya2_crop_padding_px", type=int, default=None, help="Pixel padding around Pipeline layout block crops for Surya 2 OCR.")(fn)
         fn = click.option("--surya2_crop_padding_frac", type=float, default=None, help="Fractional padding around Pipeline layout block crops for Surya 2 OCR.")(fn)
-        fn = click.option("--mineru_ocr_python", type=click.Path(exists=False), default=None, help="Optional MinerU sidecar Python executable for ocr_backend=mineru_pytorch_paddle_ocr.")(fn)
-        fn = click.option("--mineru_ocr_lang", type=str, default=None, help="MinerU PytorchPaddleOCR language code. Default: ch.")(fn)
-        fn = click.option("--mineru_ocr_device", type=str, default=None, help="Optional MinerU OCR device via MINERU_DEVICE_MODE, e.g. cpu, cuda, cuda:0.")(fn)
+        fn = click.option("--glm_ocr_endpoint", type=str, default=None, help="GLM-OCR OpenAI-compatible endpoint (e.g. LM Studio http://127.0.0.1:1234/v1).")(fn)
+        fn = click.option("--glm_ocr_model", type=str, default=None, help="GLM-OCR model id on the service. Default: glm-ocr@q8_0.")(fn)
+        fn = click.option("--glm_ocr_quant", type=str, default=None, help="GLM-OCR preset quantization when --glm_ocr_model is unset: f16 or q8_0.")(fn)
+        fn = click.option("--glm_ocr_api_key", type=str, default=None, help="GLM-OCR API key.")(fn)
+        fn = click.option("--glm_ocr_block_concurrency", type=int, default=None, help="GLM-OCR block crop concurrency. LM Studio measured 4 -> 8: 1.05 -> 1.39 blocks/s.")(fn)
+        fn = click.option("--glm_ocr_timeout", type=int, default=None, help="GLM-OCR request timeout in seconds.")(fn)
+        fn = click.option("--glm_ocr_max_tokens", type=int, default=None, help="GLM-OCR max output tokens per block; a cut-off block is marked ocr_failure.")(fn)
+        fn = click.option("--glm_ocr_recognize_formulas", is_flag=True, default=False, help="Also send Equation blocks to GLM-OCR (formula prompt is not yet validated).")(fn)
+        fn = click.option("--indra_python", type=click.Path(exists=False), default=None, help="Python executable of the Indra OCR environment (indra-ocr + onnxruntime). Defaults to CONTEXTURE_INDRA_PYTHON, else this interpreter if it can import indra_ocr.")(fn)
+        fn = click.option("--indra_model_dir", type=click.Path(exists=False), default=None, help="Folder with Indra's det.onnx, rec.onnx, meta.json (order.onnx for layout). Defaults to INDRA_OCR_MODEL_DIR. Weights are not bundled.")(fn)
+        fn = click.option("--indra_mode", type=click.Choice(["auto", "ocr", "text"]), default=None, help="Indra text source: auto trusts a verified PDF text layer and OCRs the rest; ocr always recognizes; text only reads the layer.")(fn)
+        fn = click.option("--indra_dpi", type=int, default=None, help="Indra render DPI. Default 200.")(fn)
+        fn = click.option("--indra_math", is_flag=True, default=False, help="Recognize formulas to LaTeX (needs the math model files in the model folder).")(fn)
+        fn = click.option("--indra_cores", type=int, default=None, help="CPU cores for Indra. Default: planned from physical cores, free RAM (~1.5 GB per worker) and page count. A value beyond the safe limit is clamped with a note.")(fn)
+        fn = click.option("--indra_allow_download", is_flag=True, default=False, help="Let Indra fetch its weights from Hugging Face when the model folder is missing. Off by default.")(fn)
+        fn = click.option("--indra_cache_dir", type=click.Path(exists=False), default=None, help="Cache folder for per-page Indra results, keyed by PDF content, page and settings.")(fn)
+        fn = click.option("--indra_review_mean", type=float, default=None, help="Flag an Indra page for review when its mean line confidence is below this. Default 0.92 (a starting point, not calibrated).")(fn)
+        fn = click.option("--indra_review_min", type=float, default=None, help="Flag an Indra page for review when its worst line confidence is below this. Default 0.60 (a starting point, not calibrated).")(fn)
+        fn = click.option("--mineru_ocr_python", type=click.Path(exists=False), default=None, help="Optional Python override for native Paddle OCR Torch. Defaults to Contexture's Python; MinerU is not required.")(fn)
+        fn = click.option("--mineru_ocr_model_dir", type=click.Path(exists=False), default=None, help="Native Paddle OCR Torch weight folder. Existing local caches are reused when omitted.")(fn)
+        fn = click.option("--mineru_ocr_version", type=click.Choice(["PP-OCRv5", "PP-OCRv6"]), default=None, help="Native Paddle OCR Torch model family. Default PP-OCRv5.")(fn)
+        fn = click.option("--mineru_ocr_allow_download", is_flag=True, default=False, help="Explicitly allow downloading missing Paddle OCR Torch weights. Off by default.")(fn)
+        fn = click.option("--mineru_ocr_lang", type=str, default=None, help="Native Paddle OCR Torch language profile. Default: ch.")(fn)
+        fn = click.option("--mineru_ocr_device", type=str, default=None, help="Native Paddle OCR Torch device, e.g. cpu, cuda, cuda:0. Defaults to available Torch device.")(fn)
         fn = click.option("--mineru_ocr_timeout", type=int, default=None, help="MinerU OCR sidecar timeout in seconds.")(fn)
+        fn = click.option("--paddle_layout_allow_download", is_flag=True, default=False, help="Explicitly allow downloading the optional native PP-DocLayoutV3 ONNX model. Off by default.")(fn)
+        fn = click.option("--paddle_layout_batch_size", type=int, default=None, help="Layout inference batch size. Native PP-DocLayoutV3 CPU supports 1 to 8; default 1.")(fn)
         fn = click.option(
             "--paddle_layout_python",
             type=click.Path(exists=False),
@@ -255,7 +384,7 @@ class ConfigParser:
             "--paddle_layout_engine",
             type=str,
             default=None,
-            help="Optional PaddleOCR inference engine, e.g. paddle, paddle_static, or paddle_dynamic.",
+            help="PP-DocLayoutV3 defaults to native CPU onnxruntime. Explicit paddle engines retain the SDK compatibility path.",
         )(fn)
         fn = click.option(
             "--paddle_layout_enable_mkldnn/--no_paddle_layout_enable_mkldnn",
@@ -284,7 +413,7 @@ class ConfigParser:
             "--ocr_backend",
             type=str,
             default="surya",
-            help="Pipeline OCR backend. Current implemented values: surya, chrome_screenai, calamari, vlm_ocr, paddle_ocr_v5, paddleocr_vl_ocr, surya2_ocr, mineru_pytorch_paddle_ocr, tesseract, none. chrome_screenai first writes a searchable PDF, then re-enters Pipeline through embedded PDF text. Use none or --disable_ocr for the embedded PDF text layer.",
+            help="Pipeline OCR backend. Current implemented values: surya, chrome_screenai, calamari, vlm_ocr, paddle_ocr_v5, paddleocr_vl_ocr, surya2_ocr, glm_ocr, mineru_pytorch_paddle_ocr, indra_ocr (any layout backend; with layout_backend=indra_layout too it runs the direct CPU route), tesseract, none. chrome_screenai first writes a searchable PDF, then re-enters Pipeline through embedded PDF text. Use none or --disable_ocr for the embedded PDF text layer.",
         )(fn)
         fn = click.option(
             "--ocr_quality",
@@ -449,6 +578,18 @@ class ConfigParser:
             help="Emit a Middle JSON validation report.",
         )(fn)
         fn = click.option(
+            '--emit_reading_diagnostics', '--reading-diagnostics',
+            is_flag=True, default=False,
+            help='Write separate reading diagnostics; disabled by default. Publication formats remain unchanged.',
+        )(fn)
+        fn = click.option(
+            "--middle_geometry_profile",
+            type=click.Choice(["full", "lean"]),
+            default=None,
+            help="Middle word geometry: full (default) keeps word spans; lean omits them for faster save and smaller files. "
+                 "Lean is not applied when classical marginalia, span overlays or full Middle JSON are requested.",
+        )(fn)
+        fn = click.option(
             "--emit_middle_debug",
             is_flag=True,
             default=False,
@@ -506,6 +647,24 @@ class ConfigParser:
             default=None,
             help="Markdown output mode for recognized marginalia: line_markers, margin_comments, plain, or drop.",
         )(fn)
+        fn = click.option(
+            "--classical_marginalia_mode",
+            type=click.Choice(["off", "page_locators"]),
+            default="off",
+            help="Classical marginalia rendering: off (legacy) or page_locators (page-level locator annotations).",
+        )(fn)
+        fn = click.option(
+            "--classical_text_marginalia_mode",
+            type=click.Choice(["separate", "drop"]),
+            default="separate",
+            help="When classical marginalia is enabled, keep textual marginalia separately or omit it from rendered Markdown.",
+        )(fn)
+        fn = click.option(
+            "--generic_line_output_mode",
+            type=click.Choice(["drop", "page_comments"]),
+            default="drop",
+            help="Universal line number output mode: drop (omit confirmed line numbers from reading Markdown, default) or page_comments (preserve at page top comments). Requires classical_marginalia_mode=page_locators; affects only confirmed line numbers. Body numbers are preserved; Bekker locators are controlled separately.",
+        )(fn)
         fn = click.option("--left_margin_threshold", type=float, default=None, help="Left marginal region width as a page-width fraction.")(fn)
         fn = click.option("--right_margin_threshold", type=float, default=None, help="Right marginal region start as a page-width fraction.")(fn)
         fn = click.option("--top_margin_threshold", type=float, default=None, help="Top marginal region height as a page-height fraction.")(fn)
@@ -541,9 +700,12 @@ class ConfigParser:
         return fn
 
     def generate_config_dict(self) -> Dict[str, any]:
+        options = self.get_effective_options()
         config = {}
-        output_dir = self.cli_options.get("output_dir", settings.OUTPUT_DIR)
-        for k, v in self.cli_options.items():
+        output_dir = options.get("output_dir", settings.OUTPUT_DIR)
+        emit_middle_json_for_artifacts = False
+        disable_ocr_for_backend = False
+        for k, v in options.items():
             # 🔧 修复：不要过滤 False 值，因为处理器配置需要 False 来禁用
             # 只跳过 None 和空字符串
             if v is None or v == "":
@@ -551,48 +713,67 @@ class ConfigParser:
 
             match k:
                 case "debug":
-                    config["debug_pdf_images"] = True
-                    config["debug_layout_images"] = True
-                    config["debug_json"] = True
-                    config["debug_data_folder"] = output_dir
-                case "page_range":
-                    config["page_range"] = v if isinstance(v, list) else parse_range_str(v)
-                case "config_json":
-                    with open(v, "r", encoding="utf-8") as f:
-                        config.update(json.load(f))
-                case "disable_multiprocessing":
-                    config["pdftext_workers"] = 1
-                case "disable_image_extraction":
-                    config["extract_images"] = False
-                case "disable_ocr":
+                    # is_flag，只有显式传 --debug 才成立；v=False 时不得打开调试产物
                     if v:
-                        config["disable_ocr"] = True
+                        config["debug_pdf_images"] = True
+                        config["debug_layout_images"] = True
+                        config["debug_json"] = True
+                        config["debug_data_folder"] = output_dir
+                case "page_range":
+                    if isinstance(v, (list, tuple)):
+                        config["page_range"] = list(v)
+                    elif isinstance(v, str):
+                        config["page_range"] = parse_range_str(v)
                     else:
-                        config.setdefault("disable_ocr", False)
+                        raise TypeError(
+                            "page_range must be a string, list, or tuple; "
+                            f"got {type(v).__name__}"
+                        )
+                case "config_json":
+                    # get_effective_options has already loaded the file before
+                    # applying explicit values. Keep this for direct callers
+                    # that include the key in a manually-built options dict.
+                    continue
+                case "disable_multiprocessing":
+                    if v:
+                        config["pdftext_workers"] = 1
+                case "disable_image_extraction":
+                    if v:
+                        config["extract_images"] = False
+                case "disable_ocr":
+                    config["disable_ocr"] = bool(v)
                 case "emit_layout_overlay":
                     config["emit_layout_overlay"] = bool(v)
                     if v:
-                        config["emit_middle_json"] = True
+                        emit_middle_json_for_artifacts = True
                 case "emit_span_overlay":
                     config["emit_span_overlay"] = bool(v)
                     if v:
-                        config["emit_middle_json"] = True
+                        emit_middle_json_for_artifacts = True
                 case "emit_middle_report" | "emit_middle_debug" | "emit_middle_scholarly" | "emit_middle_scholarly_report" | "emit_middle_full_json":
                     config[k] = bool(v)
                     if v:
-                        config["emit_middle_json"] = True
+                        emit_middle_json_for_artifacts = True
                 case "ocr_backend":
                     if str(v).strip().lower() == "none":
                         config["ocr_backend"] = "surya"
-                        config["disable_ocr"] = True
+                        disable_ocr_for_backend = True
                     else:
                         config["ocr_backend"] = v
                 case _:
                     config[k] = v
 
-        # Backward compatibility for google_api_key
+        if emit_middle_json_for_artifacts:
+            config["emit_middle_json"] = True
+        if disable_ocr_for_backend:
+            # The explicit backend alias ocr_backend=none always means that
+            # OCR must be disabled, regardless of dictionary insertion order.
+            config["disable_ocr"] = True
+
+        # Backward compatibility for google_api_key without overriding an
+        # explicit key supplied in JSON or by the caller.
         if settings.GOOGLE_API_KEY:
-            config["gemini_api_key"] = settings.GOOGLE_API_KEY
+            config.setdefault("gemini_api_key", settings.GOOGLE_API_KEY)
 
         ocr_backend = str(config.get("ocr_backend") or "surya").strip().lower().replace("-", "_")
         preprocess_backend = str(config.get("ocr_preprocess_backend") or "none").strip().lower().replace("-", "_")
@@ -616,16 +797,17 @@ class ConfigParser:
 
     def get_llm_service(self):
         # Only return an LLM service when use_llm is enabled
-        if not self.cli_options.get("use_llm", False):
+        options = self.get_effective_options()
+        if not options.get("use_llm", False):
             return None
 
-        service_cls = self.cli_options.get("llm_service", None)
+        service_cls = options.get("llm_service", None)
         if service_cls is None:
             service_cls = "aih_contexture.services.gemini.GoogleGeminiService"
         return service_cls
 
     def get_renderer(self):
-        match self.cli_options["output_format"]:
+        match self.get_effective_options().get("output_format", "markdown"):
             case "json":
                 r = JSONRenderer
             case "markdown":
@@ -639,9 +821,19 @@ class ConfigParser:
         return classes_to_strings([r])[0]
 
     def get_processors(self):
-        processors = self.cli_options.get("processors", None)
+        processors = self.get_effective_options().get("processors", None)
         if processors is not None:
-            processors = processors.split(",")
+            if isinstance(processors, str):
+                processors = [item.strip() for item in processors.split(",") if item.strip()]
+            elif isinstance(processors, (list, tuple)):
+                if not all(isinstance(item, str) and item.strip() for item in processors):
+                    raise ValueError("processors must contain only non-empty class path strings")
+                processors = [item.strip() for item in processors]
+            else:
+                raise TypeError(
+                    "processors must be a comma-separated string, list, or tuple; "
+                    f"got {type(processors).__name__}"
+                )
             for p in processors:
                 try:
                     strings_to_classes([p])
@@ -652,7 +844,7 @@ class ConfigParser:
         return processors
 
     def get_converter_cls(self):
-        converter_cls = self.cli_options.get("converter_cls", None)
+        converter_cls = self.get_effective_options().get("converter_cls", None)
         if converter_cls is not None:
             try:
                 return strings_to_classes([converter_cls])[0]
@@ -665,7 +857,7 @@ class ConfigParser:
         return PdfConverter
 
     def get_output_folder(self, filepath: str):
-        output_dir = self.cli_options.get("output_dir", settings.OUTPUT_DIR)
+        output_dir = self.get_effective_options().get("output_dir", settings.OUTPUT_DIR)
         return document_output_folder(output_dir, filepath)
 
     def get_base_filename(self, filepath: str):

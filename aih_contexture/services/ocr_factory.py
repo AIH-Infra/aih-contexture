@@ -53,5 +53,9 @@ class OcrServiceFactory:
             from aih_contexture.services.ocr_vlm_specialized import OcrSurya2Service
             logger.info("Creating Surya 2 specialized service")
             return OcrSurya2Service(config)
+        elif backend in {"glm_ocr"}:
+            from aih_contexture.services.ocr_vlm_specialized import OcrGlmOcrService
+            logger.info("Creating GLM-OCR specialized service")
+            return OcrGlmOcrService(config)
         else:
             raise ValueError(f"Unsupported OCR backend: {backend}")

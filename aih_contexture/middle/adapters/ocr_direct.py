@@ -109,7 +109,9 @@ def _chandra_chunks_to_middle_pages(
             printed_page=_printed_page(printed_pages, page_index),
             provenance=[MiddleProvenance(backend=backend, stage="official_chunks", model=model, source=source)],
         )
-
+        for key in ("raw", "issues", "quality", "error", "official_protocol"):
+            if key in page_data:
+                page.attrs[key] = page_data[key]
         chunks = page_data.get("chunks")
         if not isinstance(chunks, list):
             chunks = []
@@ -126,7 +128,36 @@ def _chandra_chunks_to_middle_pages(
                     )
                 )
         pages.append(page)
+    _promote_chandra_header_pages(pages)
     return sorted(pages, key=lambda page: page.index)
+
+
+def _promote_chandra_header_pages(pages: list[MiddlePage]) -> None:
+    """Use a native header plus edge geometry or a neighboring page sequence."""
+    candidates = {}
+    for page in pages:
+        blocks = [(block, _page_number_marker(block.text.strip())) for block in page.blocks
+                  if block.type == 'PageHeader']
+        blocks = [(block, marker) for block, marker in blocks if marker is not None]
+        if len(blocks) == 1:
+            candidates[page.index] = (page, *blocks[0])
+    for index, (page, block, marker) in candidates.items():
+        if page.printed_page:
+            continue
+        edge = bool(page.height and block.bbox and
+                    (block.bbox[3] <= page.height * .14 or block.bbox[1] >= page.height * .86))
+        sequence = marker.isdigit() and any(
+            near in candidates and candidates[near][2].isdigit()
+            and abs(int(candidates[near][2]) - int(marker)) == 1
+            for near in (index - 1, index + 1)
+        )
+        if not edge and not sequence:
+            continue
+        page.printed_page = marker
+        block.type = 'PageNumber'
+        block.attrs.update(inferred_type='PageNumber',
+                           raw_block_type_before_inference='PageHeader',
+                           page_number_evidence=['native_page_header', 'page_edge' if edge else 'neighbor_sequence'])
 
 
 def _chandra_chunk_to_block(
@@ -161,7 +192,7 @@ def _chandra_chunk_to_block(
             )
         )
 
-    return MiddleBlock(
+    block = MiddleBlock(
         id=f"p{page_index}-ocr{order}",
         type=canonical_type,
         page_index=page_index,
@@ -176,6 +207,10 @@ def _chandra_chunk_to_block(
         },
         provenance=[provenance],
     )
+    for key in ("source_text", "raw", "raw_prompt", "raw_response", "issues"):
+        if key in chunk:
+            block.attrs[key] = chunk[key]
+    return block
 
 
 def _churro_json_pages_to_middle_pages(
@@ -190,37 +225,60 @@ def _churro_json_pages_to_middle_pages(
     for fallback_index, page_payload in enumerate(payload):
         if not isinstance(page_payload, dict):
             continue
+        frame_index = page_payload.get("page_index", page_payload.get("page_idx", fallback_index))
+        if not isinstance(frame_index, int) or frame_index < 0:
+            frame_index = fallback_index
+        outer_metadata = page_payload.get("metadata") if isinstance(page_payload.get("metadata"), dict) else {}
         if isinstance(page_payload.get("json"), dict):
             page_payload = page_payload["json"]
         page_entries = page_payload.get("content")
         if not isinstance(page_entries, list):
             page_entries = [{"elements": []}]
+        page_index = frame_index
+        page = MiddlePage(
+            index=page_index,
+            printed_page=_printed_page(printed_pages, fallback_index),
+            provenance=[MiddleProvenance(backend=backend, stage="official_xml_json", model=model, source=source)],
+        )
+        inner_metadata = page_payload.get("metadata") if isinstance(page_payload.get("metadata"), dict) else {}
+        upstream_error = outer_metadata.get("Error") or inner_metadata.get("Error")
+        if upstream_error:
+            page.attrs["error"] = str(upstream_error)
+        logical_pages = []
         for local_page_index, page_entry in enumerate(page_entries):
             if not isinstance(page_entry, dict):
                 continue
-            page_index = fallback_index + local_page_index
             printed_page = page_entry.get("page_number") or _printed_page(printed_pages, page_index)
-            page = MiddlePage(
-                index=page_index,
-                printed_page=str(printed_page) if printed_page is not None else None,
-                provenance=[MiddleProvenance(backend=backend, stage="official_xml_json", model=model, source=source)],
-            )
+            if len(page_entries) == 1:
+                page.printed_page = str(printed_page) if printed_page is not None else None
+            start_order = len(page.blocks)
             elements = page_entry.get("elements")
             if not isinstance(elements, list):
                 elements = []
-            for order, element in enumerate(elements):
+            for element in elements:
                 if isinstance(element, dict):
-                    page.blocks.append(
-                        _churro_element_to_block(
+                    block = _churro_element_to_block(
                             element,
                             page_index=page_index,
-                            order=order,
+                            order=len(page.blocks),
                             backend=backend,
                             model=model,
                             source=source,
                         )
-                    )
-            pages.append(page)
+                    if len(page_entries) > 1:
+                        block.attrs.update(logical_page_index=local_page_index,
+                                           logical_printed_page=printed_page,
+                                           input_frame_index=page_index)
+                    page.blocks.append(block)
+            logical_pages.append({"index": local_page_index, "printed_page": printed_page,
+                                  "block_start": start_order, "block_end": len(page.blocks)})
+        if len(page_entries) > 1:
+            page.attrs.update(input_frame_index=page_index, logical_pages=logical_pages,
+                              logical_page_mapping="needs_review")
+            printed = list(dict.fromkeys(str(p['printed_page']) for p in logical_pages if p['printed_page'] is not None))
+            if printed:
+                page.printed_page = " / ".join(printed)
+        pages.append(page)
     return sorted(pages, key=lambda page: page.index)
 
 

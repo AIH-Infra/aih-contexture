@@ -11,10 +11,65 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from aih_contexture.backends.external_config import default_mineru_command, default_mineru_python, default_paddle_python, mineru_project_root_from_python
+
+from aih_contexture.backends.external_config import (
+    default_mineru_command,
+    default_mineru_layout_python,
+    default_mineru_python,
+    default_paddle_python,
+    mineru_project_root_from_python,
+)
 from aih_contexture.backends.layout import default_layout_registry
 from aih_contexture.backends.ocr import default_ocr_registry
 from aih_contexture.backends.vlm import default_vlm_registry
+
+# Probe source executed inside the sidecar interpreter. The layout driver is
+# vendored in this package, so the layout probe never imports mineru.
+_MINERU_PROBE_SOURCE = '''
+import json, os, sys
+
+device = os.getenv("MINERU_DEVICE_MODE")
+device_source = "env"
+if not device:
+    import torch
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device_source = "torch_fallback"
+
+from aih_contexture.backends.layout.pp_doclayoutv2_model import PPDocLayoutV2LayoutModel
+
+payload = {
+    "device": device,
+    "device_source": device_source,
+    "model": PPDocLayoutV2LayoutModel.__name__,
+    "source_root": None,
+}
+if "--include-ocr" in sys.argv:
+    from aih_contexture.backends.ocr.paddle_torch import create_ocr
+
+    payload["ocr_model"] = create_ocr.__name__
+print(json.dumps(payload))
+'''
+
+
+def _run_captured(command, *, timeout: int = 30, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    """Capture sidecar stdout/stderr without crashing on Windows GBK bytes."""
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=False,
+        env=env,
+    )
+
+
+def _clip_output(text: str | None, limit: int = 1000) -> str:
+    return (text or "")[-limit:]
+
+
 
 BackendStatusLevel = Literal["ok", "missing_dependency", "requires_configuration", "planned", "unknown"]
 
@@ -54,13 +109,13 @@ def layout_backend_status(name: str, config: dict[str, Any] | None = None) -> Ba
                 message="No runtime dependency is required; this backend consumes an existing JSON sidecar.",
             )
         case "mineru_pp_doclayout_v2_direct":
-            python = str(config.get("mineru_layout_python") or config.get("mineru_python") or default_mineru_python() or "")
+            python = str(config.get("mineru_layout_python") or default_mineru_layout_python() or "")
             if not python:
                 return BackendStatus(
                     name=spec.name,
                     available=False,
                     level="requires_configuration",
-                    message="MinerU direct layout requires a MinerU Python interpreter. Set mineru_layout_python or CONTEXTURE_MINERU_PYTHON.",
+                    message="PP-DocLayoutV2 layout needs a Python interpreter with PyTorch. Set mineru_layout_python or CONTEXTURE_MINERU_LAYOUT_PYTHON.",
                 )
             return _mineru_python_status(python, spec.name)
         case "mineru_vl_layout":
@@ -93,13 +148,21 @@ def layout_backend_status(name: str, config: dict[str, Any] | None = None) -> Ba
                 level="requires_configuration",
                 message="Surya 2 layout requires a reachable vision VLM endpoint configured at runtime.",
             )
-        case "paddle_pp_doclayout_plus_l" | "paddle_pp_doclayout_v3":
+        case "paddle_pp_doclayout_v3":
+            from aih_contexture.backends.layout.pp_doclayoutv3_onnx import native_v3_selected
+            native_config = {**config, "layout_backend": spec.name}
+            if native_v3_selected(native_config):
+                return _doclayout_v3_status(spec.name, native_config)
+            return _paddle_status(spec.name, config=config, python_key="paddle_layout_python", missing_message="PaddleOCR is required for the selected SDK compatibility path.")
+        case "paddle_pp_doclayout_plus_l":
             return _paddle_status(
                 spec.name,
                 config=config,
                 python_key="paddle_layout_python",
                 missing_message=f"PaddleOCR is required for {spec.name}.",
             )
+        case "indra_layout":
+            return _indra_status(spec.name, config)
         case "vlm_layout":
             if _probe_services(config):
                 endpoint = config.get("vlm_layout_base_url") or config.get("openai_base_url")
@@ -204,6 +267,21 @@ def ocr_backend_status(name: str, config: dict[str, Any] | None = None) -> Backe
                 level="requires_configuration",
                 message="Surya 2 OCR requires a reachable OpenAI-compatible vision endpoint configured at runtime.",
             )
+        case "glm_ocr":
+            if _probe_services(config):
+                endpoint = config.get("glm_ocr_endpoint") or config.get("ocr_endpoint") or config.get("openai_base_url")
+                return _openai_compatible_service_status(
+                    spec.name,
+                    endpoint=endpoint,
+                    missing_message="GLM-OCR requires glm_ocr_endpoint, ocr_endpoint, or openai_base_url before it can be probed.",
+                    timeout=_health_timeout(config),
+                )
+            return BackendStatus(
+                name=spec.name,
+                available=True,
+                level="requires_configuration",
+                message="GLM-OCR requires a reachable OpenAI-compatible vision endpoint configured at runtime.",
+            )
         case "paddle_ocr_v5":
             return _paddle_status(
                 spec.name,
@@ -212,21 +290,9 @@ def ocr_backend_status(name: str, config: dict[str, Any] | None = None) -> Backe
                 missing_message="PaddleOCR is required for PaddleOCR PP-OCRv5.",
             )
         case "mineru_pytorch_paddle_ocr":
-            python = str(
-                config.get("mineru_ocr_python")
-                or config.get("mineru_layout_python")
-                or config.get("mineru_python")
-                or default_mineru_python()
-                or ""
-            )
-            if not python:
-                return BackendStatus(
-                    name=spec.name,
-                    available=False,
-                    level="requires_configuration",
-                    message="MinerU OCR requires a MinerU Python interpreter. Set mineru_ocr_python or CONTEXTURE_MINERU_PYTHON.",
-                )
-            return _mineru_python_status(python, spec.name, include_ocr=True)
+            return _paddle_torch_status(spec.name, config)
+        case "indra_ocr":
+            return _indra_status(spec.name, config)
         case "tesseract":
             return _tesseract_status(spec.name, config=config)
         case _:
@@ -270,6 +336,90 @@ def vlm_backend_status(name: str, config: dict[str, Any] | None = None) -> Backe
         available=True,
         level="requires_configuration",
         message=f"VLM backend '{spec.name}' requires a configured service or local model runtime.",
+    )
+
+
+def _doclayout_v3_status(name: str, config: dict[str, Any]) -> BackendStatus:
+    from aih_contexture.backends.layout.paddle_runtime import PaddleLayoutDetectionRuntime
+    from aih_contexture.backends.layout.pp_doclayoutv3_onnx import resolve_model_dir
+
+    runtime = PaddleLayoutDetectionRuntime(config)
+    python = config.get("paddle_layout_python") or config.get("paddle_python")
+    if python:
+        probe = "import onnxruntime,shapely; from aih_contexture.backends.layout.doclayout_postprocess import LayoutAnalysisProcess"
+        try:
+            result = _run_captured([str(python), "-c", probe], timeout=30, env=runtime._env(str(python)))
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return BackendStatus(name=name, available=False, level="missing_dependency", message=str(exc))
+        if result.returncode:
+            return BackendStatus(name=name, available=False, level="missing_dependency", message="Install aih-contexture[paddle-layout] in the explicitly selected Python.", details={"stderr": _clip_output(result.stderr)})
+    elif not runtime.is_available():
+        return BackendStatus(name=name, available=False, level="missing_dependency", message="Install aih-contexture[paddle-layout] in Contexture's current environment.")
+    if config.get("paddle_layout_device") not in (None, "", "cpu"):
+        return BackendStatus(name=name, available=False, level="requires_configuration", message="Native PP-DocLayoutV3 ONNX uses CPU; set paddle_layout_device=cpu.")
+    try:
+        model_dir = resolve_model_dir(config)
+    except (FileNotFoundError, ValueError) as exc:
+        return BackendStatus(name=name, available=False, level="requires_configuration", message=str(exc))
+    return BackendStatus(name=name, available=True, level="ok", message="Native PP-DocLayoutV3 CPU dependencies and weights are available; no Paddle installation required.", details={"model_dir": str(model_dir), "engine": "onnxruntime", "device": "cpu"})
+
+
+def _paddle_torch_status(name: str, config: dict[str, Any]) -> BackendStatus:
+    from aih_contexture.backends.ocr.mineru_runtime import MineruPytorchPaddleOcrRuntime
+    from aih_contexture.backends.ocr.paddle_torch_resources import resolve_model_dir
+
+    runtime = MineruPytorchPaddleOcrRuntime(config)
+    probe = (
+        "import importlib.util,json\n"
+        "modules=('torch','numpy','cv2','yaml','PIL','safetensors','shapely','pyclipper')\n"
+        "missing=[m for m in modules if importlib.util.find_spec(m) is None]\n"
+        "if not missing:\n"
+        "    from aih_contexture.backends.ocr.paddle_torch import create_ocr\n"
+        "print(json.dumps({'missing':missing}))\n"
+    )
+    try:
+        completed = _run_captured([runtime.python, "-c", probe], timeout=30, env=runtime._env())
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return BackendStatus(name=name, available=False, level="missing_dependency", message=f"Paddle OCR Torch Python check failed: {exc}")
+    if completed.returncode:
+        return BackendStatus(name=name, available=False, level="missing_dependency", message="Paddle OCR Torch Python check failed.", details={"stderr": _clip_output(completed.stderr)})
+    details = {"python": runtime.python, **json.loads(completed.stdout)}
+    if details["missing"]:
+        return BackendStatus(name=name, available=False, level="missing_dependency", message="Install aih-contexture[paddle-torch] in the selected Python environment.", details=details)
+    try:
+        details["model_dir"] = str(resolve_model_dir(config))
+    except (FileNotFoundError, ValueError) as exc:
+        return BackendStatus(name=name, available=False, level="requires_configuration", message=str(exc), details=details)
+    return BackendStatus(name=name, available=True, level="ok", message="Native Paddle OCR Torch dependencies and selected weights are available; no external MinerU required.", details=details)
+
+
+def _indra_status(name: str, config: dict[str, Any]) -> BackendStatus:
+    from aih_contexture.backends.ocr.indra.settings import IndraSettings, check_ready
+
+    try:
+        settings = IndraSettings.from_config(config)
+    except (TypeError, ValueError) as exc:
+        return BackendStatus(
+            name=name,
+            available=False,
+            level="requires_configuration",
+            message=f"Invalid Indra configuration: {exc}",
+        )
+
+    problems = check_ready(settings)
+    if problems:
+        missing_runtime = any("not installed" in p or "indra_python" in p for p in problems)
+        return BackendStatus(
+            name=name,
+            available=False,
+            level="missing_dependency" if missing_runtime else "requires_configuration",
+            message="; ".join(problems),
+        )
+    return BackendStatus(
+        name=name,
+        available=True,
+        level="ok",
+        message="Configured Indra prerequisites passed presence checks; runtime import and package availability were not tested.",
     )
 
 
@@ -320,7 +470,7 @@ def _paddle_sidecar_status(python: str, backend_name: str) -> BackendStatus:
         ),
     ]
     try:
-        completed = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
+        completed = _run_captured(command, timeout=30)
     except Exception as exc:
         return BackendStatus(
             name=backend_name,
@@ -339,8 +489,8 @@ def _paddle_sidecar_status(python: str, backend_name: str) -> BackendStatus:
             details={
                 "python": python,
                 "returncode": completed.returncode,
-                "stdout": completed.stdout[-1000:],
-                "stderr": completed.stderr[-1000:],
+                "stdout": _clip_output(completed.stdout),
+                "stderr": _clip_output(completed.stderr),
             },
         )
 
@@ -348,7 +498,7 @@ def _paddle_sidecar_status(python: str, backend_name: str) -> BackendStatus:
     try:
         details.update(json.loads(completed.stdout.strip().splitlines()[-1]))
     except Exception:
-        details["stdout"] = completed.stdout[-1000:]
+        details["stdout"] = _clip_output(completed.stdout)
     return BackendStatus(
         name=backend_name,
         available=True,
@@ -426,28 +576,11 @@ def _mineru_python_status(python: str, backend_name: str, *, include_ocr: bool =
             details={"python": python},
         )
 
-    import_ocr = "from mineru.model.ocr.pytorch_paddle import PytorchPaddleOCR; " if include_ocr else ""
-    ocr_payload = "'ocr_model': PytorchPaddleOCR.__name__, " if include_ocr else ""
-    command = [
-        python,
-        "-c",
-        (
-            "import json; "
-            "from mineru.model.layout.pp_doclayoutv2 import PPDocLayoutV2LayoutModel; "
-            f"{import_ocr}"
-            "from mineru.utils.config_reader import get_device; "
-            f"print(json.dumps({{'device': get_device(), 'model': PPDocLayoutV2LayoutModel.__name__, {ocr_payload}'source_root': None}}))"
-        ),
-    ]
+    command = [python, "-c", _MINERU_PROBE_SOURCE]
+    if include_ocr:
+        command.append("--include-ocr")
     try:
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-            env=_mineru_check_env(python),
-        )
+        completed = _run_captured(command, timeout=30, env=_mineru_check_env(python))
     except Exception as exc:
         return BackendStatus(
             name=backend_name,
@@ -466,8 +599,8 @@ def _mineru_python_status(python: str, backend_name: str, *, include_ocr: bool =
             details={
                 "python": python,
                 "returncode": completed.returncode,
-                "stdout": completed.stdout[-1000:],
-                "stderr": completed.stderr[-1000:],
+                "stdout": _clip_output(completed.stdout),
+                "stderr": _clip_output(completed.stderr),
             },
         )
 
@@ -475,7 +608,7 @@ def _mineru_python_status(python: str, backend_name: str, *, include_ocr: bool =
     try:
         details.update(json.loads(completed.stdout.strip().splitlines()[-1]))
     except Exception:
-        details["stdout"] = completed.stdout[-1000:]
+        details["stdout"] = _clip_output(completed.stdout)
     return BackendStatus(
         name=backend_name,
         available=True,
@@ -487,10 +620,15 @@ def _mineru_python_status(python: str, backend_name: str, *, include_ocr: bool =
 
 def _mineru_check_env(python: str) -> dict[str, str]:
     env = os.environ.copy()
+    repo_root = str(Path(__file__).resolve().parents[2])
+    python_paths = [repo_root]
     source_root = mineru_project_root_from_python(python)
     if source_root:
-        existing = env.get("PYTHONPATH")
-        env["PYTHONPATH"] = str(source_root) if not existing else os.pathsep.join([str(source_root), existing])
+        python_paths.append(str(source_root))
+    existing = env.get("PYTHONPATH")
+    if existing:
+        python_paths.append(existing)
+    env["PYTHONPATH"] = os.pathsep.join(python_paths)
     return env
 
 

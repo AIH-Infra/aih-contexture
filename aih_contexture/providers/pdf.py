@@ -190,6 +190,13 @@ class PdfProvider(BaseProvider):
                 formats.add("plain")
         return formats
 
+    def span_formats(self, flags: Optional[int], font_name: str | None) -> List[str]:
+        # Sorted, not set order: set order follows the per-process hash seed,
+        # so the same PDF would otherwise give different Middle bytes per run.
+        return sorted(
+            self.font_flags_to_format(flags) | self.font_names_to_format(font_name)
+        )
+
     def font_names_to_format(self, font_name: str | None) -> Set[str]:
         formats = set()
         if font_name is None:
@@ -255,9 +262,9 @@ class PdfProvider(BaseProvider):
                         for span in line["spans"]:
                             if not span["text"]:
                                 continue
-                            font_formats = self.font_flags_to_format(
-                                span["font"]["flags"]
-                            ).union(self.font_names_to_format(span["font"]["name"]))
+                            font_formats = self.span_formats(
+                                span["font"]["flags"], span["font"]["name"]
+                            )
                             font_name = span["font"]["name"] or "Unknown"
                             font_weight = span["font"]["weight"] or 0
                             font_size = span["font"]["size"] or 0
@@ -283,7 +290,7 @@ class PdfProvider(BaseProvider):
                                     font_size=font_size,
                                     minimum_position=span["char_start_idx"],
                                     maximum_position=span["char_end_idx"],
-                                    formats=list(font_formats),
+                                    formats=font_formats,
                                     page_id=page_id,
                                     text_extraction_method="pdftext",
                                     url=span.get("url"),

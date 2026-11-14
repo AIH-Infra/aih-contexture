@@ -1,3 +1,4 @@
+import sys
 from typing import Any, get_args
 
 import click
@@ -5,11 +6,31 @@ import click
 from aih_contexture.config.crawler import crawler
 
 
+def _stdout_encodable_text(text: str) -> str:
+    """Escape only characters the active stdout encoding cannot represent."""
+    # Click's deprecated get_text_stream() can wrap the console as UTF-8 even
+    # when click.echo ultimately writes through sys.stdout's legacy code page.
+    encoding = getattr(sys.stdout, "encoding", None)
+    if not encoding:
+        return text
+    try:
+        return text.encode(encoding, errors="backslashreplace").decode(encoding)
+    except LookupError:
+        return text
+
+
+def _echo_help(text: str) -> None:
+    click.echo(_stdout_encodable_text(text))
+
+
 class CustomClickPrinter(click.Command):
+    def get_help(self, ctx):
+        return _stdout_encodable_text(super().get_help(ctx))
+
     def parse_args(self, ctx, args):
         display_help = "config" in args and "--help" in args
         if display_help:
-            click.echo(
+            _echo_help(
                 "Here is a list of all the Builders, Processors, Converters, Providers and Renderers in Marker along with their attributes:"
             )
 
@@ -54,21 +75,21 @@ class CustomClickPrinter(click.Command):
         # Second pass: create class-specific options
         for base_type, base_type_dict in crawler.class_config_map.items():
             if display_help:
-                click.echo(f"{base_type}s:")
+                _echo_help(f"{base_type}s:")
             for class_name, class_map in base_type_dict.items():
                 if display_help and class_map["config"]:
-                    click.echo(
+                    _echo_help(
                         f"\n  {class_name}: {class_map['class_type'].__doc__ or ''}"
                     )
-                    click.echo(" " * 4 + "Attributes:")
+                    _echo_help(" " * 4 + "Attributes:")
                 for attr, (attr_type, formatted_type, default, metadata) in class_map[
                     "config"
                 ].items():
                     class_name_attr = class_name + "_" + attr
 
                     if display_help:
-                        click.echo(" " * 8 + f"{attr} ({formatted_type}):")
-                        click.echo(
+                        _echo_help(" " * 8 + f"{attr} ({formatted_type}):")
+                        _echo_help(
                             "\n".join([f"{' ' * 12}" + desc for desc in metadata])
                         )
 

@@ -9,7 +9,7 @@ def render_surya_ocr_settings(
     force_ocr: bool,
 ) -> dict[str, object]:
     st.info(description)
-    st.caption("首次使用需要下载模型；下载后会缓存复用。")
+    st.caption("缺少模型缓存时，首次使用会下载模型；之后复用本地缓存。")
     with st.expander("Surya 配置", expanded=False):
         batch_size = st.slider(
             "OCR 批次大小",

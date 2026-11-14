@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aih_contexture.config.marginal_output import normalize_marginal_output_mode
+from aih_contexture.middle.semantics.classical_marginalia import normalize_classical_marginalia_mode
 
 
 def render_pipeline_page_margin_settings(
@@ -19,10 +20,10 @@ def render_pipeline_page_margin_settings(
 
     with st.expander("📑 页眉页脚处理", expanded=False):
         st.caption("仅 Pipeline 模式生效。印刷页码总开关仍使用上方“页码锚点配置”。")
-        st.caption(
-            "页边旁注输出方式沿用上方“页码锚点配置”的边码输出方式："
-            f"{_marginal_output_mode_label(marginal_output_mode)}。"
-        )
+        if normalize_classical_marginalia_mode(st.session_state.get("classical_marginalia_mode_global")) == "page_locators":
+            st.caption("当前古典模式优先：边码按物理页汇总，文字边注按古典设置处理；常规边注输出方式暂不生效。")
+        else:
+            st.caption("当前常规边注输出方式：" + _marginal_output_mode_label(marginal_output_mode) + "。古典模式关闭时使用此设置。")
 
         output_col1, output_col2 = st.columns(2)
         with output_col1:

@@ -42,12 +42,12 @@ def render_surya2_vlm_settings(
     )
     default_model = resolve_vlm_model("surya2", version=version)
     endpoint = st.text_input(
-        "Surya 2 Endpoint",
+        "Surya 2 API 端点",
         value=state_value("surya2_endpoint", _default_endpoint(api_style)),
         key=widget_key("surya2_endpoint"),
     )
     model = st.text_input(
-        "Surya 2 模型名",
+        "Surya 2 模型名称",
         value=state_value("surya2_model", default_model),
         key=widget_key("surya2_model"),
     )
@@ -106,7 +106,7 @@ def render_surya2_vlm_settings(
         )
     with image_col_c:
         max_tokens = st.number_input(
-            "Layout 最大 Token",
+            "版面最大输出 token 数",
             min_value=512,
             max_value=8192,
             value=int(state_value("surya2_layout_max_tokens", 4096)),
@@ -120,7 +120,7 @@ def render_surya2_vlm_settings(
         crop_col_a, crop_col_b = st.columns(2)
         with crop_col_a:
             crop_padding_px = st.number_input(
-                "块裁切 padding(px)",
+                "块裁切边距（像素）",
                 min_value=0,
                 max_value=64,
                 value=int(state_value("surya2_crop_padding_px", 4)),
@@ -128,7 +128,7 @@ def render_surya2_vlm_settings(
             )
         with crop_col_b:
             crop_padding_frac = st.number_input(
-                "块裁切 padding(比例)",
+                "块裁切边距（比例）",
                 min_value=0.0,
                 max_value=0.2,
                 value=float(state_value("surya2_crop_padding_frac", 0.02)),
@@ -139,7 +139,7 @@ def render_surya2_vlm_settings(
     layout_concurrency = int(request_concurrency)
     if layout_mode:
         layout_concurrency = st.number_input(
-            "Layout 并发窗口",
+            "版面并发窗口",
             min_value=1,
             max_value=16,
             value=int(state_value("surya2_layout_concurrency", request_concurrency)),

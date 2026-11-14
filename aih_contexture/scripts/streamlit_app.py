@@ -116,6 +116,11 @@ from aih_contexture.scripts.ui.vlm_config import (
     build_vlm_generalized_config,
 )
 from aih_contexture.scripts.ui.pipeline_config_sections import snapshot_pipeline_ui_values
+from aih_contexture.scripts.ui.classical_marginalia_controls import (
+    render_classical_marginalia_controls,
+    render_generic_line_output_control,
+)
+from aih_contexture.scripts.ui.middle_rerender_controls import render_middle_rerender_controls
 from aih_contexture.scripts.ui.vlm_progress import (
     finish_vlm_progress,
     make_vlm_progress_callback,
@@ -146,6 +151,8 @@ from aih_contexture.scripts.ui.paddle_layout_settings import render_paddle_layou
 from aih_contexture.scripts.ui.page_margin_settings import render_pipeline_page_margin_settings
 from aih_contexture.scripts.ui.pipeline_processor_settings import render_pipeline_processor_settings
 from aih_contexture.scripts.ui.surya_layout_settings import render_surya_layout_settings
+from aih_contexture.scripts.ui.glm_ocr_settings import render_glm_ocr_settings
+from aih_contexture.scripts.ui.indra_settings import render_indra_settings
 from aih_contexture.scripts.ui.surya2_vlm_settings import render_surya2_vlm_settings
 from aih_contexture.scripts.ui.vlm_layout_settings import render_vlm_layout_settings
 from aih_contexture.settings import settings
@@ -297,7 +304,7 @@ with col_title:
     # 經緯 · Contexture
     **经纬万卷，结构古今** · *Weaving Data from History*
 
-    <sub>将PDF转化为结构化知识，以页码锚点守护学术伦理<br>——面向下一代的人文学科材料基础设施建设</sub>
+    <sub>将文献转化为结构化材料，保留来源与页码以支持复核和引证<br>——面向人文学科的文献结构化工具</sub>
 
     <sub>🔗 仓库地址：<a href="https://github.com/AIH-Infra/aih-contexture" target="_blank">github.com/AIH-Infra/aih-contexture</a></sub>
     """, unsafe_allow_html=True)
@@ -325,48 +332,53 @@ if TORCH_IMPORT_ERROR is not None:
 # 模式介绍文案
 MODE_DESCRIPTIONS = {
     "pipeline": """
-**Pipeline 模式** - 版面识别 + OCR + 后处理
+**Pipeline 模式**：版面分析、文字提取与后处理
 
 把版面检测、文字识别和结构后处理拆开配置：
-- **版面识别**: Surya / Paddle / MinerU / Sidecar
-- **OCR 引擎**: PDF 文本层 / Surya / Paddle / Tesseract / Calamari / VLM
-- **后处理**: 页码锚点、结构识别、页眉页脚、可选 LLM 增强
+- **版面分析**：选择本地模型、API 服务，或导入已有版面 JSON
+- **文字来源**：读取 PDF 文本层，或选择 OCR 后端识别
+- **后处理**：页码锚点、结构整理、页眉页脚、可选 LLM 增强
 
-适用于需要本地运行、离线处理或精细控制的任务。
+各后端的运行方式和依赖不同；离线处理需先准备对应的本地模型和运行环境。
     """,
 
     "vlm_generalized": """
-**VLM 泛化模式** - 通用视觉语言模型
+**VLM 泛化模式**：整页视觉理解
 
-整页图像直接交给通用 VLM，输出 Markdown 或结构化文本。
+将整页图像交给通用视觉语言模型，要求返回结构化 JSON，再生成 Middle JSON 和阅读 Markdown。
 
-适用于小批量困难页面、复杂排版和常规 OCR 难以处理的材料。质量和成本取决于模型与服务稳定性。
+适用于需要整页理解的材料。服务须支持图像输入，模型须遵循结构化输出要求；质量、耗时和费用取决于模型、页面和服务配置。
     """,
 
     "vlm_specialized": """
-**VLM 特化模式** - 文档 OCR/解析微调模型
+**VLM 特化模式**：专用文档解析
 
-调用已挂载的 OCR/VLM 专用模型，尽量贴近各模型官方任务格式，再标准化为 Contexture 输出。
+按所选后端的任务格式调用专用文档模型或本地 OCR 组件，再转换为 Middle JSON 和阅读 Markdown。
 
-已接入 Chandra、Churro、PaddleOCR-VL、MinerU-VL。适用于这些模型覆盖的文档类型。
+可选择 Chandra、Churro、PaddleOCR-VL、MinerU-VL、Surya 2 或 Chrome ScreenAI；各自的配置和输出能力见下方说明。
     """,
 
     "markdown_postprocess": """
 **Markdown 后处理**
 
-对已有 Markdown 或 JSON 结果做二次整理与重渲染，不重新跑 PDF/OCR。
-    """
+对已有结果执行 Markdown 页码修正、Middle JSON 重渲染或 MinerU 官方 JSON 转换，不重新识别 PDF。JSON 导入和重渲染不调用模型；选择 LLM 页码修正时需要配置服务。
+    """,
+    "structured_source": """
+**结构化源导入**
+
+导入 TEI/XML 或 EPUB，保留章节、导航、锚点和原始元数据，生成权威 Source Package 及阅读输出，不执行 PDF/OCR。
+    """,
 }
 
 _VLM_LAYOUT_DESCRIPTION = """
-**VLM 版面识别** - 视觉语言模型
+**VLM 版面分析**：API 后端
 - 通过 OpenAI 兼容 API 识别版面
 - 适用于小批量、特殊版式测试
 - 结果质量取决于模型和提示词
 """
 
 _VLM_OCR_DESCRIPTION = """
-**VLM OCR** - 视觉语言模型
+**VLM OCR**：API 文字识别
 - 通过 OpenAI 兼容 API 调用视觉语言模型识别文字
 - 支持逐块、区域合并和整页模式
 - 适用于复杂页面、低结构化材料或传统 OCR 表现不佳的实验场景
@@ -374,131 +386,153 @@ _VLM_OCR_DESCRIPTION = """
 
 # 版面识别后端介绍
 LAYOUT_BACKEND_DESCRIPTIONS = {
-    "surya": """
-**Surya 版面分析** - 内置通用版面模型
-- 默认版面分析后端，覆盖常见论文、图书、报告和扫描页
-- 本地运行，首次使用会下载模型并缓存
-- 常作为稳定基线，也可与任意 OCR 后端组合
+    "none": """
+**跳过版面分析**
+- 做什么：直接读取 PDF 的嵌入文本，不分析区域或阅读顺序
+- 何时用：原生 PDF 或已有可用文本层时
+- 准备：PDF 必须含有可读取的文本层；扫描件可选 Chrome ScreenAI 预处理
 """,
-    "vlm": _VLM_LAYOUT_DESCRIPTION,
-    "vlm_layout": _VLM_LAYOUT_DESCRIPTION,
+    "indra_layout": """
+**Indra 版面分析（CPU）**
+- 做什么：提取区域框、类别和阅读顺序；版面与 OCR 可分别选择
+- 何时用：需要 CPU 版面分析，或版面与 OCR 统一使用 Indra 时
+- 准备：在当前环境安装 Indra 可选依赖并准备权重；与 Indra OCR 配对时走直连路径
+""",
+    "surya": """
+**Surya 版面分析（本地模型）**
+- 做什么：检测页面区域并提供阅读顺序
+- 何时用：论文、图书、报告等常见文献的版面分析
+- 准备：Surya 模型权重和当前 Python 环境；文字由另选的 OCR 或 PDF 文本层提供
+""",
+    "vlm": """
+**通用 VLM 版面分析（兼容项）**
+- 做什么：通过视觉语言模型 API 获取版面信息
+- 何时用：已有兼容旧 VLM 配置时
+- 准备：OpenAI 兼容的视觉模型服务及其连接设置
+""",
+    "vlm_layout": """
+**通用 VLM 版面分析（兼容项）**
+- 做什么：通过视觉语言模型 API 获取版面信息
+- 何时用：已有兼容旧 VLM 配置时
+- 准备：OpenAI 兼容的视觉模型服务及其连接设置
+""",
     "external_layout_sidecar": """
-**External Layout Sidecar** - 外部版面识别 JSON
-- 读取已经生成好的 layout JSON 或 Contexture Middle JSON
-- 不启动版面模型，适用于复用离线识别结果
-- 用于对比 MinerU、Paddle 或其他外部版面输出
+**导入外部版面 JSON**
+- 做什么：读取已有版面 JSON 或 Contexture Middle JSON
+- 何时用：复用其他工具生成的版面结果
+- 准备：可访问的 JSON 文件；不启动版面模型
 """,
     "mineru_pp_doclayout_v2_direct": """
-**MinerU PP-DocLayoutV2 Direct** - 高精度文档版面检测
-- 直接调用 MinerU 的 PP-DocLayoutV2 模型
-- 只输出版面区域和置信度，不执行 MinerU 完整 pipeline
-- 适用于复杂文档版面、论文、书页和多类型区域识别
+**MinerU PP-DocLayoutV2（共享 PyTorch）**
+- 做什么：运行 PP-DocLayoutV2 并输出版面区域，不运行 MinerU 完整解析流程
+- 何时用：希望复用现有 PyTorch 环境进行版面分析时
+- 准备：安装 `mineru-layout` 可选依赖并准备权重；无需安装完整 MinerU
 """,
     "mineru_vl_layout": """
-**MinerU-VL Layout** - API/VLM 版面检测
-- 调用 MinerU-VL 2.5 Pro 2605 的 Layout Detection 协议
-- 只生成 layout block，不执行后续块级文字识别
-- 可与 Pipeline 的 OCR 后端自由组合，适合旁注/复杂书页版面测试
+**MinerU-VL（API 版面分析）**
+- 做什么：调用 `Layout Detection:` 任务，仅生成版面区域
+- 何时用：要通过服务进行 MinerU-VL 版面识别时
+- 准备：可用的 MinerU-VL API、模型版本和连接设置；文字由另选 OCR 提供
 """,
     "surya2_layout": """
-**Surya 2 Layout** - API/VLM 版面检测
-- 调用 Surya 2 官方 layout JSON 协议，bbox 使用 0-1000 归一化坐标
-- 只生成 layout block，不执行块级 OCR
-- 推荐通过 LM Studio/OpenAI-compatible 服务调用；layout 并发可从 4-6 起试
+**Surya 2（API 版面分析）**
+- 做什么：调用 Surya 2 版面 JSON 协议生成区域
+- 何时用：要通过视觉模型服务运行 Surya 2 版面分析时
+- 准备：支持图像输入的兼容 API；文字由另选 OCR 提供
 """,
     "paddle_pp_doclayout_plus_l": """
-**Paddle PP-DocLayout Plus-L** - 通用文档版面检测
-- 调用 PaddleOCR LayoutDetection 的 Plus-L 模型
-- 只做版面区域检测，不做文字识别
-- 适用于通用扫描件和常见文档版式
+**Paddle PP-DocLayout Plus-L（SDK）**
+- 做什么：通过 PaddleOCR SDK 检测版面区域
+- 何时用：已有 PaddleOCR SDK 环境或需兼容旧模型配置时
+- 准备：PaddleOCR 依赖和 Plus-L 模型；文字由另选 OCR 提供
 """,
     "paddle_pp_doclayout_v3": """
-**Paddle PP-DocLayoutV3** - 新一代文档版面检测
-- 调用 PaddleOCR LayoutDetection 的 V3 模型
-- 只做版面区域检测，不启动 PP-StructureV3
-- 可与 Plus-L 对照，用于观察新版模型在复杂版式上的差异
+**Paddle PP-DocLayoutV3（CPU ONNX）**
+- 做什么：在本机检测版面区域和阅读顺序
+- 何时用：希望使用 CPU 完成版面分析时
+- 准备：可选的 CPU ONNX 运行依赖和模型文件；也可配置 Paddle SDK 引擎
 """,
 }
 
 # OCR后端介绍
 OCR_BACKEND_DESCRIPTIONS = {
+    "none": """
+**不重新 OCR（读取 PDF 文本层）**
+- 做什么：直接提取 PDF 已有文字
+- 何时用：原生 PDF 或已含可用 OCR 文本层的扫描件
+- 准备：PDF 文本层；此选项不会从纯图像页面识字
+""",
+    "chrome_screenai": """
+**Chrome ScreenAI（本地预处理）**
+- 做什么：生成可搜索 PDF，再从其文本层读取文字
+- 何时用：扫描 PDF 需要本地 OCR 文本时
+- 准备：已配置的 Chrome ScreenAI 组件；版面仍由所选版面后端分析
+""",
     "surya": """
-**Surya OCR** - 内置通用 OCR
-- Contexture 默认 OCR 后端，可与 Surya 版面分析直接配合
-- 支持多语言印刷文本，适用于现代出版物和一般扫描件
-- 本地运行，首次使用会下载模型；资源占用相对较高
+**Surya OCR（本地模型）**
+- 做什么：在 Pipeline 中识别页面文字
+- 何时用：需要通用本地 OCR 时
+- 准备：Surya 模型权重和当前 Python 环境
 """,
     "calamari": """
-**Calamari OCR** - 欧洲历史文献 OCR
-- 面向 Fraktur、Antiqua 等欧洲历史印刷文本
-- 通过外部 Calamari 服务调用指定历史模型
-- 适用于已有专门训练模型的德文、拉丁文、早期现代印刷材料
+**Calamari（历史文献 HTTP 服务）**
+- 做什么：将版面行图像发送到 Calamari HTTP 服务识别
+- 何时用：Fraktur、Antiqua 等欧洲历史印刷材料，且已有对应模型时
+- 准备：单独部署的 Calamari 服务和模型；Contexture 不内置模型
 """,
     "paddle_ocr_v5": """
-**PaddleOCR PP-OCRv5** - 本地通用 OCR
-- PaddleOCR 的本地文字检测与识别后端
-- 适用于中文、CJK、多语种混排和常见现代印刷材料
-- 可使用独立 Paddle/GPU 环境，适用于批量处理和本地部署
+**PaddleOCR PP-OCRv5（旧 SDK 配置）**
+- 做什么：通过 PaddleOCR SDK 检测并识别文字
+- 何时用：保留已有 PP-OCRv5 配置时
+- 准备：兼容的 PaddleOCR 环境、模型和语言设置
 """,
     "paddleocr_vl_ocr": """
-**PaddleOCR-VL OCR** - 块级文档 VLM OCR
-- 使用已有 Pipeline layout block 裁切，不重复做版面识别
-- 通过 PaddleOCR-VL 的 OCR/Table/Formula VLRecognition 任务识别块内容
-- 适用于 Surya、MinerU 或 Paddle layout 已经切好区域后的表格、公式、脚注和正文识别
+**PaddleOCR-VL OCR（API）**
+- 做什么：对已有版面区域调用 OCR、表格或公式识别
+- 何时用：要通过 PaddleOCR-VL 服务识别版面块时
+- 准备：可用的 PaddleOCR-VL 服务、模型和连接设置；不重复做版面分析
 """,
     "surya2_ocr": """
-**Surya 2 OCR** - 块级 HTML OCR
-- 使用已有 Pipeline layout block 裁切，不重复做版面识别
-- 通过 Surya 2 官方 `OCR this block image to HTML.` 协议识别块内容
-- 适合与 Surya2/MinerU/Paddle/Surya layout 组合，用作轻量文档 VLM OCR 后端
+**Surya 2 OCR（API）**
+- 做什么：通过 Surya 2 协议识别已有版面区域
+- 何时用：要使用兼容视觉服务执行块级 OCR 时
+- 准备：支持图像输入的 Surya 2 API 和模型；不重复做版面分析
+""",
+    "indra_ocr": """
+**Indra OCR（CPU）**
+- 做什么：识别文本行并提供逐行置信度；自动模式会先检查 PDF 文本层
+- 何时用：需要 Indra 本地 CPU 识别，或选择 Indra 直连路径时
+- 准备：在当前环境安装 Indra 可选依赖并准备权重；默认不下载权重
+""",
+    "glm_ocr": """
+**GLM-OCR（本地 API）**
+- 做什么：调用 GLM-OCR 文本或表格识别任务处理已有版面区域
+- 何时用：要通过本机部署的 GLM-OCR API 识别版面块时
+- 准备：先部署并配置 GLM-OCR API 和模型；不重复做版面分析
 """,
     "mineru_pytorch_paddle_ocr": """
-**MinerU PaddleOCR-Torch** - MinerU 内部 OCR 后端
-- 调用 MinerU 内部封装的 PytorchPaddleOCR，不启动 MinerU 完整 pipeline
-- 可与任意 layout 后端组合，适合需要 MinerU OCR 行为但不想锁死 layout 的场景
-- 设备通过 MinerU 外部虚拟环境和 MINERU_DEVICE_MODE 控制
+**Paddle OCR Torch（本地 PyTorch）**
+- 做什么：用 PyTorch 版 Paddle OCR 检测并识别文字
+- 何时用：需要在本机运行 Paddle OCR Torch 时
+- 准备：可选依赖、指定的模型版本与权重；不要求 PaddlePaddle
 """,
     "tesseract": """
-**Tesseract OCR** - 传统 CPU OCR
-- 调用系统 Tesseract，可使用丰富的 tessdata 语言包
-- 适用于清晰扫描、规则印刷文本和可解释的 CPU 工作流
-- 支持语言组合，如 eng、chi_sim+eng、deu_frak+eng
+**Tesseract OCR（系统 CPU）**
+- 做什么：调用系统 Tesseract 识别版面区域中的文字行
+- 何时用：已有 Tesseract 环境的 CPU 识别流程
+- 准备：Tesseract 可执行文件和对应 tessdata 语言包
 """,
-    "vlm": _VLM_OCR_DESCRIPTION,
-    "vlm_ocr": _VLM_OCR_DESCRIPTION,
-    "kraken": """
-**Kraken OCR** - 历史文献专用（未启用）
-- 支持从右到左、双向文本
-- 丰富的历史字体模型
+    "vlm": """
+**通用 VLM OCR（API）**
+- 做什么：通过 OpenAI 兼容视觉 API 识别页面或版面内容
+- 何时用：需要使用已有通用视觉模型服务时
+- 准备：兼容的视觉模型 API、模型 ID 和连接设置
 """,
-}
-
-# VLM特化模式引擎介绍
-SPECIALIZED_OCR_DESCRIPTIONS = {
-    "chandra": """
-**Chandra OCR** - Datalab 专业文档模型
-- 基于 Qwen2-VL 架构微调
-- 擅长学术文档、复杂表格、技术报告
-- 支持 Markdown/JSON 结构化输出
-- 兼容 OpenAI API 协议
-- 可本地部署: LM Studio / Ollama / vLLM
-    """,
-    "chrome_screenai": """
-**Chrome ScreenAI** - 本地原生 OCR
-- 直接调用 Chrome ScreenAI 组件
-- 默认走 PDF 原生通道；仅在显式选择时才做去文本层或栅格化预处理
-- 支持页面切分并行与 searchable PDF 输出
-""",
-    "olmocr": """
-**OlmOCR** - Allen AI 开源模型（未启用）
-- 基于 Qwen2-VL 架构微调
-- 专注学术论文和技术文档
-- 公式、代码块识别优秀
-""",
-    "paddleocr": """
-**PaddleOCR-VL** - 文档解析 VLM
-- 已在 VLM 特化模式中接入
-- 按官方任务提示调用并标准化输出
+    "vlm_ocr": """
+**通用 VLM OCR（API）**
+- 做什么：通过 OpenAI 兼容视觉 API 识别页面或版面内容
+- 何时用：需要使用已有通用视觉模型服务时
+- 准备：兼容的视觉模型 API、模型 ID 和连接设置
 """,
 }
 
@@ -507,7 +541,13 @@ os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
 
 config_manager = ConfigManager()
 _app_settings = config_manager.load_app_settings()
-DEFAULT_OUTPUT_DIR = os.environ.get("MARKER_OUTPUT_DIR") or _app_settings.get("output_dir") or "output"
+# 相对路径必须在这里锚定为绝对路径：worker 子进程以仓库根为 cwd，
+# UI 进程的 cwd 取决于启动方式（快捷方式 WorkDir、start.bat、命令行均不同），
+# 二者对相对 output 的解析会分裂到两个根目录——文档文件夹和 ZIP 落在一处、
+# 真实成果落在另一处，ZIP 按不存在的路径打包成为空壳（2026-09-21 事故）。
+DEFAULT_OUTPUT_DIR = os.path.abspath(
+    os.environ.get("MARKER_OUTPUT_DIR") or _app_settings.get("output_dir") or "output"
+)
 DEFAULT_ALWAYS_SAVE_MIDDLE_JSON = bool(_app_settings.get("always_save_middle_json", True))
 os.makedirs(DEFAULT_OUTPUT_DIR, exist_ok=True)
 
@@ -558,6 +598,8 @@ GLOBAL_STATE_EXCLUDE_KEYS = {
 }
 
 GLOBAL_STATE_INCLUDE_KEYS = {
+    'emit_reading_diagnostics',
+    'middle_geometry_fast_mode',
     "conversion_mode", "use_page_range", "start_page", "end_page",
     "page_anchor_position_global", "extract_printed_pages_global", "printed_page_format_global",
     "printed_page_custom_pattern_global", "regex_preset_key_global", "vlm_patterns_text_global",
@@ -565,6 +607,8 @@ GLOBAL_STATE_INCLUDE_KEYS = {
     "auto_separator_global", "auto_digits_global", "enable_marginal_detection_global",
     "native_marginalia_enabled_global", "heuristic_marginal_detection_enabled_global",
     "marginal_output_mode_global",
+    "classical_marginalia_mode_global", "classical_text_marginalia_mode_global",
+    "generic_line_output_mode_global",
     "left_margin_threshold_global", "right_margin_threshold_global", "top_margin_threshold_global",
     "bottom_margin_threshold_global", "vertical_center_tolerance_global", "enable_inline_detection_global",
     "font_size_ratio_threshold_global", "max_inline_annotation_length_global",
@@ -606,7 +650,7 @@ MODE_STATE_RULES = {
         "exclude": set(),
     },
     "markdown_postprocess": {
-        "prefixes": ("markdown_postprocess_",),
+        "prefixes": ("markdown_postprocess_", "middle_rerender_", "mineru_import_"),
         "include": set(),
         "exclude": set(),
     },
@@ -619,6 +663,8 @@ MODE_STATE_RULES = {
 
 
 def _is_persistable_global_key(key: str) -> bool:
+    if key.startswith("_retained_"):
+        return False
     if key in GLOBAL_STATE_EXCLUDE_KEYS:
         return False
     return key.endswith("_global") or key in GLOBAL_STATE_INCLUDE_KEYS
@@ -651,7 +697,8 @@ def _infer_config_mode(config: dict) -> str:
 
 def _clear_persisted_keys_for_mode(mode: str):
     for key in list(st.session_state.keys()):
-        if _is_persistable_global_key(key) or _is_persistable_mode_key(key, mode):
+        setting_key = key.removeprefix("_retained_")
+        if _is_persistable_global_key(setting_key) or _is_persistable_mode_key(setting_key, mode):
             st.session_state.pop(key, None)
 
 
@@ -774,6 +821,19 @@ def apply_config_to_session(config: dict):
     for key, value in config.get(target_mode, {}).items():
         if _is_persistable_mode_key(key, target_mode):
             st.session_state[key] = value
+
+    if target_mode == "pipeline":
+        saved_pipeline = config.get("pipeline", {})
+        if should_migrate_legacy_screenai_preprocess(
+            saved_pipeline.get("ocr_preprocess_backend"),
+            saved_pipeline.get("ocr_backend"),
+        ):
+            st.session_state["ocr_backend"] = "chrome_screenai"
+        st.session_state["ocr_preprocess_backend"] = (
+            "chrome_screenai_searchable_pdf"
+            if st.session_state.get("ocr_backend") == "chrome_screenai"
+            else "none"
+        )
 
     legacy_pipeline_to_global = {
         "printed_page_format_pipeline": "printed_page_format_global",
@@ -1032,6 +1092,9 @@ with st.sidebar:
     middle_rerender_include_margin_comments = True
     middle_rerender_include_page_separators = True
     middle_rerender_marginal_output_mode = "line_markers"
+    middle_rerender_classical_marginalia_mode = "off"
+    middle_rerender_classical_text_marginalia_mode = "separate"
+    middle_rerender_generic_line_output_mode = "drop"
     middle_rerender_equation_output_mode = "humanities_safe"
     middle_rerender_apply_postprocess = False
     markdown_postprocess_enabled = False
@@ -1047,18 +1110,23 @@ with st.sidebar:
     markdown_postprocess_llm_max_retries = 1
 
     st.markdown("### 🧭 全局输出偏好")
+    st.session_state["always_save_middle_json"] = True
     always_save_middle_json = st.checkbox(
-        "始终保存 Middle JSON",
-        help="对 Pipeline、VLM 泛化、VLM 特化统一生效：每次任务都会额外保存 *_middle.json 核心中间层，方便后续重渲染。",
+        "Middle JSON 核心文件（必需）",
+        help="成功转换必须保留 Middle JSON，用于复查与重新渲染；报告和调试文件可单独设置。",
         key="always_save_middle_json",
+        disabled=True,
     )
-    if always_save_middle_json != bool(_app_settings.get("always_save_middle_json", True)):
-        next_settings = dict(_app_settings)
-        next_settings["always_save_middle_json"] = bool(always_save_middle_json)
-        if config_manager.save_app_settings(next_settings):
-            _app_settings["always_save_middle_json"] = bool(always_save_middle_json)
-    if always_save_middle_json:
-        st.caption("已开启：正式输出之外会自动保留统一 Middle JSON；报告和调试文件仍按高级开关生成。")
+    st.caption("核心文件始终保存；校验报告、调试文件和叠图按高级选项生成。")
+    emit_reading_diagnostics = st.checkbox(
+        '输出诊断信息', value=False, key='emit_reading_diagnostics',
+        help='单独保存待核信息，可在诊断区域查看和下载；不写入任何正式输出格式。默认关闭。')
+    middle_geometry_fast_mode = st.checkbox(
+        '快速模式（不保存逐词坐标）', value=False, key='middle_geometry_fast_mode',
+        help='Middle 只保留块级结构与坐标，保存和重新渲染更快、文件更小。'
+             '启用古典边码、逐词叠图或完整 Middle JSON 时自动使用完整模式；'
+             '快速模式的 Middle 之后不能再开启古典边码重新渲染，需要时请从原始识别结果重新导出。默认关闭。')
+    middle_geometry_profile = 'lean' if middle_geometry_fast_mode else 'full'
 
     # 版面识别后端 defaults
     layout_backend = "surya"
@@ -1140,11 +1208,12 @@ with st.sidebar:
 
     # ==================== 1. 输出设置 ====================
     st.subheader("📁 输出设置")
-    col1, col2, col3 = st.columns([4, 1, 1.4])
+    col1, col2 = st.columns([8, 1.5])
     with col1:
         out_dir = st.text_input("输出文件夹", value=st.session_state.output_dir, label_visibility="collapsed", key="out_dir")
         if out_dir != st.session_state.output_dir:
-            normalized_out_dir = os.path.normpath(out_dir.strip()) if out_dir.strip() else st.session_state.output_dir
+            # abspath 锚定与 DEFAULT_OUTPUT_DIR 同理，防止手填相对路径再次分裂
+            normalized_out_dir = os.path.abspath(os.path.normpath(out_dir.strip())) if out_dir.strip() else st.session_state.output_dir
             os.makedirs(normalized_out_dir, exist_ok=True)
             st.session_state.output_dir = normalized_out_dir
     with col2:
@@ -1153,16 +1222,15 @@ with st.sidebar:
             st.link_button("📂", folder_uri, help="打开输出文件夹", use_container_width=True)
         else:
             st.button("📂", help="输出文件夹路径无效", disabled=True, use_container_width=True)
-    with col3:
-        if st.button("保存默认值", key="save_output_dir_default_btn", help="将当前输出目录保存为应用默认值"):
-            normalized_out_dir = os.path.normpath(st.session_state.output_dir.strip()) if st.session_state.output_dir.strip() else "output"
-            os.makedirs(normalized_out_dir, exist_ok=True)
-            st.session_state.output_dir = normalized_out_dir
-            st.session_state.out_dir = normalized_out_dir
-            if config_manager.save_app_settings({"output_dir": normalized_out_dir}):
-                st.success("已保存为默认输出目录")
-            else:
-                st.error("默认输出目录保存失败")
+    if st.button("保存默认值", key="save_output_dir_default_btn", help="将当前输出目录保存为应用默认值", use_container_width=True):
+        normalized_out_dir = os.path.abspath(os.path.normpath(st.session_state.output_dir.strip())) if st.session_state.output_dir.strip() else os.path.abspath("output")
+        os.makedirs(normalized_out_dir, exist_ok=True)
+        st.session_state.output_dir = normalized_out_dir
+        st.session_state.out_dir = normalized_out_dir
+        if config_manager.save_app_settings({"output_dir": normalized_out_dir}):
+            st.success("已保存为默认输出目录")
+        else:
+            st.error("默认输出目录保存失败")
     st.caption("修改输入框会立即作用于当前会话；点击“保存默认值”后，后续启动应用会继续使用该目录。")
 
     st.divider()
@@ -1174,7 +1242,7 @@ with st.sidebar:
         options=["pipeline", "vlm_generalized", "vlm_specialized", "structured_source", "markdown_postprocess"],
         index=0,
         format_func=lambda x: {
-            "pipeline": "🔧 Pipeline模式",
+            "pipeline": "🔧 Pipeline 模式",
             "vlm_generalized": "🌐 VLM 泛化模式",
             "vlm_specialized": "🎯 VLM 特化模式",
             "structured_source": "📚 结构化源导入",
@@ -1190,9 +1258,9 @@ with st.sidebar:
     elif conversion_mode == "vlm_specialized":
         st.warning(MODE_DESCRIPTIONS["vlm_specialized"])
     elif conversion_mode == "structured_source":
-        st.info("原生导入 TEI/XML 与 EPUB，保留章节树、目录、页表、索引、锚点和原始元数据。")
+        st.info(MODE_DESCRIPTIONS["structured_source"])
     elif conversion_mode == "markdown_postprocess":
-        pass
+        st.info(MODE_DESCRIPTIONS["markdown_postprocess"])
     else:
         st.success(MODE_DESCRIPTIONS["pipeline"])
         st.info("首次使用 Pipeline 中的 Surya 版面识别或 OCR 时，程序需要联网下载模型并写入本地缓存；首次运行通常耗时更长。")
@@ -1205,7 +1273,7 @@ with st.sidebar:
             "生成 JSONL 字节偏移索引",
             value=True,
             key="structured_source_emit_line_indexes",
-            help="为大规模知识库的局部读取生成 .idx sidecar。",
+            help="生成 .idx 字节偏移索引文件，供知识库按位置读取大型 JSONL 文件。",
         )
         structured_source_workers = st.number_input(
             "文件并发数", min_value=1, max_value=16, value=4,
@@ -1239,141 +1307,23 @@ with st.sidebar:
         middle_rerender_equation_output_mode = "humanities_safe"
         middle_rerender_apply_postprocess = False
 
-        if markdown_postprocess_input_kind == "middle_json":
-            st.markdown("**🧱 Contexture Middle JSON 重渲染**")
-            st.info("读取 Contexture Middle JSON，按当前学术版 Markdown 规则重新渲染；不会调用模型或 API。")
-            with st.expander("渲染配置", expanded=True):
-                col_render_1, col_render_2 = st.columns(2)
-                with col_render_1:
-                    middle_rerender_include_printed_page_comments = st.checkbox(
-                        "输出印刷页码注释",
-                        value=True,
-                        key="middle_rerender_include_printed_page_comments",
-                        help="输出形如 `<!-- Page: 35 -->` 的印刷页码注释。",
-                    )
-                    middle_rerender_include_page_header_comments = st.checkbox(
-                        "输出页眉注释",
-                        value=True,
-                        key="middle_rerender_include_page_header_comments",
-                    )
-                    middle_rerender_include_page_separators = st.checkbox(
-                        "输出页面分隔线",
-                        value=True,
-                        key="middle_rerender_include_page_separators",
-                        help="在页码锚点后输出 `---`，保持与主转换链路一致。",
-                    )
-                with col_render_2:
-                    middle_rerender_include_page_footer_comments = st.checkbox(
-                        "输出页脚注释",
-                        value=True,
-                        key="middle_rerender_include_page_footer_comments",
-                    )
-                    middle_rerender_include_margin_comments = st.checkbox(
-                        "输出边注语法标记",
-                        value=True,
-                        key="middle_rerender_include_margin_comments",
-                        help="输出 `<!-- Margin:left/right -->` 边注块；关闭后边注内容以普通文本保留。",
-                    )
-                    middle_rerender_include_provenance = st.checkbox(
-                        "输出块级 provenance 注释",
-                        value=False,
-                        key="middle_rerender_include_provenance",
-                        help="用于调试 block 来源、置信度和锚点；正式阅读版通常保持关闭。",
-                    )
-                middle_rerender_marginal_output_mode = st.selectbox(
-                    "边注输出方式",
-                    options=["line_markers", "margin_comments", "plain", "drop"],
-                    index=0,
-                    format_func=lambda x: {
-                        "line_markers": "旁注注释（纯数字简写为行号）",
-                        "margin_comments": "旁注注释（全部保持旁注）",
-                        "plain": "普通文本",
-                        "drop": "丢弃",
-                    }.get(x, x),
-                    key="middle_rerender_marginal_output_mode",
-                    help="只影响已识别为 MarginalNote 的块；纯数字旁注可简写为 `<!-- Line: n -->`。",
-                )
-                middle_rerender_equation_output_mode = st.selectbox(
-                    "公式输出方式",
-                    options=["humanities_safe", "plain", "math"],
-                    index=0,
-                    format_func=lambda x: {
-                        "humanities_safe": "人文学术安全（疑似校勘索引转普通文本）",
-                        "plain": "全部公式按普通文本",
-                        "math": "保留全部公式块",
-                    }.get(x, x),
-                    key="middle_rerender_equation_output_mode",
-                    help="用于处理 `1065_{3}`、`\\parallel~1072_{38}` 这类被误识别为公式的校勘索引。",
-                )
-            st.caption("输出包含重渲染 Markdown、Contexture Middle 校验报告、debug Markdown 和 scholarly report。")
-            st.divider()
-        elif markdown_postprocess_input_kind == "mineru_json":
-            st.markdown("**⛏️ MinerU 官方 JSON 转换**")
-            st.info("支持 MinerU 官方 `*_content_list.json`、`*_content_list_v2.json` 和 `*_middle.json`。导入流程先转换为 Contexture Middle JSON，再生成标准学术版 Markdown；不会调用 MinerU API 或模型。")
-            with st.expander("渲染配置", expanded=True):
-                col_render_1, col_render_2 = st.columns(2)
-                with col_render_1:
-                    middle_rerender_include_printed_page_comments = st.checkbox(
-                        "输出印刷页码注释",
-                        value=True,
-                        key="mineru_import_include_printed_page_comments",
-                        help="输出形如 `<!-- Page: 35 -->` 的印刷页码注释。",
-                    )
-                    middle_rerender_include_page_header_comments = st.checkbox(
-                        "输出页眉注释",
-                        value=True,
-                        key="mineru_import_include_page_header_comments",
-                    )
-                    middle_rerender_include_page_separators = st.checkbox(
-                        "输出页面分隔线",
-                        value=True,
-                        key="mineru_import_include_page_separators",
-                        help="在页码锚点后输出 `---`，保持与主转换链路一致。",
-                    )
-                with col_render_2:
-                    middle_rerender_include_page_footer_comments = st.checkbox(
-                        "输出页脚注释",
-                        value=True,
-                        key="mineru_import_include_page_footer_comments",
-                    )
-                    middle_rerender_include_margin_comments = st.checkbox(
-                        "输出边注语法标记",
-                        value=True,
-                        key="mineru_import_include_margin_comments",
-                        help="输出 `<!-- Margin:left/right -->` 边注块；关闭后边注内容以普通文本保留。",
-                    )
-                    middle_rerender_include_provenance = st.checkbox(
-                        "输出块级 provenance 注释",
-                        value=False,
-                        key="mineru_import_include_provenance",
-                        help="用于检查 MinerU 原始类型、bbox 与 Contexture Middle 块之间的映射关系。",
-                    )
-                middle_rerender_marginal_output_mode = st.selectbox(
-                    "边注输出方式",
-                    options=["line_markers", "margin_comments", "plain", "drop"],
-                    index=0,
-                    format_func=lambda x: {
-                        "line_markers": "旁注注释（纯数字简写为行号）",
-                        "margin_comments": "旁注注释（全部保持旁注）",
-                        "plain": "普通文本",
-                        "drop": "丢弃",
-                    }.get(x, x),
-                    key="mineru_import_marginal_output_mode",
-                    help="只影响已识别为 MarginalNote 的块；纯数字旁注可简写为 `<!-- Line: n -->`。",
-                )
-                middle_rerender_equation_output_mode = st.selectbox(
-                    "公式输出方式",
-                    options=["humanities_safe", "plain", "math"],
-                    index=0,
-                    format_func=lambda x: {
-                        "humanities_safe": "人文学术安全（疑似校勘索引转普通文本）",
-                        "plain": "全部公式按普通文本",
-                        "math": "保留全部公式块",
-                    }.get(x, x),
-                    key="mineru_import_equation_output_mode",
-                    help="用于处理 `1065_{3}`、`\\parallel~1072_{38}` 这类被误识别为公式的校勘索引。",
-                )
-            st.caption("导入后的 Contexture Middle JSON 会随结果保存，便于复查和再次重渲染。")
+        if markdown_postprocess_input_kind in {"middle_json", "mineru_json"}:
+            is_mineru_import = markdown_postprocess_input_kind == "mineru_json"
+            st.markdown("**⛏️ MinerU 官方 JSON 转换**" if is_mineru_import else "**🧱 Contexture Middle JSON 重渲染**")
+            st.info("读取已有 JSON 并按当前设置生成阅读 Markdown；不重新识别原页，也不调用模型或 API。")
+            rerender_settings = render_middle_rerender_controls(
+                st, prefix="mineru_import" if is_mineru_import else "middle_rerender")
+            middle_rerender_include_provenance = rerender_settings["middle_rerender_include_provenance"]
+            middle_rerender_include_printed_page_comments = rerender_settings["middle_rerender_include_printed_page_comments"]
+            middle_rerender_include_page_header_comments = rerender_settings["middle_rerender_include_page_header_comments"]
+            middle_rerender_include_page_footer_comments = rerender_settings["middle_rerender_include_page_footer_comments"]
+            middle_rerender_include_margin_comments = rerender_settings["middle_rerender_include_margin_comments"]
+            middle_rerender_include_page_separators = rerender_settings["middle_rerender_include_page_separators"]
+            middle_rerender_marginal_output_mode = rerender_settings["middle_rerender_marginal_output_mode"]
+            middle_rerender_classical_marginalia_mode = rerender_settings["middle_rerender_classical_marginalia_mode"]
+            middle_rerender_classical_text_marginalia_mode = rerender_settings["middle_rerender_classical_text_marginalia_mode"]
+            middle_rerender_generic_line_output_mode = rerender_settings["middle_rerender_generic_line_output_mode"]
+            middle_rerender_equation_output_mode = rerender_settings["middle_rerender_equation_output_mode"]
             st.divider()
         else:
             markdown_postprocess_enable_printed_page_repair = True
@@ -1711,14 +1661,15 @@ with st.sidebar:
                 st.success(f"正则提取已启用，共 {len(vlm_printed_page_patterns)} 条规则")
 
             st.markdown("---")
-            st.markdown("**📝 特殊-边码（古籍与经典文献）**")
-            st.caption("后端原生边注、坐标启发式恢复和 Markdown 输出方式分开控制。MinerU/MinerU-VL/Paddle/VLM 等后端的原生标签会优先保留。")
+            st.markdown("**📝 边码与文字边注（古籍与经典文献）**")
+            st.caption("原生标签保留在结构化结果中。Pipeline 的恢复/兼容去重与阅读版输出分开设置；古典模式可独立启用。")
 
             legacy_marginal_detection = bool(st.session_state.get("enable_marginal_detection_global", False))
             native_marginalia_enabled = st.checkbox(
-                "接收后端原生页边注",
+                "Pipeline 原生边码去重（兼容）",
                 value=bool(st.session_state.get("native_marginalia_enabled_global", legacy_marginal_detection)),
-                help="保留后端原生识别出的 aside_text/page_aside_text/marginal_note。不会把页眉页脚改成旁注。",
+                help="参与 Pipeline 的原生边码兼容去重，不是原生标签接收总开关。MinerU 的专用去重仍按后端配置执行；原始结构化标签始终保存。",
+                disabled=conversion_mode != "pipeline",
                 key="native_marginalia_enabled_global",
             )
             heuristic_marginal_detection_enabled = st.checkbox(
@@ -1726,19 +1677,30 @@ with st.sidebar:
                 value=bool(st.session_state.get("heuristic_marginal_detection_enabled_global", legacy_marginal_detection)),
                 help="只从 Text 块中按坐标和内容恢复漏检边码/行号；不会处理后端原生 PageHeader/PageFooter/Footnote。",
                 key="heuristic_marginal_detection_enabled_global",
+                disabled=conversion_mode != "pipeline",
             )
             enable_marginal_detection = native_marginalia_enabled or heuristic_marginal_detection_enabled
             st.session_state["enable_marginal_detection_global"] = enable_marginal_detection
-            st.caption(f"兼容总开关：{'已启用' if enable_marginal_detection else '已关闭'}")
-            marginal_mode_options = ["line_markers", "margin_comments", "plain", "drop"]
-            current_marginal_output_mode = normalize_marginal_output_mode(
-                st.session_state.get("marginal_output_mode_global"),
-                enable_marginal_detection=enable_marginal_detection,
+            st.caption(f"Pipeline 兼容恢复/去重：{'已启用' if enable_marginal_detection else '已关闭'}。这些开关不控制古典模式。" if conversion_mode == "pipeline" else "以上恢复/去重选项仅适用于 Pipeline；VLM 原生输出沿用模型流程。")
+            classical_marginalia_mode, classical_text_marginalia_mode = render_classical_marginalia_controls(
+                st, mode_key="classical_marginalia_mode_global",
+                text_key="classical_text_marginalia_mode_global",
             )
+            generic_line_output_mode = render_generic_line_output_control(
+                st, key="generic_line_output_mode_global",
+                classical_mode=classical_marginalia_mode,
+            )
+            marginal_mode_options = ["line_markers", "margin_comments", "plain", "drop"]
+            preferred_margin_mode = st.session_state.get("marginal_output_mode_global", st.session_state.get("_retained_marginal_output_mode_global"))
+            current_marginal_output_mode = normalize_marginal_output_mode(
+                preferred_margin_mode,
+                enable_marginal_detection=True if preferred_margin_mode is not None else enable_marginal_detection,
+            )
+            st.session_state["marginal_output_mode_global"] = current_marginal_output_mode
             marginal_output_mode = st.selectbox(
-                "边码输出方式",
+                "常规边注输出（古典模式关闭时）",
                 options=marginal_mode_options,
-                index=marginal_mode_options.index(current_marginal_output_mode),
+                index=None,
                 format_func=lambda x: {
                     "line_markers": "旁注注释（纯数字简写为行号）",
                     "margin_comments": "旁注注释（全部保持旁注）",
@@ -1747,9 +1709,14 @@ with st.sidebar:
                 }.get(x, x),
                 help="控制已识别页边旁注在 Markdown 中的表现；只有纯数字旁注会在第一档输出为 `<!-- Line: n -->`。",
                 key="marginal_output_mode_global",
+                disabled=classical_marginalia_mode == "page_locators" or conversion_mode != "pipeline",
             )
+            st.session_state["_retained_marginal_output_mode_global"] = marginal_output_mode
+            if classical_marginalia_mode == "off" and conversion_mode == "pipeline":
+                effective_margin_mode = normalize_marginal_output_mode(marginal_output_mode, enable_marginal_detection=enable_marginal_detection)
+                st.caption(f"当前常规输出：{dict(line_markers='行号/旁注注释', margin_comments='旁注注释', plain='普通文本', drop='丢弃')[effective_margin_mode]}。注释档在兼容功能关闭时按丢弃处理；原始结构化结果仍保留。")
 
-            if heuristic_marginal_detection_enabled:
+            if heuristic_marginal_detection_enabled and conversion_mode == "pipeline":
                 st.markdown("**位置阈值配置**")
                 col1, col2 = st.columns(2)
                 with col1:
@@ -1805,9 +1772,10 @@ with st.sidebar:
                 value=False,
                 help="识别正文中的小字注释（如夹注、双行小字等）。",
                 key="enable_inline_detection_global",
+                disabled=conversion_mode != "pipeline",
             )
 
-            if enable_inline_detection:
+            if enable_inline_detection and conversion_mode == "pipeline":
                 font_size_ratio_threshold = st.slider(
                     "字体比例阈值",
                     min_value=0.50,
@@ -1941,11 +1909,10 @@ with st.sidebar:
 
         if ocr_backend == "churro":
             st.info("""
-**Churro OCR** - 历史文档专用模型
-- 基于 Qwen2-VL 架构微调（3B 参数）
-- 专注历史手稿、古籍、档案文献
-- 自动生成 XML/JSON/Markdown/HTML 四种格式
-- 本地推理通常需要低并发运行
+**Churro OCR**：历史文档解析模型
+- 按 Churro 任务格式调用模型，保留 XML 原始结果，再生成 Middle JSON 和所选输出
+- 面向历史文档场景，是否适合具体语言、字体和手稿需用样本确认
+- 需要已部署且支持图像输入的服务；并发数应按服务资源调整
             """)
             chandra_version = None
             chandra_quant = None
@@ -1966,15 +1933,15 @@ with st.sidebar:
             surya2_version = None
         elif ocr_backend == "paddleocr_vl":
             st.info("""
-**PaddleOCR-VL** - 文档解析 VLM/Pipeline
+**PaddleOCR-VL**：文档解析模型
 - 配置官方 `/layout-parsing` 时优先使用完整文档解析结构
-- 未配置官方服务时使用 `Layout Detection:` 获取整页文本与 LOC 坐标
+- 未配置官方服务时，使用提示词调用模型，再解析返回的文字与 LOC 坐标
 - Contexture 会按现代印刷物规则保守恢复页码、页眉页脚、标题、正文和脚注
 - 输出保留模型原始结果，并标准化为 Contexture 结构
             """)
             st.warning(
-                "LM Studio 当前可能把 PaddleOCR-VL GGUF 条目标记为 text-only；"
-                "如出现“不支持 image inputs”，需要换用支持图片输入的 PaddleOCR-VL runtime/service。"
+                "PaddleOCR-VL 服务必须支持图像输入。如出现“不支持 image inputs”，"
+                "请检查所加载模型及视觉组件，或使用支持图像输入的服务。"
             )
             chandra_version = None
             chandra_quant = None
@@ -1996,27 +1963,27 @@ with st.sidebar:
                 format_func=lambda x: {
                     "auto": "自动：优先官方 /layout-parsing",
                     "layout_parsing": "官方 /layout-parsing",
-                    "vl_prompt": "Prompt-only VLRecognition",
+                    "vl_prompt": "提示词识别（VLRecognition）",
                 }[x],
-                help="官方 /layout-parsing 返回结构化 layoutParsingResults；Prompt-only 返回 LOC/OCR 文本，由 Contexture 做轻量结构恢复。",
+                help="官方 /layout-parsing 返回结构化 layoutParsingResults；提示词识别返回文字与 LOC 坐标，由 Contexture 整理结构。",
                 key="paddleocr_vl_mode",
             )
             paddleocr_vl_layout_parsing_url = st.text_input(
                 "官方 /layout-parsing URL",
                 value="",
-                help="填写后 auto 模式会优先调用官方 PaddleOCR-VL 文档解析接口；留空则走 prompt fallback。",
+                help="填写后自动模式优先调用官方 PaddleOCR-VL 文档解析接口；留空则使用提示词识别。",
                 key="paddleocr_vl_layout_parsing_url",
             )
             mineru_vl_version = None
             mineru_vl_quant = None
             surya2_version = None
             paddleocr_vl_prompt_label = "layout_detection"
-            st.caption("Prompt fallback：Layout Detection:（固定默认，用于整页坐标 OCR 与保守结构恢复）")
+            st.caption("提示词识别使用 `Layout Detection:` 任务格式，解析返回的文字与 LOC 坐标。")
         elif ocr_backend == "mineru_vl":
             st.info("""
-**MinerU-VL** - 文档理解 VLM
-- 当前按 OpenAI 兼容接口挂载云端或 LM Studio 模型
-- 使用官方兼容结构化解析：先 Layout Detection，再按块调用官方识别提示词
+**MinerU-VL**：文档解析模型
+- 通过所选接口协议调用已部署的模型服务
+- 先检测版面，再按块调用所选版本的识别提示词
 - 输出保留模型原始结果，先归一化 MinerU 协议，再标准化为 Contexture Middle
             """)
             chandra_version = None
@@ -2080,10 +2047,10 @@ with st.sidebar:
             surya2_version = None
         elif ocr_backend == "surya2":
             st.info("""
-**Surya 2** - 轻量文档 VLM
+**Surya 2**：文档解析模型
 - 使用官方 layout JSON 协议，再按块调用 HTML OCR
 - Contexture 会保留原始 bbox/HTML/protocol，并标准化为 Middle JSON
-- 本地 LM Studio 测试中 layout-only 并发 4-6 较稳
+- 需要支持图像输入的兼容服务；并发数应按服务能力和可用资源调整
             """)
             chandra_version = None
             chandra_quant = None
@@ -2111,10 +2078,10 @@ with st.sidebar:
             surya2_image_quality = surya2_settings["surya2_image_quality"]
         elif ocr_backend == "chrome_screenai":
             st.info("""
-**Chrome ScreenAI** - 本地原生 OCR
+**Chrome ScreenAI**：本地 OCR 组件
 - 默认直接走 PDF 原生通道
 - 仅在你选择“去除已有文本层”或“栅格化 PDF”时做额外预处理
-- 支持页面切分并行和 searchable PDF 输出
+- 支持页面切分并行和可搜索 PDF 输出
             """)
             chandra_version = None
             chandra_quant = None
@@ -2144,7 +2111,7 @@ with st.sidebar:
                 options=chandra_versions,
                 index=chandra_versions.index(chandra_default_version),
                 format_func=lambda x: version_label("chandra", x),
-                help="在同一个 Chandra 后端下切换 1.0 / 2.0 profile。",
+                help="选择已部署的 Chandra 版本；模型名称与量化选项随版本切换。",
                 key="chandra_version"
             )
             chandra_quant_options = quant_options("chandra", chandra_version)
@@ -2153,6 +2120,11 @@ with st.sidebar:
                 options=chandra_quant_options,
                 index=chandra_quant_options.index(default_quant("chandra")),
                 key="chandra_quant",
+            )
+            st.info(
+                f"**{version_label('chandra', chandra_version)}**：文档解析模型\n\n"
+                "按所选版本调用图像识别服务，保留原始结果，再生成 Middle JSON 和阅读 Markdown。"
+                "模型名称、量化规格和接口协议须与实际部署匹配；效果需用目标材料确认。"
             )
 
         # API 配置
@@ -2182,7 +2154,7 @@ with st.sidebar:
                         "lmstudio-native": "LM Studio 原生协议",
                         "openai": "OpenAI 兼容协议"
                     }[x],
-                    help="Churro 在 LM Studio 中使用 OpenAI 兼容协议更稳定；原生协议使用 /api/v1/chat。",
+                    help="协议须与服务匹配：LM Studio 原生协议使用 /api/v1/chat；OpenAI 兼容协议使用 /v1/chat/completions。",
                     key="ocr_api_style"
                 )
 
@@ -2492,7 +2464,7 @@ with st.sidebar:
                     st.caption(f"整本并行：同时跑 {ocr_file_batch_size} 本书，每本书页内串行，批间等待 {ocr_file_batch_rest} 秒。")
             if ocr_backend == "chrome_screenai":
                 chrome_emit_searchable_pdf = st.checkbox(
-                    "输出 searchable PDF",
+                    "输出可搜索 PDF",
                     value=bool(st.session_state.get("chrome_emit_searchable_pdf", True)),
                     key="chrome_emit_searchable_pdf",
                 )
@@ -2504,7 +2476,7 @@ with st.sidebar:
                             f"- 文件并发：{int(ocr_max_concurrent_files)}",
                             f"- 页内并行数：{int(chrome_workers)}",
                             f"- 预处理：{chrome_preprocess_mode}",
-                            f"- searchable PDF：{'开启' if chrome_emit_searchable_pdf else '关闭'}",
+                            f"- 可搜索 PDF：{'开启' if chrome_emit_searchable_pdf else '关闭'}",
                         ]
                     )
                 )
@@ -2556,7 +2528,7 @@ with st.sidebar:
                 elif ocr_backend == "chrome_screenai":
                     default_max_tokens = 0
                     max_limit = 0
-                    help_text = "Chrome ScreenAI 为本地模型，不使用 Token 限制。"
+                    help_text = "Chrome ScreenAI 为本地 OCR 组件，不使用输出 token 限制。"
                 else:
                     default_max_tokens = 8192
                     max_limit = 32768
@@ -2566,7 +2538,7 @@ with st.sidebar:
                     ocr_max_tokens = 0
                 else:
                     ocr_max_tokens = st.number_input(
-                        "最大输出 Token 数",
+                        "最大输出 token 数",
                         min_value=1024,
                         max_value=max_limit,
                         value=default_max_tokens,
@@ -2581,9 +2553,9 @@ with st.sidebar:
                 if theoretical_max > 32000:
                     st.warning(f"""
 **配置提示**：
-- 理论最大输出：{theoretical_max:,} tokens
-- 32K 上下文窗口：通常保持在 25,000 tokens 以下
-- 本地推理通常需要降低页面并发
+- 当前单请求输出上限：{ocr_max_tokens:,} token，并行页面数：{ocr_concurrency}
+- 并发输出预算合计：{theoretical_max:,} token，仅用于估算并发负载
+- 每个请求的输入和输出总量仍受服务上下文限制；显存不足时可降低页面并发
                     """)
 
             st.markdown("---")
@@ -2740,7 +2712,7 @@ with st.sidebar:
                     key="vlm_direct_model"
                 )
                 vlm_direct_api_key = st.text_area(
-                    "API Keys (支持多个)",
+                    "API Key（支持多个）",
                     value=os.environ.get("OPENAI_API_KEY", ""),
                     height=100,
                     help="可填写 1 个或多个 API Key。多 key 时，后端会按英文逗号 , 或换行分隔并轮换使用。",
@@ -2758,11 +2730,11 @@ with st.sidebar:
                 vlm_direct_model = st.text_input(
                     "模型名称",
                     value=os.environ.get("GEMINI_MODEL", "gemini-3.0-flash"),
-                    help="例如: gemini-3.0-flash, gemini-2.5-pro, gemini-2.0-flash",
+                    help="填写当前服务端可用且支持图像输入的模型名称，须与账户权限匹配。",
                     key="vlm_gemini_model"
                 )
                 vlm_direct_api_key = st.text_area(
-                    "Gemini API Keys (支持多个)",
+                    "Gemini API Key（支持多个）",
                     value=os.environ.get("GEMINI_API_KEY", ""),
                     height=100,
                     help="可填写 1 个或多个 API Key。多 key 时，后端会按英文逗号 , 或换行分隔并轮换使用。",
@@ -2780,11 +2752,11 @@ with st.sidebar:
                 vlm_direct_model = st.text_input(
                     "模型名称",
                     value=os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5"),
-                    help="例如: claude-sonnet-4-5, claude-opus-4-1, claude-3-7-sonnet-latest",
+                    help="填写当前服务端可用且支持图像输入的模型名称，须与实际部署或账户权限匹配。",
                     key="vlm_anthropic_model"
                 )
                 vlm_direct_api_key = st.text_area(
-                    "Anthropic API Keys (支持多个)",
+                    "Anthropic API Key（支持多个）",
                     value=os.environ.get("ANTHROPIC_API_KEY", ""),
                     height=100,
                     help="可填写 1 个或多个 API Key。多 key 时，后端会按英文逗号 , 或换行分隔并轮换使用。单个 key 通常形如 sk-ant-...",
@@ -2929,7 +2901,7 @@ with st.sidebar:
                     "serial_file": "串行文件处理（多页 PDF）",
                     "batch_single_page": "单页多文件批次（扫描图片）"
                 }[x],
-                help="串行模式逐个文件处理；批次模式用于多个单页 PDF 或图片。",
+                help="串行模式逐个文件处理；批次模式适用于多个单页 PDF，当前文件入口仅接受 PDF。",
                 key="vlm_concurrency_mode"
             )
 
@@ -3062,7 +3034,13 @@ with st.sidebar:
                 "API 参数预设",
                 list(preset_options.keys()),
                 index=0,
-                help="高准确性：temperature=0.0, 减少幻觉，提高可复现性",
+                format_func=lambda value: {
+                    "高准确性（默认）": "保守采样（默认）",
+                    "平衡": "平衡采样",
+                    "创意": "高随机性采样",
+                    "自定义": "自定义",
+                }[value],
+                help="保守采样使用 temperature=0.0，降低采样随机性；这不保证识别准确率或结果完全可复现。文献转录应优先保留原文。",
                 key="vlm_direct_preset_select"
             )
 
@@ -3072,7 +3050,7 @@ with st.sidebar:
                 with col1:
                     vlm_direct_temperature = st.slider(
                         "Temperature", 0.0, 1.0, 0.0, 0.1,
-                        help="控制随机性，0.0=完全确定",
+                        help="控制采样随机性；0.0 降低随机性，但不保证服务返回完全相同的结果。",
                         key="vlm_direct_temperature"
                     )
                     vlm_direct_top_p = st.slider(
@@ -3190,7 +3168,7 @@ with st.sidebar:
                         help="VLM 置信度不是传统 OCR 概率，默认关闭并提示模型输出 null",
                         key="vlm_direct_include_confidence_simple"
                     )
-                st.caption("JSON 严格输出和请求级关闭 thinking 固定开启，不作为普通开关。")
+                st.caption("本模式要求结构化 JSON；默认在请求中关闭推理模式，是否生效取决于服务支持。")
 
             st.markdown("---")
 
@@ -3581,8 +3559,7 @@ with st.sidebar:
         layout_backend = render_layout_backend_selector(st)
         text_layer_fast_path = layout_backend == "none"
         if text_layer_fast_path:
-            output_formats = ["markdown"]
-            emit_middle_json = False
+            emit_middle_json = True
             emit_middle_report = False
             emit_middle_debug = False
             emit_middle_scholarly = False
@@ -3590,7 +3567,8 @@ with st.sidebar:
             emit_layout_overlay = False
             emit_span_overlay = False
             emit_middle_full_json = False
-            st.info("文本层快速路径：跳过 Layout、模型与页面渲染，仅生成带物理页码锚点的 Markdown。")
+            st.info(LAYOUT_BACKEND_DESCRIPTIONS["none"])
+            st.caption("保存必需的 Markdown 与 Middle JSON；其他格式按上方选择生成。")
         layout_dpi_settings = (
             {"surya_layout_quality": surya_layout_quality, "layout_dpi_override": None}
             if text_layer_fast_path
@@ -3785,6 +3763,8 @@ with st.sidebar:
                 default_model_name=default_paddle_model,
             )
             paddle_layout_model_name = paddle_layout_settings["paddle_layout_model_name"]
+            paddle_layout_python = paddle_layout_settings["paddle_layout_python"]
+            paddle_layout_allow_download = paddle_layout_settings.get("paddle_layout_allow_download", False)
             paddle_layout_model_dir = paddle_layout_settings["paddle_layout_model_dir"]
             paddle_layout_device = paddle_layout_settings["paddle_layout_device"]
             paddle_layout_engine = paddle_layout_settings["paddle_layout_engine"]
@@ -3793,6 +3773,24 @@ with st.sidebar:
             paddle_layout_threshold = paddle_layout_settings["paddle_layout_threshold"]
             paddle_layout_img_size = paddle_layout_settings["paddle_layout_img_size"]
             paddle_layout_batch_size = paddle_layout_settings["paddle_layout_batch_size"]
+
+            markdown_noise_removal_enabled = locals().get("markdown_noise_removal_enabled", True)
+            markdown_noise_cleaning_level = locals().get("markdown_noise_cleaning_level", "basic")
+            markdown_noise_custom_symbols = locals().get("markdown_noise_custom_symbols", "")
+            markdown_noise_line_start_only = locals().get("markdown_noise_line_start_only", True)
+            line_merge_enabled = locals().get("line_merge_enabled", True)
+            blockquote_enabled = locals().get("blockquote_enabled", True)
+            code_enabled = locals().get("code_enabled", True)
+            section_header_enabled = locals().get("section_header_enabled", True)
+            list_enabled = locals().get("list_enabled", True)
+            footnote_enabled = locals().get("footnote_enabled", True)
+            reference_enabled = locals().get("reference_enabled", True)
+            equation_enabled = locals().get("equation_enabled", True)
+            table_enabled = locals().get("table_enabled", True)
+
+        elif layout_backend == "indra_layout":
+            st.markdown(LAYOUT_BACKEND_DESCRIPTIONS["indra_layout"])
+            st.caption("文字来源：OCR 选项为「不重新 OCR」时读取 PDF 文本层；「Chrome ScreenAI」先生成可搜索 PDF；同时选择 Indra OCR 时走 Indra 直连通道。")
 
             markdown_noise_removal_enabled = locals().get("markdown_noise_removal_enabled", True)
             markdown_noise_cleaning_level = locals().get("markdown_noise_cleaning_level", "basic")
@@ -3852,20 +3850,6 @@ with st.sidebar:
         chrome_emit_searchable_pdf = bool(st.session_state.get("chrome_emit_searchable_pdf", False))
         chrome_rasterize_dpi = int(st.session_state.get("chrome_rasterize_dpi", 144))
         chrome_model_dir = st.session_state.get("chrome_model_dir", "")
-        legacy_preprocess_backend = (
-            str(st.session_state.get("ocr_preprocess_backend", "none") or "none")
-            .strip()
-            .lower()
-            .replace("-", "_")
-        )
-        if should_migrate_legacy_screenai_preprocess(
-            legacy_preprocess_backend,
-            st.session_state.get("ocr_backend"),
-        ):
-            st.session_state["ocr_backend"] = "chrome_screenai"
-            st.session_state["ocr_preprocess_backend"] = "none"
-            st.info("已将旧版 ScreenAI 预处理配置迁移为 OCR 后端 `chrome_screenai`。")
-
         ocr_backend = render_ocr_backend_selector(
             st,
             options=["none", "chrome_screenai"] if text_layer_fast_path else None,
@@ -3904,10 +3888,7 @@ with st.sidebar:
 
         # ==================== 3.1 后端说明与配置 ====================
         if ocr_backend == "chrome_screenai":
-            st.caption(
-                "先用 Chrome ScreenAI 处理整本 PDF，写回 searchable PDF，"
-                "随后继续使用当前 layout backend，并直接读取回流后的内嵌文本层。"
-            )
+            st.info(OCR_BACKEND_DESCRIPTIONS["chrome_screenai"])
             chrome_workers = int(
                 st.number_input(
                     "ScreenAI 并行数",
@@ -3919,21 +3900,18 @@ with st.sidebar:
                 )
             )
             chrome_emit_searchable_pdf = st.checkbox(
-                "导出 searchable PDF 中间件",
+                "导出可搜索 PDF 中间文件",
                 value=chrome_emit_searchable_pdf,
                 key="chrome_emit_searchable_pdf",
             )
             chrome_chunk_pages = max(1, int(chrome_workers))
             st.session_state["chrome_chunk_pages"] = chrome_chunk_pages
-            st.info("本次不会执行常规块级 OCR。内部顺序为 ScreenAI -> searchable PDF -> layout + embedded text。")
+            st.info("文字识别由 Chrome ScreenAI 完成；随后从可搜索 PDF 读取文本层，并继续所选的版面分析。")
             force_ocr = False
             use_llm = False
 
         elif ocr_backend == "none":
-            st.caption(
-                "使用 PDF 内嵌文本层，适用于已有高质量 OCR 层或原生文本层的 PDF。"
-                " 清晰的主流印刷物可先经 OCRmyPDF-AIH 等工具补齐高精度文本层，再结合 Surya 做版面识别，通常效果更稳且性能开销更低。"
-            )
+            st.info(OCR_BACKEND_DESCRIPTIONS["none"])
             force_ocr = False
             use_llm = False
 
@@ -4070,12 +4048,45 @@ with st.sidebar:
             use_llm = surya2_ocr_settings["use_llm"]
             ocr_batch_size = surya2_ocr_settings["ocr_batch_size"]
 
+        elif ocr_backend == "indra_ocr":
+            indra_settings = render_indra_settings(st, description=OCR_BACKEND_DESCRIPTIONS["indra_ocr"])
+            indra_python = indra_settings["indra_python"]
+            indra_model_dir = indra_settings["indra_model_dir"]
+            indra_mode = indra_settings["indra_mode"]
+            indra_dpi = indra_settings["indra_dpi"]
+            indra_cores = indra_settings["indra_cores"]
+            indra_math = indra_settings["indra_math"]
+            indra_cache_dir = indra_settings["indra_cache_dir"]
+            force_ocr = indra_settings["force_ocr"]
+            use_llm = indra_settings["use_llm"]
+            ocr_batch_size = indra_settings["ocr_batch_size"]
+
+        elif ocr_backend == "glm_ocr":
+            glm_ocr_settings = render_glm_ocr_settings(
+                st,
+                description=OCR_BACKEND_DESCRIPTIONS["glm_ocr"],
+            )
+            glm_ocr_endpoint = glm_ocr_settings["glm_ocr_endpoint"]
+            glm_ocr_quant = glm_ocr_settings["glm_ocr_quant"]
+            glm_ocr_model = glm_ocr_settings["glm_ocr_model"]
+            glm_ocr_api_key = glm_ocr_settings["glm_ocr_api_key"]
+            glm_ocr_block_concurrency = glm_ocr_settings["glm_ocr_block_concurrency"]
+            glm_ocr_timeout = glm_ocr_settings["glm_ocr_timeout"]
+            glm_ocr_max_tokens = glm_ocr_settings["glm_ocr_max_tokens"]
+            glm_ocr_recognize_formulas = glm_ocr_settings["glm_ocr_recognize_formulas"]
+            force_ocr = glm_ocr_settings["force_ocr"]
+            use_llm = glm_ocr_settings["use_llm"]
+            ocr_batch_size = glm_ocr_settings["ocr_batch_size"]
+
         elif ocr_backend == "mineru_pytorch_paddle_ocr":
             mineru_ocr_settings = render_mineru_ocr_settings(
                 st,
                 description=OCR_BACKEND_DESCRIPTIONS["mineru_pytorch_paddle_ocr"],
             )
             mineru_ocr_python = mineru_ocr_settings["mineru_ocr_python"]
+            mineru_ocr_model_dir = mineru_ocr_settings["mineru_ocr_model_dir"]
+            mineru_ocr_version = mineru_ocr_settings["mineru_ocr_version"]
+            mineru_ocr_allow_download = mineru_ocr_settings["mineru_ocr_allow_download"]
             mineru_ocr_device = mineru_ocr_settings["mineru_ocr_device"]
             mineru_ocr_lang = mineru_ocr_settings["mineru_ocr_lang"]
             mineru_ocr_timeout = mineru_ocr_settings["mineru_ocr_timeout"]
@@ -4259,7 +4270,7 @@ with st.sidebar:
                     llm_model = st.text_input(
                         "模型名称",
                         value=os.environ.get("OPENAI_MODEL", ""),
-                        help="例如 gpt-4o-mini、qwen2.5-vl、本地兼容端点中的模型名。",
+                        help="填写当前服务端实际可用的模型名称，并确认模型支持所选任务。",
                         key="llm_openai_compatible_model"
                     )
                     llm_api_key = st.text_input(
@@ -4286,7 +4297,7 @@ with st.sidebar:
 
                     # 多Key输入支持
                     llm_api_key = st.text_area(
-                        "Gemini API Keys (支持多个)",
+                        "Gemini API Key（支持多个）",
                         value=os.environ.get("GEMINI_API_KEY", ""),
                         height=100,
                         help="每行一个或用英文逗号分隔。多 key 可轮换请求。",
@@ -4313,7 +4324,7 @@ with st.sidebar:
                         llm_model = st.text_input(
                             "模型名称",
                             value=os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp"),
-                            help="例如: gemini-2.0-flash-exp, gemini-1.5-pro",
+                            help="填写当前服务端实际可用的模型名称，并确认模型支持所选任务。",
                             key="llm_gemini_model"
                         )
                         llm_max_concurrency = st.number_input(
@@ -4370,7 +4381,7 @@ with st.sidebar:
                 elif llm_provider == "azure":
                     st.caption("Azure OpenAI 配置。")
                     llm_base_url = st.text_input(
-                        "Azure Endpoint",
+                        "Azure API 端点",
                         value=os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
                         help="Azure OpenAI 端点 URL",
                         key="llm_azure_endpoint"
@@ -4519,10 +4530,21 @@ with st.sidebar:
         st.divider()
 
         # ==================== 6. 高级选项 ====================
-        pipeline_run_settings = render_pipeline_run_settings(st)
+        pipeline_run_settings = render_pipeline_run_settings(
+            st,
+            {
+                "layout_backend": layout_backend,
+                "layout_batch_size": locals().get("layout_batch_size"),
+                "mineru_layout_batch_size": locals().get("mineru_layout_batch_size"),
+                "ocr_backend": locals().get("ocr_backend"),
+                "ocr_preprocess_backend": locals().get("ocr_preprocess_backend"),
+            },
+        )
         batch_mode = pipeline_run_settings["batch_mode"]
         batch_threshold = pipeline_run_settings["batch_threshold"]
         pages_per_batch = pipeline_run_settings["pages_per_batch"]
+        pipeline_performance_mode = pipeline_run_settings["pipeline_performance_mode"]
+        pipeline_workers = pipeline_run_settings["pipeline_workers"]
         cooling_seconds = pipeline_run_settings["cooling_seconds"]
         stall_timeout_minutes = pipeline_run_settings["stall_timeout_minutes"]
         process_mode = pipeline_run_settings["process_mode"]
@@ -4546,6 +4568,10 @@ vlm_specialized_values = dict(locals()) if conversion_mode == "vlm_specialized" 
 st.divider()
 
 # ==================== 主区域：历史下载 ====================
+# Fast background jobs can finish before the next status-render pass. Sync
+# terminal results before building history and preview, including on reruns.
+if st.session_state.proc_ctx.get("status") in {"done", "error", "cancelled"}:
+    sync_proc_context_to_session(st.session_state.proc_ctx, st.session_state)
 render_result_history(st)
 
 
@@ -4556,6 +4582,10 @@ def _run_vlm_repair_job(_ctx, _cancel, _output_dir):
         _ctx["status"] = "error"
         st.error("缺少 VLM 修复任务参数")
         return
+
+    # 修复批次也是独立批次：补分配 processing_id，避免批次摘要落成 0000、
+    # 与输出目录里历史 run_summary.json 的真实编号对不上（计数器"未更新"假象）。
+    ensure_processing_id(_ctx, _output_dir)
 
     file_name = job["file_name"]
     action = job.get("action") or "repair"
@@ -4724,8 +4754,12 @@ if uploaded_files and len(uploaded_files) > 0:
                 middle_rerender_include_margin_comments=middle_rerender_include_margin_comments,
                 middle_rerender_include_page_separators=middle_rerender_include_page_separators,
                 middle_rerender_marginal_output_mode=middle_rerender_marginal_output_mode,
+                middle_rerender_classical_marginalia_mode=middle_rerender_classical_marginalia_mode,
+                middle_rerender_classical_text_marginalia_mode=middle_rerender_classical_text_marginalia_mode,
+                middle_rerender_generic_line_output_mode=middle_rerender_generic_line_output_mode,
                 middle_rerender_equation_output_mode=middle_rerender_equation_output_mode,
                 middle_rerender_apply_postprocess=middle_rerender_apply_postprocess,
+                emit_reading_diagnostics=emit_reading_diagnostics,
                 cancel=_cancel,
                 ctx=_ctx,
             )
@@ -4775,7 +4809,7 @@ if uploaded_files and len(uploaded_files) > 0:
         if conversion_mode == "vlm_specialized":
             # 检查必要配置
             if ocr_backend != "chrome_screenai" and not ocr_endpoint:
-                st.error("❌ 需要配置 OCR API Endpoint")
+                st.error("❌ 需要配置 OCR API 端点")
                 return
             run_vlm_specialized_batch(
                 st=st,
@@ -4810,6 +4844,15 @@ if uploaded_files and len(uploaded_files) > 0:
         start_time = time.time()
 
         _pipe_files = input_file_objects(upload_mode, uploaded_files, _ctx)
+        if not _pipe_files:
+            message = (
+                "没有可处理的输入文件；本次任务未生成任何文档输出。"
+                "请重新上传 PDF 或检查文件夹路径，然后再开始任务。"
+            )
+            _ctx["status"] = "error"
+            _ctx.setdefault("errors", []).append(message)
+            st.error(message)
+            return
         text_layer_workers = 1
         if layout_backend == "none" and ocr_backend == "none":
             text_layer_workers = min(
@@ -4919,22 +4962,42 @@ if uploaded_files and len(uploaded_files) > 0:
                     layout_models.append(value)
         # P1-9: ZIP 命名只反映实际执行的后端；OCR 被禁用（或无实际后端记录）
         # 时使用 none，不得回退到 UI 配置里未实际执行的 backend。
-        finalize_zip_outputs(
-            _ctx, all_output_paths_for_zip, _output_dir,
-            zip_name(
-                mode="pipeline", processing_id=str(_ctx.get("processing_id") or "0000"),
-                ocr_model=effective_backend_label(ocr_models),
-                layout_model=effective_backend_label(layout_models),
-            ),
-            mode="pipeline", models={"ocr": ocr_models, "layout": layout_models},
-            config=pipeline_values, started_at=_ctx.get("batch_started_at"),
-            status="partial" if failed_pipeline_files else ("cancelled" if _ctx.get("status") == "cancelled" else "succeeded"),
-        )
+        try:
+            finalize_zip_outputs(
+                _ctx, all_output_paths_for_zip, _output_dir,
+                zip_name(
+                    mode="pipeline", processing_id=str(_ctx.get("processing_id") or "0000"),
+                    ocr_model=effective_backend_label(ocr_models),
+                    layout_model=effective_backend_label(layout_models),
+                ),
+                mode="pipeline", models={"ocr": ocr_models, "layout": layout_models},
+                config=pipeline_values, started_at=_ctx.get("batch_started_at"),
+                status="partial" if failed_pipeline_files else ("cancelled" if _ctx.get("status") == "cancelled" else "succeeded"),
+            )
+        except Exception as zip_exc:
+            # 打包失败不得抹掉逐文件成果：明确告知磁盘位置和原因。
+            st.error(
+                "📦 打包 ZIP 失败："
+                f"{zip_exc}\n各文件的处理结果已保存在输出目录的独立文件夹中：{_output_dir}"
+            )
+            _ctx.setdefault("warnings", []).append(f"打包 ZIP 失败：{zip_exc}")
+        _final_zip = _ctx.get("last_zip_path")
+        if _final_zip and os.path.exists(_final_zip):
+            _zip_size_mb = os.path.getsize(_final_zip) / 1024 / 1024
+            st.success(f"📦 ZIP 已生成：{os.path.basename(_final_zip)}（{_zip_size_mb:.1f} MB）")
+        elif all_output_paths_for_zip:
+            # finalize 主动拒写空壳 ZIP 时会留下 errors，这里把原因呈现出来
+            _zip_errors = [e for e in (_ctx.get("errors") or []) if "打包取消" in str(e)]
+            if _zip_errors:
+                st.error(f"📦 {_zip_errors[-1]}（输出根目录：{_output_dir}）")
 
     # --- _proc_body 结束 ---
 
     # --- 启动后台线程 ---
     if start_button:
+        if not uploaded_files:
+            st.error("请先上传至少一个 PDF 文件或选择包含 PDF 的文件夹。")
+            st.stop()
         if not output_formats:
             st.error("需要至少选择一种输出格式。")
             st.stop()
@@ -4944,7 +5007,7 @@ if uploaded_files and len(uploaded_files) > 0:
             st.stop()
         # VLM 特化模式验证
         if conversion_mode == "vlm_specialized" and ocr_backend != "chrome_screenai" and not ocr_endpoint:
-            st.error("❌ 需要配置 OCR API Endpoint")
+            st.error("❌ 需要配置 OCR API 端点")
             st.stop()
         # Markdown 后处理 LLM 模式验证
         if conversion_mode == "markdown_postprocess" and markdown_postprocess_enable_llm:
@@ -5054,5 +5117,44 @@ if _pctx["status"] != "idle":
             st.rerun()
 
 elif not (uploaded_files and len(uploaded_files) > 0) and not st.session_state.get("pending_vlm_repair_job"):
-    st.info("👆 在上方上传 PDF 文件或选择包含 PDF 的文件夹")
+    st.info("👆 在上方上传与当前功能匹配的文件，或选择对应文件夹。")
+
+# ==================== 历史 ZIP 下载（任何非运行状态都可见） ====================
+# 会话过期后浏览器端的旧媒体链接会失效（403/提示需要下载权限）；
+# 这里每次渲染时直接从 output 目录读盘生成新按钮，保证历史结果总能重新下载。
+if st.session_state.proc_ctx.get("status") != "running":
+    _hist_dir = st.session_state.get("output_dir")
+    _hist_zips = []
+    if _hist_dir and os.path.isdir(_hist_dir):
+        _hist_zips = sorted(
+            (
+                os.path.join(_hist_dir, name)
+                for name in os.listdir(_hist_dir)
+                if name.lower().endswith(".zip")
+                and os.path.isfile(os.path.join(_hist_dir, name))
+            ),
+            key=lambda p: os.path.getmtime(p),
+            reverse=True,
+        )[:20]
+    if _hist_zips:
+        with st.expander("🗂 历史结果 ZIP（会话过期后可在此重新下载）", expanded=False):
+            _hist_labels = {
+                p: f"{os.path.basename(p)}  ·  {os.path.getsize(p) / 1024 / 1024:.1f} MB  ·  {datetime.fromtimestamp(os.path.getmtime(p)).strftime('%Y-%m-%d %H:%M')}"
+                for p in _hist_zips
+            }
+            _hist_sel = st.selectbox(
+                "选择一个历史 ZIP",
+                options=_hist_zips,
+                format_func=lambda p: _hist_labels[p],
+                key="download_history_zip_select",
+            )
+            if _hist_sel and os.path.exists(_hist_sel):
+                with open(_hist_sel, "rb") as _hf:
+                    st.download_button(
+                        "⬇ 下载选中的 ZIP",
+                        data=_hf.read(),
+                        file_name=os.path.basename(_hist_sel),
+                        mime="application/zip",
+                        key="download_history_zip_button",
+                    )
 

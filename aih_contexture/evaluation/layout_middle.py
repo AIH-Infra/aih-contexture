@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from aih_contexture.middle.storage import decode_middle_storage
+
 import json
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,7 @@ def evaluate_middle_layout(
     boxes yet. It establishes a stable smoke metric layer for Surya/MinerU/Paddle
     layout outputs before heavier annotated evaluation is introduced.
     """
+    data = decode_middle_storage(data)
 
     required_block_types = required_block_types or []
     report = validate_middle_json(data)

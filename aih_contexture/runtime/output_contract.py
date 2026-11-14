@@ -16,7 +16,10 @@ _WIN_RESERVED = {
 
 
 def safe_name(value: str | os.PathLike[str], fallback: str = "document") -> str:
-    text = Path(os.fspath(value)).stem if Path(os.fspath(value)).suffix else os.fspath(value)
+    # Input names can come from a Windows client while running on macOS/Linux.
+    # Interpret both path separators before sanitizing the document basename.
+    name = Path(os.fspath(value).replace("\\", "/")).name
+    text = Path(name).stem if Path(name).suffix else name
     text = _SAFE_RE.sub("_", str(text).strip())
     text = _SPACE_RE.sub(" ", text).strip(" .")
     if text.upper() in _WIN_RESERVED:
@@ -36,14 +39,21 @@ def document_output_folder(
 ) -> str:
     root = Path(output_root)
     stem = safe_name(source_name)
+    root.mkdir(parents=True, exist_ok=True)
     base = root / f"{stem}_{timestamp_token(started_at)}"
     candidate = base
     index = 2
-    while candidate.exists() and any(candidate.iterdir()):
-        candidate = root / f"{base.name}_{index}"
-        index += 1
-    candidate.mkdir(parents=True, exist_ok=True)
-    return os.fspath(candidate)
+    while True:
+        try:
+            # Reserve the directory even before the first artifact is written.
+            # An existence check followed by exist_ok=True allows concurrent
+            # jobs (and sequential reservations of empty folders) to collide.
+            candidate.mkdir(exist_ok=False)
+        except FileExistsError:
+            candidate = root / f"{base.name}_{index}"
+            index += 1
+        else:
+            return os.fspath(candidate)
 
 
 def document_output_basename(source_name: str | os.PathLike[str], start_page=None, end_page=None) -> str:

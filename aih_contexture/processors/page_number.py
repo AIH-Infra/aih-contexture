@@ -128,6 +128,7 @@ class PageNumberProcessor(BaseProcessor):
     min_candidate_score: float = 1.5
     min_anchor_score: float = 2.2
     ambiguity_gap: float = 0.2
+    sequence_rescue_min_pages: int = 4
 
     def __init__(self, config: Optional[dict] = None):
         super().__init__(config)
@@ -791,7 +792,80 @@ class PageNumberProcessor(BaseProcessor):
                 candidate.final_score += self._neighbor_bonus(page_idx, candidate, anchors)
             final.append(self._pick_candidate(candidates))
 
-        return final
+        return self._resolve_ambiguous_sequences(page_candidates, final)
+
+    def _resolve_ambiguous_sequences(
+        self,
+        page_candidates: List[List[PageNumberCandidate]],
+        selected: List[Optional[PageNumberCandidate]],
+    ) -> List[Optional[PageNumberCandidate]]:
+        """仅在唯一连续页码序列支持时，补选未决的阿拉伯数字候选。"""
+        candidates_by_offset: dict[int, List[Tuple[int, PageNumberCandidate]]] = {}
+        for page_idx, candidates in enumerate(page_candidates):
+            best_by_number: dict[int, PageNumberCandidate] = {}
+            for candidate in candidates:
+                if (
+                    candidate.format != "arabic"
+                    or candidate.numeric is None
+                    or candidate.numeric <= 0
+                    or candidate.source != "typed"
+                    or candidate.final_score < self.min_anchor_score
+                ):
+                    continue
+                current = best_by_number.get(candidate.numeric)
+                if current is None or candidate.final_score > current.final_score:
+                    best_by_number[candidate.numeric] = candidate
+
+            for number, candidate in best_by_number.items():
+                candidates_by_offset.setdefault(number - page_idx, []).append((page_idx, candidate))
+
+        options_by_page: List[List[Tuple[int, float, PageNumberCandidate]]] = [
+            [] for _ in page_candidates
+        ]
+        for offset_candidates in candidates_by_offset.values():
+            offset_candidates.sort(key=lambda item: item[0])
+            run: List[Tuple[int, PageNumberCandidate]] = []
+            for item in offset_candidates:
+                if run and item[0] != run[-1][0] + 1:
+                    self._record_sequence_run(run, options_by_page)
+                    run = []
+                run.append(item)
+            self._record_sequence_run(run, options_by_page)
+
+        resolved = list(selected)
+        for page_idx, options in enumerate(options_by_page):
+            if resolved[page_idx] is not None or not options:
+                continue
+
+            # Collapse duplicate sightings of the same number before checking for
+            # competing sequences (for example, the same number in header and footer).
+            best_by_number: dict[str, Tuple[int, float, PageNumberCandidate]] = {}
+            for option in options:
+                _, _, candidate = option
+                current = best_by_number.get(candidate.page_number)
+                if current is None or option[:2] > current[:2]:
+                    best_by_number[candidate.page_number] = option
+
+            ranked = sorted(best_by_number.values(), key=lambda item: (item[0], item[1]), reverse=True)
+            best = ranked[0]
+            if len(ranked) > 1:
+                second = ranked[1]
+                if best[0] == second[0] and best[1] - second[1] < self.ambiguity_gap:
+                    continue
+            resolved[page_idx] = best[2]
+
+        return resolved
+
+    def _record_sequence_run(
+        self,
+        run: List[Tuple[int, PageNumberCandidate]],
+        options_by_page: List[List[Tuple[int, float, PageNumberCandidate]]],
+    ) -> None:
+        if len(run) < self.sequence_rescue_min_pages:
+            return
+        mean_score = sum(candidate.final_score for _, candidate in run) / len(run)
+        for page_idx, candidate in run:
+            options_by_page[page_idx].append((len(run), mean_score, candidate))
 
     def _infer_dominant_profile(
         self, page_candidates: List[List[PageNumberCandidate]]

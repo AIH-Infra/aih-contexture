@@ -4,7 +4,9 @@
 
 AIH-Infra 的第一层：面向人文学科的本地文献结构化工具。Contexture 将 PDF、图片及其他文献材料转化为可校阅、可追溯、可进入知识库的结构化输出，而不把 OCR 仅视为纯文本提取。
 
-当前发行版本：**0.9.0**
+当前发行版本：**1.0.0**
+
+发行内容与依赖基线见 [RELEASE_MANIFEST.md](RELEASE_MANIFEST.md)。
 
 ## 位置与目标
 
@@ -43,7 +45,7 @@ Contexture 的责任是让材料进入后续系统前仍保留可复核的结构
 | Pipeline | 通用、可审计的基础流程 | Layout、OCR 与后处理可以独立选择和组合。 |
 | VLM 泛化 | 复杂版式、手稿或需要整页视觉理解 | 使用用户配置的视觉语言模型服务。 |
 | VLM 特化 | 已有匹配的专用模型或本地运行时 | 效果依赖模型训练领域，需抽检。 |
-| 结构化源导入 | 已有 TEI/XML 或 EPUB 结构化结果 | 导入原始章节树、目录、页表、索引、锚点和元数据。 |
+| 结构化源导入 | 已有 TEI/XML 或 EPUB 源文件 | 保留章节、导航、锚点和原始元数据。 |
 | Markdown 后处理 | 已有结果需要复核、重渲染或修订 | 用于保守地修复页码、结构与格式。 |
 
 所有路线都可生成 Middle JSON，并可渲染为 Scholarly Markdown。编号段落会规范为 201\. 这类非缩进 Markdown 形式；脚注引用和定义使用 <sup>n</sup> 语义。
@@ -52,7 +54,9 @@ Contexture 的责任是让材料进入后续系统前仍保留可复核的结构
 
 要求：Python **3.10、3.11 或 3.12**，首次安装和首次下载模型时需要网络。
 
-默认 OCR/文档依赖使用 Surya OCR **0.17.1**、Transformers **4.57.6**、pdftext **0.6.3** 和 pypdfium2 **4.30.0**。Python 3.10 使用 NumPy 2.2.x 与 scikit-learn 1.6.x；Python 3.11/3.12 使用 NumPy 2.3+ 与 scikit-learn 1.8+。
+兼容基线固定为 **Surya OCR 0.17.1、Transformers 4.57.6、PDFText 0.6.3、pypdfium2 4.30.0**。Surya 0.17.1 与本版 Pipeline 调用接口匹配。
+
+VLM 特化模式中的“Surya 2”是单独的模型服务入口；主环境中的 `surya-ocr` 仍固定为 0.17.1。
 
 ### Windows
 
@@ -83,13 +87,28 @@ Apple Silicon（包括 M4/M5）使用固定版本的标准 macOS ARM64 PyTorch w
 
 Surya 是主安装环境中的默认本地后端。其他能力是可选项：
 
+Pipeline 的 **Paddle OCR Torch** 已内置检测、识别和前后处理代码，与主环境共用 PyTorch，不需要完整 MinerU 或 PaddlePaddle。以下命令在现有项目环境中按需安装，不创建额外虚拟环境，也不会下载模型权重：
+
+```bash
+python -m pip install ".[paddle-torch]"
+python -m pip install ".[paddle-layout]"
+python -m pip install ".[indra]"
+```
+
+只需其中一项时只执行对应命令。Paddle OCR Torch 默认选择 PP-OCRv5，可显式选择 PP-OCRv6；两者已在同一 Torch 环境完成 CPU/CUDA 运行验证，运行通过不等于全语种质量等价。通过 `mineru_ocr_model_dir` 指定权重目录，留空复用已有缓存。只有明确启用 `mineru_ocr_allow_download` 时才允许下载缺失权重；v6 使用固定版本的官方 safetensors。CLI 保留 `--ocr_backend mineru_pytorch_paddle_ocr` 标识，默认使用运行 Contexture 的 Python。原 `paddle_ocr_v5` PaddlePaddle 后端保留给旧 API/CLI 配置和对照验收，新界面统一使用 Paddle OCR Torch。
+
+PP-DocLayoutV3 默认使用项目内置的 CPU ONNX 推理与后处理，共用同一环境中的可选 ONNX Runtime；不依赖 Paddle/PaddleX。模型目录通过 `paddle_layout_model_dir` 或 `CONTEXTURE_DOCLAYOUT_V3_MODEL_DIR` 指定，目录中应有 `inference.onnx`、`inference.yml`。首次下载需明确启用 `paddle_layout_allow_download`。默认批次 1，支持 1–8；原生多边形保存在原始元数据中，Pipeline 几何使用四边形。显式的 Paddle SDK 引擎/解释器配置仍保留兼容路径，不会自动忽略 GPU 请求或切换到 CPU。Indra 同样使用可选 CPU ONNX Runtime。GLM-OCR 的 API 与 Calamari 的 HTTP 接口保持原有方式。
+
 | 能力 | 配置或发现方式 |
 | --- | --- |
-| MinerU | 设置 CONTEXTURE_MINERU_PYTHON、CONTEXTURE_MINERU_COMMAND 或 CONTEXTURE_MINERU_SOURCE_ROOT；也支持 PATH 和约定的同级目录。 |
-| Paddle | 设置 CONTEXTURE_PADDLE_PYTHON，或放置在约定的同级 sidecar 环境中。 |
+| Paddle OCR Torch | 在主环境安装 `.[paddle-torch]`；模型目录可通过 UI、CLI 或 `CONTEXTURE_PADDLE_TORCH_MODEL_DIR` 指定，默认复用已有缓存。 |
+| PP-DocLayoutV3 | 在主环境安装 `.[paddle-layout]`；默认内置 CPU ONNX 路径，模型目录和下载许可可在 UI/CLI/API 指定。 |
+| MinerU CLI 兼容路径 | 设置 CONTEXTURE_MINERU_PYTHON、CONTEXTURE_MINERU_COMMAND 或 CONTEXTURE_MINERU_SOURCE_ROOT；仅完整 CLI 路径需要外部 MinerU。 |
+| Paddle 原生 SDK 路径 | 设置 CONTEXTURE_PADDLE_PYTHON，或放置在约定的同级 sidecar 环境中；用于现有 Paddle 版面后端和旧 OCR 配置。 |
 | Tesseract | 自动检查 PATH 与标准系统安装位置。 |
 | 云端或本地 VLM | 在 UI 中填写端点、模型与用户自己的凭据。 |
 | Chrome ScreenAI | 自动寻找 Chrome 已下载组件或本地 locro 组件；缺失时需先准备组件。 |
+| Indra | 在主环境安装 `.[indra]`，设置 `INDRA_OCR_MODEL_DIR` 或 UI/CLI 模型目录。仍可显式指定其他 Python。权重不随主包分发。 |
 
 检查当前环境：
 
@@ -98,7 +117,11 @@ Windows: .venv\Scripts\contexture_doctor
 macOS/Linux: .venv/bin/contexture_doctor
 ~~~
 
-缺失的可选后端不会阻止主流程安装，但被选中时需要其自身的解释器、依赖和模型完整可用。
+缺失的可选后端不会阻止主流程安装；被选中时需要相应依赖和模型完整可用。内置 Torch/CPU 组件复用主环境，服务型后端需要配置已部署的接口。
+
+Indra 的版面与 OCR 可以分别选择。两项同时选择 Indra 且未禁用 OCR 时，UI 和 CLI 都使用 CPU 原生直连，当前接受 PDF 输入及 Markdown/JSON 输出；UI 的页面分片会合并为同一任务，由 Indra 的核心数设置控制内部并行，不使用普通 Pipeline 的分批检查点。只选择 Indra 版面时可搭配 PDF 文字层或 ScreenAI；只选择 Indra OCR 时走普通 Pipeline。
+
+诊断独立 Indra 环境可使用 `contexture_doctor --indra-python <python路径> --indra-model-dir <模型目录>`。该检查确认配置路径及必需文件存在，真实导入与识别仍需转换测试。逐页磁盘缓存绑定本地模型文件内容；替换同目录模型后不会继续使用原有结果。未显式指定模型目录时只在当前运行时内缓存，不保存磁盘缓存。
 
 ## 命令行与本地服务
 
@@ -124,13 +147,6 @@ contexture_vlm_specialized input.pdf \
 ~~~
 
 两种 VLM CLI 都支持 `--config-json` 和重复的 `--set KEY=VALUE`，用于透传运行参数；`--dry-run` 会打印脱敏后的最终配置。API Key 建议通过环境变量提供。
-
-### VLM 中断恢复范围
-
-- **VLM 泛化**：按页保存成功结果。重新运行时，仅在源文件、页码范围和有效配置匹配时复用已成功页面；缺失或失败页面仍会处理。
-- **VLM 特化**：模型崩溃后可在当前 UI 会话中从失败批次重新开始，已完成批次的文件产物会保留。它不提供逐页 checkpoint，也不提供应用重启后的持久任务恢复。
-
-以上是局部结果复用与批次级 UI 恢复，不是完整、持久的任务队列或任务恢复系统。
 
 ## 与 DataLab 上游项目的关系
 
@@ -165,8 +181,8 @@ Contexture 在这些引擎之上统一页码锚点、Middle JSON、学术 Markdo
 - VLM 结果需要受原始页面、页码锚点与 Middle JSON 的约束和复核。
 - 外部模型服务、MinerU、Paddle、Tesseract 与 Chrome ScreenAI 均不随主包强制安装。
 
-发行内容见 [RELEASE_MANIFEST.md](RELEASE_MANIFEST.md)。
+发行内容见 **RELEASE_MANIFEST.md**。
 
 ## 许可证
 
-本项目按 [GPL-3.0-or-later](LICENSE) 发布，第三方组件归属见 [NOTICE](NOTICE)。ScreenAI 使用的 locro 封装保留 MIT 许可证；Chrome 的 ScreenAI 原生库和模型不随发行包分发。第三方模型权重及外部服务仍受各自许可证和服务条款约束；发行包附带的模型条款见 [MODEL_LICENSE](MODEL_LICENSE)。
+GPL-3.0-or-later。第三方模型、外部服务及其权重分别受其自身许可证和服务条款约束。

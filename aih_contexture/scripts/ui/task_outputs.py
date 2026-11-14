@@ -50,11 +50,29 @@ def build_zip(
     if parent:
         os.makedirs(parent, exist_ok=True)
 
-    try:
-        return _write_zip(paths, zip_path_str, batch_summary=batch_summary, rename_log=rename_log)
-    except PermissionError:
-        fallback = _fallback_zip_path(zip_path_str)
-        return _write_zip(paths, fallback, batch_summary=batch_summary, rename_log=rename_log)
+    last_error: PermissionError | None = None
+    for attempt in range(3):
+        try:
+            return _write_zip(paths, zip_path_str, batch_summary=batch_summary, rename_log=rename_log)
+        except PermissionError as exc:
+            # Windows 上杀毒/索引/同步软件常短暂锁住新建文件，退避后重试。
+            last_error = exc
+            time.sleep(0.5 * (attempt + 1))
+    fallback = _fallback_zip_path(zip_path_str)
+    return _write_zip(paths, fallback, batch_summary=batch_summary, rename_log=rename_log)
+
+
+def _fallback_zip_path(zip_path_str: str) -> str:
+    """PermissionError 兜底：在同目录生成一个不冲突的新文件名。
+
+    返回的路径一定尚不存在；极端情况下附加时间戳保证唯一。
+    """
+    path = Path(zip_path_str)
+    for index in range(2, 100):
+        candidate = path.with_name(f"{path.stem}__{index}{path.suffix}")
+        if not candidate.exists():
+            return os.fspath(candidate)
+    return os.fspath(path.with_name(f"{path.stem}_{int(time.time())}{path.suffix}"))
 
 
 def _archive_arcname(path: str, used: set[str]) -> str:
@@ -170,7 +188,14 @@ def _discover_document_summaries(
     ctx: dict[str, Any],
     output_paths: Iterable[str | os.PathLike[str]],
 ) -> list[str]:
-    paths = list(ctx.get("document_summary_paths") or [])
+    # Session state can retain summary paths from a previous run even after
+    # its output folder has been cleaned or replaced. Never let a stale path
+    # make the current batch look successful.
+    paths = [
+        os.fspath(path)
+        for path in (ctx.get("document_summary_paths") or [])
+        if path and Path(os.fspath(path)).is_file()
+    ]
     seen = {os.path.normcase(os.path.abspath(path)) for path in paths}
     for raw in output_paths:
         if not raw:
@@ -202,6 +227,17 @@ def finalize_zip_outputs(
         if path and os.path.exists(path)
     ]
     summary_paths = _discover_document_summaries(ctx, existing_paths)
+    if output_paths and not existing_paths:
+        # 调用方明明给了输出路径，磁盘上却一个都不存在：典型的 UI/worker
+        # 路径分裂（相对路径 + 两个进程 cwd 不同），或输出被外部清理。
+        # 此时绝不允许产出只有批次摘要的空壳 ZIP（2026-09-21 事故），
+        # 必须把原因写进 ctx 让调用方呈现给用户，而不是无声消失。
+        ctx.setdefault("errors", []).append(
+            f"打包取消：{len(output_paths)} 个输出路径在磁盘上均不存在，未生成 ZIP。"
+            "若任务刚处理完成，请检查启动方式造成的输出根目录差异；"
+            "各文件的成果目录可能仍保留在磁盘上。"
+        )
+        return None
     if not existing_paths and not summary_paths:
         return None
 
@@ -229,8 +265,20 @@ def finalize_zip_outputs(
         warnings=warnings,
         errors=errors,
     )
+    # Do not manufacture a downloadable ZIP whose only member would be an
+    # empty batch summary. This happens when a stale Streamlit rerun leaves
+    # no live document outputs or valid document summaries.
+    # 注意：仅当连文档输出文件也没有时才拒写；有真实输出但缺文档摘要的
+    # P1-10 场景必须照常出包（状态降级 partial），否则违背既有契约测试。
+    if not existing_paths and int((batch_summary.get("result") or {}).get("document_count") or 0) == 0:
+        return None
     rename_log: list[dict[str, str]] = []
     zip_path = build_zip(existing_paths, Path(output_dir) / zip_name, batch_summary=batch_summary, rename_log=rename_log)
+    if Path(zip_path).name != Path(zip_name).name:
+        # build_zip 的 PermissionError 兜底改了文件名，让调用方能感知。
+        ctx.setdefault("warnings", []).append(
+            f"ZIP 目标文件被占用，已改用备用文件名：{Path(zip_path).name}"
+        )
     ctx["last_zip_path"] = zip_path
     ctx["last_zip_name"] = Path(zip_path).name
     ctx["batch_summary"] = batch_summary

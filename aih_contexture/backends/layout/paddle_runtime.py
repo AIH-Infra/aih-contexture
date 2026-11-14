@@ -20,14 +20,23 @@ class PaddleLayoutDetectionRuntime:
 
     @property
     def model_name(self) -> str:
-        return str(self.config.get("paddle_layout_model_name") or "PP-DocLayout_plus-L")
+        default = "PP-DocLayoutV3" if self.config.get("layout_backend") == "paddle_pp_doclayout_v3" else "PP-DocLayout_plus-L"
+        return str(self.config.get("paddle_layout_model_name") or default)
 
     def is_available(self) -> bool:
+        from .pp_doclayoutv3_onnx import native_v3_selected
+        if native_v3_selected(self.config):
+            return importlib.util.find_spec("onnxruntime") is not None and importlib.util.find_spec("shapely") is not None
         return importlib.util.find_spec("paddleocr") is not None
 
     def run(self, image_paths: list[str | Path], *, page_sizes: list[tuple[int, int]] | None = None) -> list[dict[str, Any]]:
         if not image_paths:
             return []
+        from .pp_doclayoutv3_onnx import PPDocLayoutV3OnnxRuntime, native_v3_selected
+        if self.predictor is None and native_v3_selected(self.config):
+            if self.config.get("paddle_runtime_mode") != "in_process" and (self.config.get("paddle_layout_python") or self.config.get("paddle_python")):
+                return self._run_sidecar(image_paths, page_sizes=page_sizes)
+            return PPDocLayoutV3OnnxRuntime(self.config).run(image_paths, page_sizes=page_sizes)
         if self.predictor is None and self._should_use_sidecar():
             return self._run_sidecar(image_paths, page_sizes=page_sizes)
         predictor = self.predictor or self._create_predictor()
@@ -74,7 +83,7 @@ class PaddleLayoutDetectionRuntime:
                         "task": "layout",
                         "image_paths": [str(path) for path in image_paths],
                         "page_sizes": page_sizes,
-                        "config": self.config,
+                        "config": {key: value for key, value in self.config.items() if not str(key).startswith("_")},
                     },
                     ensure_ascii=False,
                 ),
@@ -86,6 +95,8 @@ class PaddleLayoutDetectionRuntime:
                 env=self._env(python),
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 check=False,
             )
             if completed.returncode != 0:

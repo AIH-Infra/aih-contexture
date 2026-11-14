@@ -4,12 +4,12 @@ from typing import Any
 
 
 VLM_SPECIALIZED_BACKEND_LABELS: dict[str, str] = {
-    "chandra": "Chandra OCR - 通用文档模型（Datalab）",
-    "churro": "Churro OCR - 历史文档专用模型（3B 参数）",
-    "chrome_screenai": "Chrome ScreenAI - 本地原生 OCR",
-    "paddleocr_vl": "PaddleOCR-VL - 文档解析 VLM/Pipeline",
-    "mineru_vl": "MinerU-VL - 文档理解 VLM",
-    "surya2": "Surya 2 - 轻量文档 VLM",
+    "chandra": "Chandra OCR（文档解析模型）",
+    "churro": "Churro OCR（历史文档模型）",
+    "chrome_screenai": "Chrome ScreenAI（本地 OCR 组件）",
+    "paddleocr_vl": "PaddleOCR-VL（文档解析模型）",
+    "mineru_vl": "MinerU-VL（文档解析模型）",
+    "surya2": "Surya 2（文档解析模型）",
 }
 
 
@@ -109,6 +109,20 @@ VLM_SPECIALIZED_MODEL_PRESETS: dict[str, dict[str, Any]] = {
                 "label": "Surya 2",
                 "family": "Surya OCR 2",
                 "model": "surya-ocr-2-lmstudio",
+            },
+        },
+    },
+    "glm_ocr": {
+        "default_version": "0.9b",
+        "default_quant": "q8_0",
+        "versions": {
+            "0.9b": {
+                "label": "GLM-OCR 0.9B",
+                "family": "GLM-OCR 0.9B",
+                "models": {
+                    "f16": "glm-ocr@f16",
+                    "q8_0": "glm-ocr@q8_0",
+                },
             },
         },
     },
