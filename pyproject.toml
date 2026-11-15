@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "aih-contexture"
-version = "1.1.0"
+version = "1.1.1"
 description = "Weaving Data from History - 面向人文学科的文献结构化提取平台"
 authors = ["Güriedrich & Baireinhold <aih-infra@example.com>"]
 readme = "README.md"

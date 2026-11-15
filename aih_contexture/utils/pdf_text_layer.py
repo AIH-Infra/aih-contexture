@@ -144,4 +144,7 @@ def searchable_background(target, source, page_index: int, *, dpi: int = 144,
                     pix = page.get_pixmap(dpi=dpi, alpha=False)
                     insert_compact_background(target, pix)
                 elif clean[0].get_bboxlog():
-                    target.show_pdf_page(target.rect, clean, 0)
+                    # Map the unrotated crop box into the displayed orientation.
+                    rotation = clean[0].rotation
+                    clean[0].set_rotation(0)
+                    target.show_pdf_page(target.rect, clean, 0, rotate=-rotation)

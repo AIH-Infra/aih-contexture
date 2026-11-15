@@ -1,4 +1,4 @@
-# AIH-Contexture 1.1.0 Release Manifest
+# AIH-Contexture 1.1.1 Release Manifest
 
 This directory is a clean, standalone source release intended for installation
 on a new computer.
@@ -40,7 +40,7 @@ Optional extras (not installed by default; weights are never bundled):
 - `.[indra]` Indra OCR (CPU); `.[paddle-layout]` built-in PP-DocLayoutV3 ONNX; `.[paddle-torch]` Paddle OCR Torch.
 - Model folders are supplied by the user; downloads happen only when the matching `*_allow_download` option is enabled.
 
-1.1.0 runtime defaults and boundaries:
+1.1.1 runtime defaults and boundaries:
 
 - The default local backend uses Surya OCR 0.17.1 with Transformers 4.57.6.
 - Pipeline UI defaults to 100 pages per batch; CLI automatic mode may adjust that count to available resources. Files within the selected page count run whole; longer files split at that count. Consecutive short files use resource-planned warm processes that reuse models; long-file batch parallelism is scheduled separately.
